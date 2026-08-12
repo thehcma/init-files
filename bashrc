@@ -1684,8 +1684,10 @@ function check_tool_versions()
         rebuild=1
     fi
     if [[ $rebuild -eq 0 && -r "$cache_file" && -r "$report_file" ]]; then
-        cache_mtime=$(stat -f %m "$cache_file" 2>/dev/null || stat -c %Y "$cache_file" 2>/dev/null || echo 0)
-        report_mtime=$(stat -f %m "$report_file" 2>/dev/null || stat -c %Y "$report_file" 2>/dev/null || echo 0)
+        # Prefer GNU -c (Linux); BSD -f second. GNU `stat -f` is --file-system and
+        # still prints to stdout on failure, so BSD-first poisons the || chain.
+        cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null || echo 0)
+        report_mtime=$(stat -c %Y "$report_file" 2>/dev/null || stat -f %m "$report_file" 2>/dev/null || echo 0)
         if [[ "$cache_mtime" =~ ^[0-9]+$ && "$report_mtime" =~ ^[0-9]+$ ]] \
             && (( cache_mtime > report_mtime )); then
             rebuild=1
@@ -5949,7 +5951,8 @@ _init_files_tools_reinstall_reasons()
 
     # Cheap staleness: tools file older than ~60 days and a common binary is newer.
     now=$(date +%s 2>/dev/null || echo 0)
-    tools_mtime=$(stat -f %m "$tools_file" 2>/dev/null || stat -c %Y "$tools_file" 2>/dev/null || echo 0)
+    # Prefer GNU -c (Linux); BSD -f second — see check_tool_versions mtime note.
+    tools_mtime=$(stat -c %Y "$tools_file" 2>/dev/null || stat -f %m "$tools_file" 2>/dev/null || echo 0)
     if [[ "$now" =~ ^[0-9]+$ && "$tools_mtime" =~ ^[0-9]+$ ]] && (( now > tools_mtime )); then
         age_days=$(( (now - tools_mtime) / 86400 ))
         if (( age_days >= 60 )); then
@@ -5965,7 +5968,7 @@ _init_files_tools_reinstall_reasons()
             probes+=(/usr/local/bin/git /usr/bin/git)
             for probe in "${probes[@]}"; do
                 [[ -n "$probe" && -x "$probe" ]] || continue
-                probe_mtime=$(stat -f %m "$probe" 2>/dev/null || stat -c %Y "$probe" 2>/dev/null || echo 0)
+                probe_mtime=$(stat -c %Y "$probe" 2>/dev/null || stat -f %m "$probe" 2>/dev/null || echo 0)
                 if [[ "$probe_mtime" =~ ^[0-9]+$ ]] && (( probe_mtime > tools_mtime )); then
                     printf 'tools file is %sd old and %s is newer — OS/tool move likely\n' "$age_days" "$probe"
                     break

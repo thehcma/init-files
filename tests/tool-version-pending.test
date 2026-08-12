@@ -23,6 +23,11 @@ assert_contains 'writes pending-updates' "$text" 'pending-updates'
 # Needle is a literal bashrc snippet (includes "$pending_file").
 # shellcheck disable=SC2016
 assert_contains 'fast path checks drift' "$text" 'tool_version_pending_drifted "$pending_file"'
+# GNU `stat -f` is --file-system and prints to stdout on failure; BSD-first breaks Linux.
+assert_contains 'prefers GNU stat -c for cache mtime' "$text" \
+    'cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null || echo 0)'
+assert_contains 'prefers GNU stat -c for report mtime' "$text" \
+    'report_mtime=$(stat -c %Y "$report_file" 2>/dev/null || stat -f %m "$report_file" 2>/dev/null || echo 0)'
 
 printf '\n=== behavioral: drift detection ===\n'
 normalize_version()
