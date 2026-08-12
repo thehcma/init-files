@@ -6104,6 +6104,73 @@ _init_files_deploy_drift_reasons()
     fi
 }
 
+# Probe origin/main SHA for git dir $1 (optional git binary $2). Prints SHA; returns 1 if empty.
+# Uses HTTPS helper or BatchMode SSH based on this host’s GitHub transport.
+_init_files_probe_origin_main()
+{
+    local dir="${1:-}" git_bin="${2:-}" remote_head
+
+    [[ -n "$dir" && -d "$dir/.git" ]] || return 1
+    if [[ -z "$git_bin" || ! -x "$git_bin" ]]; then
+        git_bin="${init_tool_git:-}"
+        if [[ -z "$git_bin" || ! -x "$git_bin" ]]; then
+            git_bin="$(command -v git 2>/dev/null || true)"
+        fi
+    fi
+    [[ -n "$git_bin" && -x "$git_bin" ]] || return 1
+
+    if type _init_files_is_github_https_host > /dev/null 2>&1 && _init_files_is_github_https_host; then
+        remote_head=$(
+            _init_files_git_https "$git_bin" -C "$dir" ls-remote --heads origin main 2>/dev/null \
+                | awk '{ print $1; exit }'
+        )
+    else
+        remote_head=$(
+            GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1" \
+                "$git_bin" -C "$dir" ls-remote --heads origin main 2>/dev/null \
+                | awk '{ print $1; exit }'
+        )
+    fi
+    [[ -n "$remote_head" ]] || return 1
+    printf '%s\n' "$remote_head"
+}
+
+# Flag a failed daily remote check. On a TTY, offer retry (return 0 = retry; may run cache_ssh).
+# $1 = human label (e.g. init-files, private config).
+_init_files_offer_remote_check_retry()
+{
+    local label="${1:-remote}"
+    local reply
+
+    echo "init-files: could not reach ${label} origin/main (offline, auth, or network)." >&2
+    if type _init_files_is_github_https_host > /dev/null 2>&1 && _init_files_is_github_https_host; then
+        echo "  Hint: check gh auth / credential helper, then retry." >&2
+    else
+        echo "  Hint: run cache_ssh (BatchMode needs a loaded key), then retry." >&2
+    fi
+    if [[ -t 0 && -t 2 ]]; then
+        printf 'Retry %s remote check now? [Y/n] ' "$label" >&2
+        read -r reply || reply=n
+        case "$reply" in
+            ''|y|Y|yes|YES)
+                if ! type _init_files_is_github_https_host > /dev/null 2>&1 \
+                    || ! _init_files_is_github_https_host; then
+                    if type cache_ssh > /dev/null 2>&1 && ! cache_ssh -c 2>/dev/null; then
+                        cache_ssh || true
+                    fi
+                fi
+                return 0
+                ;;
+            *)
+                echo "Skipped ${label} update check." >&2
+                return 1
+                ;;
+        esac
+    fi
+    echo "  Later: fix network/auth, then refresh_init_files (or a new interactive shell after the daily stamp)." >&2
+    return 1
+}
+
 # Daily quiet path: private config overlay URL drift or origin/main moved.
 # Suggests pull (and provision to re-merge SSH) — never auto-applies.
 _init_files_offer_private_config_update()
@@ -6136,22 +6203,16 @@ _init_files_offer_private_config_update()
         echo "       # or update ~/.config/init-files/config-repo / INIT_FILES_CONFIG_REPO" >&2
     fi
 
-    # Network check (BatchMode / HTTPS) — same transport as init-files refresh.
-    if type _init_files_is_github_https_host > /dev/null 2>&1 && _init_files_is_github_https_host; then
-        remote_head=$(
-            _init_files_git_https "$git_bin" -C "$dir" ls-remote --heads origin main 2>/dev/null \
-                | awk '{ print $1; exit }'
-        )
-    else
-        remote_head=$(
-            GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1" \
-                "$git_bin" -C "$dir" ls-remote --heads origin main 2>/dev/null \
-                | awk '{ print $1; exit }'
-        )
-    fi
+    remote_head="$(_init_files_probe_origin_main "$dir" "$git_bin" 2>/dev/null || true)"
+    while [[ -z "$remote_head" ]]; do
+        if _init_files_offer_remote_check_retry 'private config'; then
+            remote_head="$(_init_files_probe_origin_main "$dir" "$git_bin" 2>/dev/null || true)"
+            continue
+        fi
+        break
+    done
     if [[ -z "$remote_head" ]]; then
-        # Offline, auth failure, or remote renamed — if we already flagged URL
-        # drift, that hint is enough; otherwise stay quiet.
+        [[ $drifted -eq 1 ]]
         return 0
     fi
 
@@ -6330,6 +6391,8 @@ function refresh_init_files()
                 echo "            also private config overlay (URL drift / main moved);" >&2
                 echo "            also detect local deploy drift (bashrc/vim/iTerm/" >&2
                 echo "            login hook/tools) and offer repair (no auto-apply)." >&2
+                echo "            Failed ls-remote is flagged; TTY offers retry" >&2
+                echo "            (may run cache_ssh). Continues overlay/drift checks." >&2
                 echo "            Does not apply iTerm prefs unless you accept." >&2
                 echo "  --no-dev  after pull, provision --no-dev and remember THIS" >&2
                 echo "            host as non-dev (no-dev.<hostname>; NFS-safe)." >&2
@@ -6427,23 +6490,15 @@ function refresh_init_files()
         previous_head=$("$init_tool_git" -C "$init_files_dir" rev-parse HEAD 2>/dev/null || true)
         # BatchMode: never block startup on passphrase / host-key prompts.
         # HTTPS hosts use credential helper / gh; SSH hosts need a loaded key.
-        if [[ $github_https -eq 1 ]]; then
-            remote_head=$(
-                _init_files_git_https "$init_tool_git" -C "$init_files_dir" ls-remote --heads origin main 2>/dev/null \
-                    | awk '{ print $1; exit }'
-            )
-        else
-            remote_head=$(
-                GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1" \
-                    "$init_tool_git" -C "$init_files_dir" ls-remote --heads origin main 2>/dev/null \
-                    | awk '{ print $1; exit }'
-            )
-        fi
-        if [[ -z "$remote_head" ]]; then
-            # Offline or auth failure — stay quiet on the daily path.
-            return 0
-        fi
-        if [[ -n "$previous_head" && "$previous_head" != "$remote_head" ]]; then
+        remote_head="$(_init_files_probe_origin_main "$init_files_dir" "$init_tool_git" 2>/dev/null || true)"
+        while [[ -z "$remote_head" ]]; do
+            if _init_files_offer_remote_check_retry 'init-files'; then
+                remote_head="$(_init_files_probe_origin_main "$init_files_dir" "$init_tool_git" 2>/dev/null || true)"
+                continue
+            fi
+            break
+        done
+        if [[ -n "$remote_head" && -n "$previous_head" && "$previous_head" != "$remote_head" ]]; then
             local_short=$("$init_tool_git" -C "$init_files_dir" rev-parse --short HEAD 2>/dev/null || echo "?")
             remote_short=$(printf '%.7s' "$remote_head")
             echo "init-files: main has moved (local $local_short → $remote_short)." >&2
@@ -6477,7 +6532,8 @@ function refresh_init_files()
                 fi
             fi
         fi
-        # Daily -q: private config overlay moved or URL drifted.
+        # Daily -q: private config overlay moved or URL drifted (even if init-files
+        # remote check failed — do not skip the overlay probe).
         if type _init_files_offer_private_config_update > /dev/null 2>&1; then
             _init_files_offer_private_config_update || true
         fi

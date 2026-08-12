@@ -373,9 +373,9 @@ Interactive shells, about once per day (`init_files_max_age_seconds` / `tool_ver
 | --- | --- |
 | Tool versions | Reprint cached diagnostic every shell (with color); rebuild at most once/day, or sooner when the background latest-* cache updates. No `[N]+ Done` job noise. Skipped on `--no-dev` hosts. |
 | init-files `main` | `git ls-remote` vs local HEAD; if behind, prompt `Update now? [Y/n]` (TTY) or print `Run: refresh_init_files`. |
+| Private config overlay | Same for `~/.local/share/config` `origin/main` (plus remembered-URL drift); if behind, prompt pull then optional `provision_init_files`. |
 | Local deploy drift | Compare this host’s deployables to the clone: `~/.bashrc` / `~/.vimrc` symlinks, retired `~/.gvimrc`, login-profile bashrc hook, broken `tools.<hostname>` paths, and (macOS) curated iTerm prefs vs `iterm2/com.googlecode.iterm2.plist`. If anything differs, prompt `Repair now with …? [Y/n]` (TTY) or print `Run: …`. Narrow fixes use `refresh_vimrc` / `refresh_iterm_settings`; otherwise `refresh_init_files`. Never auto-applies under `-q`. |
-
-Offline / auth failures on the quiet path stay silent.
+| Remote check failure | If `ls-remote` fails (offline/auth/network), print a flag + hint (`cache_ssh` or `gh auth`); on a TTY offer `Retry … remote check now? [Y/n]` (may run `cache_ssh` on SSH hosts). Still runs the private-config and deploy-drift checks even when the init-files probe fails. Non-TTY prints a later hint. |
 
 ### Overrides (optional)
 
