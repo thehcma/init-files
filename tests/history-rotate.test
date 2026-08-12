@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# Tests for lib/history_rotate (issue #9).
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+
+# shellcheck disable=SC1091
+source "${root}/lib/tool_path"
+# shellcheck disable=SC1091
+source "${root}/lib/tool_version_cache"
+# shellcheck disable=SC1091
+source "${root}/lib/history_rotate"
+
+tmpdir=
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
+printf '\n=== soft oversize ===\n'
+small="${tmpdir}/small"
+printf 'one\ntwo\n' >"$small"
+rc=0
+init_files_history_soft_oversize "$small" || rc=$?
+assert_exit_nonzero 'small file not soft-oversize' "$rc"
+
+# Force soft line threshold for this process.
+INIT_FILES_HISTORY_SOFT_LINES=3
+printf 'a\nb\nc\nd\n' >"$small"
+rc=0
+init_files_history_soft_oversize "$small" || rc=$?
+assert_exit_0 'over soft line count' "$rc"
+INIT_FILES_HISTORY_SOFT_LINES=100000
+
+printf '\n=== rewrite dedupe last occurrence + timestamps ===\n'
+src="${tmpdir}/history.all"
+dest="${tmpdir}/out"
+cat >"$src" <<'EOF'
+#1000000001
+echo old
+#1000000002
+echo keep
+#1000000003
+echo old
+#1000000004
+echo newer
+EOF
+
+INIT_FILES_HISTORY_HARD_UNIQUES=50000
+INIT_FILES_HISTORY_HARD_BYTES=$((8 * 1024 * 1024))
+rc=0
+init_files_history_rewrite_bounded "$src" "$dest" || rc=$?
+assert_exit_0 'rewrite succeeds' "$rc"
+
+out="$(<"$dest")"
+assert_contains 'keeps echo keep' "$out" 'echo keep'
+assert_contains 'keeps last echo old' "$out" $'#1000000003\necho old'
+assert_not_contains 'drops first echo old ts' "$out" '#1000000001'
+# unique commands: echo old, echo keep, echo newer = 3 command lines
+cmd_lines=$(grep -c -v '^#[0-9]' "$dest" || true)
+if [[ "$cmd_lines" -eq 3 ]]; then
+  pass_case 'three unique commands'
+else
+  fail_case "three unique commands (got $cmd_lines)"
+fi
+
+printf '\n=== # comments are commands, not timestamps ===\n'
+src_c="${tmpdir}/comments"
+dest_c="${tmpdir}/comments.out"
+cat >"$src_c" <<'EOF'
+#1000000100
+echo real
+# this is a shell comment command
+#1000000101
+echo real
+EOF
+init_files_history_rewrite_bounded "$src_c" "$dest_c"
+out_c="$(<"$dest_c")"
+assert_contains 'keeps hash comment command' "$out_c" '# this is a shell comment command'
+assert_contains 'last echo real keeps late ts' "$out_c" $'#1000000101\necho real'
+assert_not_contains 'drops early echo real ts' "$out_c" '#1000000100'
+
+printf '\n=== hard unique cap ===\n'
+src2="${tmpdir}/many"
+: >"$src2"
+i=0
+while (( i < 20 )); do
+  printf '#%s\ncmd-%s\n' "$((1000 + i))" "$i" >>"$src2"
+  i=$((i + 1))
+done
+INIT_FILES_HISTORY_HARD_UNIQUES=5
+dest2="${tmpdir}/capped"
+init_files_history_rewrite_bounded "$src2" "$dest2"
+cmd_lines=$(grep -c -v '^#' "$dest2" || true)
+if [[ "$cmd_lines" -eq 5 ]]; then
+  pass_case 'hard unique cap keeps 5'
+else
+  fail_case "hard unique cap keeps 5 (got $cmd_lines)"
+fi
+assert_contains 'keeps newest cmd-19' "$(<"$dest2")" 'cmd-19'
+assert_not_contains 'drops old cmd-0' "$(<"$dest2")" 'cmd-0'
+INIT_FILES_HISTORY_HARD_UNIQUES=50000
+
+printf '\n=== session prune by age ===\n'
+sdir="${tmpdir}/bash"
+mkdir -p "$sdir"
+old="${sdir}/history.host.1.old"
+new="${sdir}/history.host.2.new"
+printf 'x\n' >"$old"
+printf 'y\n' >"$new"
+printf 'archive\n' >"${sdir}/history.all"
+if touch -t 202001010000 "$old" 2>/dev/null \
+  || touch -d '2020-01-01 00:00:00' "$old" 2>/dev/null; then
+  init_files_history_prune_sessions "$sdir" 14 100
+  if [[ ! -f "$old" && -f "$new" && -f "${sdir}/history.all" ]]; then
+    pass_case 'prunes old session keeps new and archive'
+  else
+    fail_case 'prunes old session keeps new and archive'
+  fi
+else
+  pass_case 'prunes old session keeps new and archive (touch unsupported; skipped)'
+fi
+
+printf '\n=== static ===\n'
+lib_text="$(<"${root}/lib/history_rotate")"
+assert_contains 'defines soft_oversize' "$lib_text" 'init_files_history_soft_oversize()'
+assert_contains 'defines rewrite' "$lib_text" 'init_files_history_rewrite_bounded()'
+assert_contains 'defines prune' "$lib_text" 'init_files_history_prune_sessions()'
+assert_contains 'verifies python via tool_path' "$lib_text" 'init_files_verify_tool_path'
+assert_contains 'timestamp regex' "$lib_text" '^#[0-9]+'
+
+test_summary

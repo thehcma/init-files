@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Tests for Linux non-sudo handoff helpers in bashrc.
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+bashrc="${root}/bashrc"
+
+printf '\n=== static: helpers + call sites ===\n'
+text="$(<"$bashrc")"
+assert_contains 'defines _init_user_in_sudo_group' "$text" 'function _init_user_in_sudo_group'
+assert_contains 'defines _init_can_sudo_nopasswd' "$text" 'function _init_can_sudo_nopasswd'
+assert_contains 'defines _init_linux_sudo_or_handoff' "$text" 'function _init_linux_sudo_or_handoff'
+assert_contains 'update_git gates sudo' "$text" "_init_linux_sudo_or_handoff \"\$upgrade_command\" update_git"
+assert_contains 'git_suggested_command asks admin' "$text" 'ask an admin: %s'
+
+printf '\n=== behavioral: handoff when no sudo ===\n'
+# Load Linux sudo helpers with Darwin stubbed off.
+# shellcheck disable=SC1090
+eval "$(
+    awk '
+        /^function _init_user_in_sudo_group\(\)/,/^function detect_git_update_strategy\(\)/ {
+            if ($0 ~ /^function detect_git_update_strategy\(\)/) exit
+            print
+        }
+    ' "$bashrc"
+)"
+
+# Stubs override helpers loaded from bashrc; invoked indirectly via eval (SC2317).
+# shellcheck disable=SC2317
+_init_is_darwin() { return 1; }
+
+# Force "cannot elevate" path regardless of this host's groups.
+# shellcheck disable=SC2317
+_init_can_sudo_nopasswd() { return 1; }
+# shellcheck disable=SC2317
+_init_user_in_sudo_group() { return 1; }
+
+rc=0
+out="$(_init_linux_sudo_or_handoff 'sudo apt update && sudo apt install --only-upgrade git' update_git 2>&1)" || rc=$?
+assert_exit_nonzero 'handoff returns nonzero' "$rc"
+assert_contains 'handoff header' "$out" 'This account cannot use sudo'
+assert_contains 'handoff command' "$out" 'sudo apt update && sudo apt install --only-upgrade git'
+assert_contains 'handoff follow-up' "$out" 'Then re-run (as yourself): update_git'
+
+# Darwin must no-op (return 0) even when “cannot sudo”.
+# shellcheck disable=SC2317
+_init_is_darwin() { return 0; }
+rc=0
+_init_linux_sudo_or_handoff 'sudo apt upgrade git' update_git >/dev/null 2>&1 || rc=$?
+assert_exit_0 'darwin skips handoff' "$rc"
+
+printf '\n=== behavioral: proceed when sudo allowed ===\n'
+# shellcheck disable=SC2317
+_init_is_darwin() { return 1; }
+# shellcheck disable=SC2317
+_init_can_sudo_nopasswd() { return 0; }
+# shellcheck disable=SC2317
+_init_user_in_sudo_group() { return 1; }
+rc=0
+out="$(_init_linux_sudo_or_handoff 'sudo apt upgrade git' update_git 2>&1)" || rc=$?
+assert_exit_0 'nopasswd proceeds without handoff' "$rc"
+if [[ -z "$out" ]]; then
+  pass_case 'nopasswd emits no handoff text'
+else
+  fail_case "nopasswd emits no handoff text (got: $out)"
+fi
+
+# shellcheck disable=SC2317
+_init_can_sudo_nopasswd() { return 1; }
+# shellcheck disable=SC2317
+_init_user_in_sudo_group() { return 0; }
+rc=0
+out="$(_init_linux_sudo_or_handoff 'sudo dnf upgrade git' update_git 2>&1)" || rc=$?
+assert_exit_0 'sudo-group proceeds without handoff' "$rc"
+if [[ -z "$out" ]]; then
+  pass_case 'sudo-group emits no handoff text'
+else
+  fail_case "sudo-group emits no handoff text (got: $out)"
+fi
+
+test_summary

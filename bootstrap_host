@@ -1,0 +1,1433 @@
+#!/usr/bin/env bash
+# bootstrap_host — new-host path from gh HTTPS (preferred) or house SSH to working init-files.
+#
+# Preferred (public bootstrap — no prior clone required):
+#
+#   curl -fsSL https://raw.githubusercontent.com/thehcma/init-files/main/bootstrap_host \
+#     -o /tmp/bootstrap_host && chmod +x /tmp/bootstrap_host
+#   /tmp/bootstrap_host
+#   # after "bootstrap_host verify" shows bashrc OK:
+#   source ~/.bashrc
+#
+# Interactive default: offer gh auth login (HTTPS) first. --key-from copies the
+# house key for house hops and does NOT force GitHub SSH (HTTPS still preferred
+# when gh is authenticated). If GitHub SSH is selected and fails (house RSA
+# declined / no ed25519), fall back to HTTPS when gh can auth.
+# Without flags: prefer remembered github-https.<host>, else HTTPS when gh is
+# authenticated, else SSH (--github-https/--github-ssh to force).
+#
+# After clone exists, this script is idempotent. Keep thehcma/init-files in sync
+# when this file changes.
+#
+# See: https://github.com/thehcma/init-files/issues/12
+set -euo pipefail
+# bootstrap_host_rev=key-from-independent-2026-08-06
+
+clone_dir="${INIT_FILES_DIR:-$HOME/.local/share/init-files}"
+repo_https="${INIT_FILES_REPO_HTTPS:-https://github.com/thehcma/init-files.git}"
+# Resolved by resolve_bootstrap_ssh_keys (overlay / env / generic candidates).
+house_key=""
+house_pub=""
+github_ed25519_key=""
+# Selected GitHub identity after verify_github_ssh (absolute path).
+github_key=""
+ssh_dir="${HOME}/.ssh"
+ssh_config_d="${ssh_dir}/config.d"
+ssh_config_file="${ssh_dir}/config"
+ssh_github_snippet="${ssh_config_d}/init-files-github.conf"
+github_insteadof_from='https://github.com/'
+github_insteadof_to='git@github.com:'
+ssh_cache_timeout="${SSH_CACHE_TIMEOUT:-4h}"
+# Optional: host (or user@host) to scp the house key from before SSH bootstrap.
+key_from_host="${INIT_FILES_KEY_HOST:-}"
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+
+force=0
+quiet=0
+no_dev=0
+dev_mode_explicit=0
+github_https=0
+github_transport_explicit=0
+# Args forwarded to ./provision_init_files (built while parsing).
+install_args=()
+
+tools_dir="${XDG_CONFIG_HOME:-$HOME/.config}/init-files"
+
+log()
+{
+    [[ $quiet -eq 1 ]] || printf '%s\n' "$*"
+}
+
+# SYNC: lib/error init_files_die — keep identical while bootstrap_host is
+# curl/scp-able alone before the clone exists.
+die()
+{
+    printf 'ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+# Load lib/github_bootstrap: clone checkout, same-dir run, or raw fetch (curl /tmp).
+bootstrap_source_github_lib()
+{
+    local script_dir raw_base tmp_lib
+
+    if [[ -f "${clone_dir}/lib/github_bootstrap" ]]; then
+        # shellcheck disable=SC1091
+        . "${clone_dir}/lib/github_bootstrap"
+        return 0
+    fi
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+    if [[ -f "${script_dir}/lib/github_bootstrap" ]]; then
+        # shellcheck disable=SC1091
+        . "${script_dir}/lib/github_bootstrap"
+        return 0
+    fi
+    raw_base="${INIT_FILES_RAW_BASE:-https://raw.githubusercontent.com/thehcma/init-files/main}"
+    tmp_lib="$(mktemp "${TMPDIR:-/tmp}/github_bootstrap.XXXXXX")" || die "mktemp failed for github_bootstrap lib"
+    if curl -fsSL "${raw_base}/lib/github_bootstrap" -o "$tmp_lib" 2>/dev/null \
+        && [[ -s "$tmp_lib" ]]
+    then
+        # shellcheck disable=SC1090
+        . "$tmp_lib"
+        rm -f "$tmp_lib"
+        return 0
+    fi
+    rm -f "$tmp_lib"
+    die "missing lib/github_bootstrap (run from clone or set INIT_FILES_RAW_BASE)"
+}
+
+usage()
+{
+    cat <<'EOF'
+Usage: bootstrap_host [-f|--force] [-q|--quiet] [--no-dev|--dev]
+                      [--github-https|--github-ssh]
+                      [--key-from HOST] [-h|--help]
+
+  New-host bootstrap for init-files.
+
+  Preferred: HTTPS via gh auth login (interactive chooser, or --github-https).
+  House key (--key-from) is independent of GitHub transport.
+  GitHub SSH (--github-ssh / chooser) when HTTPS is unavailable or you opt in.
+
+  Interactive (TTY, no transport flag / remembered preference):
+    Ask: Authenticate to GitHub with gh (HTTPS)? [Y/n]
+    Yes → guided gh install + gh auth login (+ optional Node after clone)
+    No  → guided SSH (keys, ssh-agent, ssh -T) with confirm/retry each step
+
+  Legacy numeric chooser replaced by the Y/n prompt above.
+
+  HTTPS mode (--github-https / remembered github-https.<host> / gh auth):
+    ensure gh is logged in → clear insteadOf → clone via HTTPS →
+    ./provision_init_files --github-https → verify.
+
+  SSH mode (--github-ssh / remembered github-ssh.<host> / chooser opt 2–3):
+    require house or GitHub ed25519 key → GitHub SSH snippet + insteadOf +
+    known_hosts → cache key → ssh -T → clone (if needed) →
+    ./provision_init_files → verify.
+    If GitHub SSH fails (house RSA declined, no ed25519) but gh can auth,
+    fall back to HTTPS automatically.
+
+  --key-from HOST
+                copy the house key (+ .pub if present) from HOST in one SSH
+                login. HOST may be a hostname or user@host. Does NOT force
+                GitHub SSH — house key is for house hops; GitHub transport
+                still follows --github-https/--github-ssh, remembered prefs,
+                or gh auth (HTTPS preferred). Env: INIT_FILES_KEY_HOST.
+
+  Preferred fetch:
+    curl -fsSL https://raw.githubusercontent.com/thehcma/init-files/main/bootstrap_host \
+      -o /tmp/bootstrap_host && chmod +x /tmp/bootstrap_host
+    /tmp/bootstrap_host
+
+  Flags other than --key-from are forwarded to ./provision_init_files.
+  Clone path: ~/.local/share/init-files (override with INIT_FILES_DIR).
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -f|--force)
+            force=1
+            install_args+=("$1")
+            shift
+            ;;
+        -q|--quiet)
+            quiet=1
+            install_args+=("$1")
+            shift
+            ;;
+        --no-dev)
+            no_dev=1
+            dev_mode_explicit=1
+            install_args+=("$1")
+            shift
+            ;;
+        --dev)
+            no_dev=0
+            dev_mode_explicit=1
+            install_args+=("$1")
+            shift
+            ;;
+        --github-https)
+            github_https=1
+            github_transport_explicit=1
+            install_args+=("$1")
+            shift
+            ;;
+        --github-ssh)
+            github_https=0
+            github_transport_explicit=1
+            install_args+=("$1")
+            shift
+            ;;
+        --key-from)
+            if [[ -z "${2:-}" || "$2" == -* ]]; then
+                die "--key-from requires a host (e.g. user@host or an SSH Host alias)"
+            fi
+            key_from_host="$2"
+            # House-key fetch only — do not force GitHub SSH. Transport still
+            # follows --github-* flags, remembered prefs, or gh auth (HTTPS).
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "ERROR: unknown option: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+done
+
+# force is only forwarded via install_args; keep the flag for future local use.
+: "${force}"
+
+# Same host key as install / PS1: macOS ComputerName, else short hostname.
+_init_files_raw_host_label()
+{
+    local scutil_bin name
+    if [[ "${OSTYPE:-}" == darwin* ]]; then
+        scutil_bin="$(command -v scutil 2>/dev/null || true)"
+        [[ -n "$scutil_bin" ]] || scutil_bin=/usr/sbin/scutil
+        if [[ -x "$scutil_bin" ]]; then
+            name="$("$scutil_bin" --get ComputerName 2>/dev/null || true)"
+            if [[ -n "$name" ]]; then
+                printf '%s\n' "$name"
+                return 0
+            fi
+        fi
+    fi
+    hostname -s 2>/dev/null || hostname 2>/dev/null || echo host
+}
+
+_init_files_sanitize_host()
+{
+    local host="${1:-}"
+    host="${host%%.*}"
+    host="${host//[^A-Za-z0-9._-]/_}"
+    [[ -n "$host" ]] || host="unknown-host"
+    printf '%s\n' "$host"
+}
+
+init_files_host="$(_init_files_sanitize_host "$(_init_files_raw_host_label)")"
+init_files_github_https_flag="${tools_dir}/github-https.${init_files_host}"
+init_files_github_ssh_flag="${tools_dir}/github-ssh.${init_files_host}"
+init_files_no_dev_flag="${tools_dir}/no-dev.${init_files_host}"
+
+# Y/n prompt (default yes). Returns 0 on yes. No under -q / non-TTY.
+prompt_yn()
+{
+    local prompt="$1"
+    local reply
+
+    if [[ $quiet -eq 1 ]] || [[ ! -t 0 || ! -t 2 ]]; then
+        return 1
+    fi
+    printf '%s ' "$prompt" >&2
+    read -r reply || reply=n
+    case "$reply" in
+        ''|y|Y|yes|YES) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Prompt for a non-empty line. Prints the value on stdout. Dies if non-TTY / -q.
+prompt_line()
+{
+    local prompt="$1"
+    local reply=""
+
+    if [[ $quiet -eq 1 ]] || [[ ! -t 0 || ! -t 2 ]]; then
+        die "need interactive TTY to prompt: $prompt"
+    fi
+    while [[ -z "$reply" ]]; do
+        printf '%s ' "$prompt" >&2
+        read -r reply || reply=""
+        reply="${reply#"${reply%%[![:space:]]*}"}"
+        reply="${reply%"${reply##*[![:space:]]}"}"
+    done
+    printf '%s\n' "$reply"
+}
+
+# Load lib/config_paths when available (clone, script dir, or raw fetch).
+bootstrap_source_config_paths()
+{
+    local raw_base tmp_lib
+
+    if declare -F init_files_preferred_ssh_key > /dev/null 2>&1; then
+        return 0
+    fi
+    if [[ -f "${clone_dir}/lib/config_paths" ]]; then
+        # shellcheck disable=SC1091
+        . "${clone_dir}/lib/config_paths"
+        return 0
+    fi
+    if [[ -f "${script_dir}/lib/config_paths" ]]; then
+        # shellcheck disable=SC1091
+        . "${script_dir}/lib/config_paths"
+        return 0
+    fi
+    raw_base="${INIT_FILES_RAW_BASE:-https://raw.githubusercontent.com/thehcma/init-files/main}"
+    tmp_lib="$(mktemp "${TMPDIR:-/tmp}/config_paths.XXXXXX")" || return 1
+    if curl -fsSL "${raw_base}/lib/config_paths" -o "$tmp_lib" 2>/dev/null && [[ -s "$tmp_lib" ]]; then
+        # shellcheck disable=SC1090
+        . "$tmp_lib"
+        rm -f "$tmp_lib"
+        return 0
+    fi
+    rm -f "$tmp_lib"
+    return 1
+}
+
+# Set house_key / github_ed25519_key from env, overlay, or generic candidates.
+resolve_bootstrap_ssh_keys()
+{
+    local base key
+
+    bootstrap_source_config_paths || true
+
+    if [[ -n "${INIT_FILES_HOUSE_KEY:-}" ]]; then
+        house_key="$INIT_FILES_HOUSE_KEY"
+    elif declare -F init_files_house_key_basename > /dev/null 2>&1; then
+        base="$(init_files_house_key_basename)"
+        house_key="${HOME}/.ssh/${base}"
+    else
+        house_key="${HOME}/.ssh/id_ed25519_house"
+    fi
+    house_pub="${house_key}.pub"
+
+    github_ed25519_key="${HOME}/.ssh/id_ed25519_github"
+    if declare -F init_files_preferred_ssh_keys > /dev/null 2>&1; then
+        while IFS= read -r key || [[ -n "$key" ]]; do
+            [[ -n "$key" && -f "$key" ]] || continue
+            [[ "$key" == "$house_key" ]] && continue
+            github_ed25519_key="$key"
+            break
+        done < <(init_files_preferred_ssh_keys)
+    fi
+}
+
+is_modern_macos()
+{
+    [[ "${OSTYPE:-}" == darwin* ]] || return 1
+    local major
+    major="$(uname -r 2>/dev/null | cut -d. -f1)"
+    [[ -n "$major" && "$major" -ge 25 ]]
+}
+
+# Ensure `gh` is on PATH (offer brew install on modern macOS).
+ensure_gh_cli()
+{
+    local gh_bin brew_bin user
+
+    gh_bin="$(command -v gh 2>/dev/null || true)"
+    [[ -n "$gh_bin" && -x "$gh_bin" ]] && return 0
+
+    if is_modern_macos; then
+        brew_bin="$(command -v brew 2>/dev/null || true)"
+        if [[ -z "$brew_bin" ]]; then
+            # SYNC candidate order with lib/host_paths init_files_brew_bin_candidates
+            # (bootstrap_host must stay usable before the clone exists).
+            for brew_bin in /opt/homebrew/bin/brew /usr/local/bin/brew "${HOME}/homebrew/bin/brew"; do
+                [[ -x "$brew_bin" ]] && break
+                brew_bin=""
+            done
+        fi
+        if [[ -n "$brew_bin" && -x "$brew_bin" ]]; then
+            # Non-admin: print cut-paste instead of running brew.
+            if ! is_macos_admin_user; then
+                user="$(id -un 2>/dev/null || echo unknown)"
+                cat >&2 <<EOF
+
+----------------------------------------------------------------------
+This account (${user}) is not a macOS administrator.
+Copy/paste as an admin, then re-run bootstrap_host --github-https:
+
+brew install gh
+
+----------------------------------------------------------------------
+EOF
+            elif prompt_yn "GitHub CLI (gh) is missing. Install with Homebrew? [Y/n]"; then
+                "$brew_bin" install gh || die "brew install gh failed"
+                # shellcheck disable=SC1090
+                eval "$("$brew_bin" shellenv 2>/dev/null)" 2>/dev/null || true
+                export PATH
+            fi
+        fi
+    fi
+
+    gh_bin="$(command -v gh 2>/dev/null || true)"
+    [[ -n "$gh_bin" && -x "$gh_bin" ]] || die \
+        "gh is required for HTTPS bootstrap. Install GitHub CLI, then re-run with --github-https — or choose SSH (--github-ssh / --key-from HOST)."
+}
+
+# Match provision_init_files: admin group or root.
+is_macos_admin_user()
+{
+    local user
+
+    [[ "${OSTYPE:-}" == darwin* ]] || return 1
+    [[ "$(id -u)" -eq 0 ]] && return 0
+    user="$(id -un 2>/dev/null || true)"
+    [[ -n "$user" ]] || return 1
+    if command -v dseditgroup >/dev/null 2>&1; then
+        dseditgroup -o checkmember -m "$user" admin >/dev/null 2>&1 && return 0
+        return 1
+    fi
+    id -Gn 2>/dev/null | grep -qw admin
+}
+
+# Run gh auth login when not already authenticated.
+ensure_gh_authenticated()
+{
+    local gh_bin
+    ensure_gh_cli
+    gh_bin="$(command -v gh)"
+    if "$gh_bin" auth status >/dev/null 2>&1; then
+        log "OK       gh authenticated"
+        return 0
+    fi
+    if [[ $quiet -eq 1 ]] || [[ ! -t 0 || ! -t 2 ]]; then
+        die "gh is not logged in; run: gh auth login   then re-run with --github-https"
+    fi
+    if declare -F bootstrap_guided_github_https > /dev/null 2>&1 \
+        && declare -F bootstrap_step_run > /dev/null 2>&1
+    then
+        bootstrap_step_run \
+            "gh auth login (HTTPS)" \
+            "\"$gh_bin\" auth login" \
+            bootstrap_verify_gh_auth \
+            || die "gh auth login failed"
+        log "OK       gh authenticated"
+        return 0
+    fi
+    log "Running  gh auth login (HTTPS git for GitHub)…"
+    "$gh_bin" auth login || die "gh auth login failed"
+    "$gh_bin" auth status >/dev/null 2>&1 || die "gh still not authenticated after login"
+    log "OK       gh authenticated"
+}
+
+# Guided SSH setup: keys, snippet, agent, verify — each step confirmed; retry on failure.
+guided_setup_github_ssh()
+{
+    bootstrap_platform_banner
+
+    cat >&2 <<EOF
+
+GitHub SSH setup
+  • Prefer HTTPS (gh auth) when possible — SSH is optional
+  • For SSH: a key listed in overlay config.github, or a key under ~/.ssh
+  • House hops: --key-from HOST (independent of GitHub transport)
+
+EOF
+
+    resolve_bootstrap_ssh_keys
+    bootstrap_guided_install_openssh || die "OpenSSH client required for GitHub SSH"
+
+    mkdir -p "$ssh_dir"
+    chmod 700 "$ssh_dir" || true
+
+    if [[ ! -f "$house_key" && ! -f "$github_ed25519_key" ]]; then
+        cat >&2 <<EOF
+
+No GitHub SSH key found on this host:
+  house candidate:  ${house_key}
+  other candidate:  ${github_ed25519_key}
+
+Prefer: bootstrap_host --github-https
+Or fetch a house key for house hops: --key-from user@host
+
+EOF
+        if [[ -z "$key_from_host" ]] && prompt_yn "Copy house key from another host (--key-from)? [Y/n]"; then
+            key_from_host="$(prompt_line 'Donor host (user@host or SSH Host alias):')"
+            bootstrap_step_run \
+                "fetch house key from ${key_from_host}" \
+                "fetch_house_key_from_host \"${key_from_host}\"" \
+                "[[ -f \"${house_key}\" ]]" \
+                || die "could not fetch house key"
+        fi
+    fi
+
+    if [[ ! -f "$house_key" && ! -f "$github_ed25519_key" ]]; then
+        cat >&2 <<EOF
+
+Still no SSH key. Prefer HTTPS:
+  bootstrap_host --github-https
+
+Or place a passphrase-protected key under ~/.ssh and re-run, or:
+  bootstrap_host --key-from user@host
+
+EOF
+        die "no GitHub SSH key on this host"
+    fi
+
+    bootstrap_step_run \
+        "configure GitHub SSH (snippet + insteadOf + known_hosts)" \
+        'ensure_ssh_config_include && write_github_ssh_snippet && set_github_ssh_insteadof && ensure_github_known_hosts' \
+        "[[ -f \"\$ssh_github_snippet\" ]]" \
+        || die "GitHub SSH configuration failed"
+
+    if [[ -f "$house_key" ]]; then
+        bootstrap_step_run \
+            "cache house key in ssh-agent" \
+            cache_house_key \
+            'ssh-add -l >/dev/null 2>&1' \
+            || log "WARN     house key not cached (run cache_ssh later)"
+    elif [[ -f "$github_ed25519_key" ]]; then
+        bootstrap_step_run \
+            "cache GitHub SSH key in ssh-agent" \
+            "cache_ssh_key \"${github_ed25519_key}\" \"${github_ed25519_key}\"" \
+            'ssh-add -l >/dev/null 2>&1' \
+            || log "WARN     GitHub SSH key not cached (run cache_ssh later)"
+    fi
+
+    while true; do
+        if verify_github_ssh; then
+            log "OK       GitHub SSH authenticated"
+            return 0
+        fi
+        if fallback_github_https_after_ssh_fail; then
+            github_https=1
+            setup_https_mode
+            return 0
+        fi
+        prompt_yn "GitHub SSH verify failed. Retry ssh -T / key setup? [Y/n]" || break
+    done
+    die "GitHub SSH auth failed and HTTPS fallback unavailable (install/login gh, or use --github-https)"
+}
+
+# Select GitHub transport when neither flag nor remembered preference decided.
+# Interactive: ask gh HTTPS first (guided); else guided SSH.
+choose_github_transport()
+{
+    local gh_bin
+
+    # Already decided by flags (not by --key-from alone).
+    [[ $github_transport_explicit -eq 0 ]] || return 0
+
+    if [[ -f "$init_files_github_https_flag" ]]; then
+        github_https=1
+        return 0
+    fi
+    if [[ -f "$init_files_github_ssh_flag" ]]; then
+        github_https=0
+        return 0
+    fi
+
+    gh_bin="$(command -v gh 2>/dev/null || true)"
+    if [[ -n "$gh_bin" && -x "$gh_bin" ]] && "$gh_bin" auth status >/dev/null 2>&1; then
+        github_https=1
+        log "GitHub: gh authenticated — preferring HTTPS on ${init_files_host}"
+        return 0
+    fi
+
+    if [[ $quiet -eq 0 && -t 0 && -t 2 ]]; then
+        cat >&2 <<EOF
+
+GitHub access for clone / refresh on ${init_files_host}.
+
+EOF
+        if prompt_yn "Authenticate to GitHub with gh (HTTPS)? [Y/n]"; then
+            github_https=1
+            github_transport_explicit=1
+            strip_install_arg --github-ssh
+            install_args+=(--github-https)
+        else
+            github_https=0
+            github_transport_explicit=1
+            strip_install_arg --github-https
+            install_args+=(--github-ssh)
+            log "GitHub: SSH key path selected (overlay / ~/.ssh candidates)"
+        fi
+        return 0
+    fi
+
+    # Non-interactive without gh auth: fall back to SSH (legacy scripting).
+    github_https=0
+    log "GitHub: no gh auth / non-interactive — SSH mode (pass --github-https to prefer HTTPS)"
+}
+
+# INIT_FILES_KEY_HOST only sets the donor host; it does not force GitHub SSH.
+# (Same as --key-from.)
+
+# If --no-dev/--dev not passed, honor remembered no-dev (install will too).
+if [[ $dev_mode_explicit -eq 0 && -f "$init_files_no_dev_flag" ]]; then
+    no_dev=1
+fi
+
+require_cmd()
+{
+    local name="$1"
+    command -v "$name" >/dev/null 2>&1 || die "$name is required but not on PATH"
+}
+
+# Hint when OpenSSH client tools are missing (ssh-agent / ssh-add / scp).
+openssh_client_install_hint()
+{
+    if [[ -r /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        case "${ID:-}" in
+            ubuntu|debian|linuxmint|pop)
+                printf 'sudo apt update && sudo apt install -y openssh-client'
+                return 0
+                ;;
+            rhel|centos|rocky|almalinux|fedora|amzn)
+                if command -v dnf >/dev/null 2>&1; then
+                    printf 'sudo dnf install -y openssh-clients'
+                else
+                    printf 'sudo yum install -y openssh-clients'
+                fi
+                return 0
+                ;;
+            arch|manjaro)
+                printf 'sudo pacman -S openssh'
+                return 0
+                ;;
+        esac
+    fi
+    if [[ "${OSTYPE:-}" == darwin* ]]; then
+        printf 'xcode-select --install   # Xcode CLT provides ssh-agent/ssh-add'
+        return 0
+    fi
+    printf 'install the OpenSSH client package (ssh, ssh-add, ssh-agent, scp)'
+}
+
+require_openssh_client()
+{
+    local missing=()
+    local tool
+    for tool in ssh ssh-add ssh-agent scp; do
+        command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+    done
+    if [[ ${#missing[@]} -eq 0 ]]; then
+        return 0
+    fi
+    cat >&2 <<EOF
+ERROR: missing OpenSSH client tool(s): ${missing[*]}
+
+Install them, then re-run bootstrap_host:
+  $(openssh_client_install_hint)
+EOF
+    exit 1
+}
+
+# Prefer a real terminal for passphrase prompts (curl|bash leaves stdin as a pipe).
+bootstrap_tty()
+{
+    if [[ -r /dev/tty ]]; then
+        printf '/dev/tty'
+        return 0
+    fi
+    if [[ -t 0 ]]; then
+        printf '/dev/stdin'
+        return 0
+    fi
+    return 1
+}
+
+ensure_ssh_config_include()
+{
+    # Prefer ~/.ssh/... ; relative Include config.d/*.conf aborts et when cwd ≠ ~/.ssh
+    # (MisterTea/EternalTerminal#747). OpenSSH accepts the tilde form.
+    local include_line='Include ~/.ssh/config.d/*.conf'
+    local tmp
+
+    mkdir -p "$ssh_config_d" || die "cannot create $ssh_config_d"
+    chmod 700 "$ssh_dir" || true
+
+    if [[ ! -f "$ssh_config_file" ]]; then
+        printf '%s\n' "$include_line" > "$ssh_config_file" || die "cannot write $ssh_config_file"
+        chmod 600 "$ssh_config_file" || true
+        log "Created  ~/.ssh/config with Include ~/.ssh/config.d/*.conf"
+        return 0
+    fi
+
+    if grep -Eq '^[[:space:]]*Include[[:space:]]+~/\.ssh/config\.d/\*\.conf[[:space:]]*$' "$ssh_config_file"; then
+        return 0
+    fi
+
+    if grep -Eq '^[[:space:]]*Include[[:space:]]+config\.d/\*\.conf[[:space:]]*$' "$ssh_config_file"; then
+        tmp=$(mktemp) || die "mktemp failed"
+        sed -E 's|^([[:space:]]*Include[[:space:]]+)config\.d/\*\.conf([[:space:]]*)$|\1~/.ssh/config.d/*.conf\2|' \
+            "$ssh_config_file" > "$tmp" || {
+            rm -f "$tmp"
+            die "cannot rewrite Include in $ssh_config_file"
+        }
+        cp "$tmp" "$ssh_config_file" || {
+            rm -f "$tmp"
+            die "cannot update $ssh_config_file"
+        }
+        rm -f "$tmp"
+        chmod 600 "$ssh_config_file" || true
+        log "Updated  ~/.ssh/config Include → ~/.ssh/config.d/*.conf (et-safe)"
+        return 0
+    fi
+
+    tmp=$(mktemp) || die "mktemp failed"
+    {
+        printf '%s\n\n' "$include_line"
+        cat "$ssh_config_file"
+    } > "$tmp" || {
+        rm -f "$tmp"
+        die "cannot prepend Include to $ssh_config_file"
+    }
+    cp "$tmp" "$ssh_config_file" || {
+        rm -f "$tmp"
+        die "cannot update $ssh_config_file"
+    }
+    rm -f "$tmp"
+    chmod 600 "$ssh_config_file" || true
+    log "Prepended Include ~/.ssh/config.d/*.conf to ~/.ssh/config"
+}
+
+# OpenSSH < 8.5: PubkeyAcceptedKeyTypes; >= 8.5: PubkeyAcceptedAlgorithms.
+# Forcing rsa-sha2-* avoids RHEL crypto-policies offering only legacy ssh-rsa (SHA-1),
+# which GitHub rejects.
+github_ssh_rsa_sha2_opt()
+{
+    local major=0 minor=0
+    # ssh -V → OpenSSH_8.0p1, ...
+    if [[ "$(ssh -V 2>&1)" =~ OpenSSH_([0-9]+)\.([0-9]+) ]]; then
+        major="${BASH_REMATCH[1]}"
+        minor="${BASH_REMATCH[2]}"
+    fi
+    if (( major > 8 || (major == 8 && minor >= 5) )); then
+        printf '%s\n' "PubkeyAcceptedAlgorithms=rsa-sha2-512,rsa-sha2-256"
+    else
+        printf '%s\n' "PubkeyAcceptedKeyTypes=rsa-sha2-512,rsa-sha2-256"
+    fi
+}
+
+# Embedded GitHub Host block. Only lists IdentityFiles that exist on this host
+# (a missing IdentityFile + IdentitiesOnly can abort auth before later keys).
+# Order: prefer github_key from verify when set; else preferred keys on disk.
+write_github_ssh_snippet()
+{
+    local alg_line="" id
+    local -a ids=()
+
+    mkdir -p "$ssh_config_d" || die "cannot create $ssh_config_d"
+    resolve_bootstrap_ssh_keys
+
+    if [[ -n "${github_key:-}" && -f "$github_key" ]]; then
+        ids+=("$github_key")
+    fi
+    if declare -F init_files_preferred_ssh_keys > /dev/null 2>&1; then
+        while IFS= read -r id || [[ -n "$id" ]]; do
+            [[ -n "$id" && -f "$id" ]] || continue
+            case " ${ids[*]} " in
+                *" $id "*) continue ;;
+            esac
+            ids+=("$id")
+        done < <(init_files_preferred_ssh_keys)
+    else
+        [[ -f "$github_ed25519_key" ]] && ids+=("$github_ed25519_key")
+        [[ -f "$house_key" ]] && ids+=("$house_key")
+    fi
+
+    if ((${#ids[@]} == 0)); then
+        die "no GitHub SSH keys on disk (set INIT_FILES_HOUSE_KEY or place keys under ~/.ssh)"
+    fi
+
+    for id in "${ids[@]}"; do
+        if declare -F init_files_ssh_key_is_rsa > /dev/null 2>&1 && init_files_ssh_key_is_rsa "$id"; then
+            alg_line="    $(github_ssh_rsa_sha2_opt | sed 's/=/ /')"$'\n'
+            break
+        fi
+        case "$(basename -- "$id")" in
+            id_rsa|id_rsa_*)
+                alg_line="    $(github_ssh_rsa_sha2_opt | sed 's/=/ /')"$'\n'
+                break
+                ;;
+        esac
+    done
+
+    {
+        printf '%s\n' \
+            '# Managed by init-files bootstrap_host (pre-provision GitHub SSH snippet).' \
+            '# provision_init_files refreshes from private config .ssh/config.github.' \
+            '' \
+            'Host github.com' \
+            '    HostName github.com' \
+            '    User git'
+        for id in "${ids[@]}"; do
+            printf '    IdentityFile %s\n' "$id"
+        done
+        printf '%s' "$alg_line"
+        printf '%s\n' '    IdentitiesOnly yes' '    VisualHostKey no'
+    } > "$ssh_github_snippet" || die "cannot write $ssh_github_snippet"
+    chmod 600 "$ssh_github_snippet" || true
+    log "Installed ${ssh_github_snippet/#$HOME/~} (keys: ${ids[*]})"
+}
+
+ensure_github_known_hosts()
+{
+    local known="${ssh_dir}/known_hosts"
+
+    mkdir -p "$ssh_dir" || return 1
+    touch "$known" || return 1
+    chmod 600 "$known" || true
+
+    if grep -qE '^(github\.com|[0-9.]+\s+.*github)' "$known" 2>/dev/null \
+        || grep -q ' github.com ' "$known" 2>/dev/null
+    then
+        return 0
+    fi
+
+    if command -v ssh-keyscan >/dev/null 2>&1; then
+        ssh-keyscan -t ed25519,rsa github.com >> "$known" 2>/dev/null || true
+        if grep -q 'github.com' "$known" 2>/dev/null; then
+            log "Added    github.com to ~/.ssh/known_hosts"
+        else
+            log "WARN     could not ssh-keyscan github.com"
+        fi
+    fi
+}
+
+set_github_ssh_insteadof()
+{
+    local git_bin
+    git_bin="$(command -v git 2>/dev/null || true)"
+    [[ -n "$git_bin" && -x "$git_bin" ]] || die "git is required to clone init-files"
+
+    if [[ "$("$git_bin" config --global --get "url.${github_insteadof_to}.insteadof" 2>/dev/null || true)" == "$github_insteadof_from" ]]; then
+        log "OK       git url.${github_insteadof_to}.insteadOf -> ${github_insteadof_from}"
+    else
+        "$git_bin" config --global "url.${github_insteadof_to}.insteadOf" "$github_insteadof_from" \
+            || die "failed to set git insteadOf for GitHub SSH"
+        log "Set      git url.${github_insteadof_to}.insteadOf ${github_insteadof_from}"
+    fi
+}
+
+clear_github_ssh_insteadof()
+{
+    local git_bin existing
+    git_bin="$(command -v git 2>/dev/null || true)"
+    [[ -n "$git_bin" && -x "$git_bin" ]] || die "git is required to clone init-files"
+    existing=$("$git_bin" config --global --get "url.${github_insteadof_to}.insteadof" 2>/dev/null || true)
+    if [[ -n "$existing" ]]; then
+        "$git_bin" config --global --unset-all "url.${github_insteadof_to}.insteadOf" 2>/dev/null || true
+        log "Cleared  git https→ssh insteadOf (HTTPS mode)"
+    else
+        log "OK       no https→ssh insteadOf (HTTPS mode)"
+    fi
+}
+
+# Minimal cache_ssh: agent + ssh-add -t for one key (passphrase via /dev/tty when possible).
+cache_ssh_key()
+{
+    local key_path="$1"
+    local label="${2:-$key_path}"
+    local ssh_add_cmd ssh_agent_cmd ssh_keygen_cmd env_file agent_rc fingerprint key_loaded tty_dev agent_out
+
+    [[ -f "$key_path" ]] || return 1
+    require_openssh_client
+
+    ssh_add_cmd="$(command -v ssh-add)"
+    ssh_agent_cmd="$(command -v ssh-agent)"
+    ssh_keygen_cmd="$(command -v ssh-keygen 2>/dev/null || true)"
+    env_file="${HOME}/.ssh/environment"
+
+    agent_rc=0
+    if [[ -z "${SSH_AUTH_SOCK:-}" ]]; then
+        agent_rc=2
+    else
+        "$ssh_add_cmd" -l &>/dev/null || agent_rc=$?
+    fi
+
+    if [[ $agent_rc -eq 2 ]]; then
+        if [[ -f "$env_file" ]]; then
+            # shellcheck disable=SC1090
+            . "$env_file" >/dev/null || true
+            agent_rc=0
+            "$ssh_add_cmd" -l &>/dev/null || agent_rc=$?
+        fi
+    fi
+
+    if [[ $agent_rc -eq 2 ]]; then
+        log "Starting ssh-agent …"
+        agent_out="$("$ssh_agent_cmd" -s)" || die "failed to start ssh-agent"
+        # shellcheck disable=SC2086
+        eval "$agent_out" >/dev/null
+        {
+            printf 'SSH_AUTH_SOCK=%q; export SSH_AUTH_SOCK;\n' "${SSH_AUTH_SOCK:-}"
+            printf 'SSH_AGENT_PID=%q; export SSH_AGENT_PID;\n' "${SSH_AGENT_PID:-}"
+        } > "$env_file" 2>/dev/null || true
+        chmod 600 "$env_file" 2>/dev/null || true
+        agent_rc=0
+        "$ssh_add_cmd" -l &>/dev/null || agent_rc=$?
+    fi
+
+    # ssh-add -l: 0 = has keys, 1 = agent up but empty, 2 = no agent.
+    if [[ $agent_rc -eq 2 ]]; then
+        cat >&2 <<EOF
+ERROR: ssh-agent is not available (cannot connect via SSH_AUTH_SOCK=${SSH_AUTH_SOCK:-unset}).
+
+Install/fix OpenSSH client, then re-run:
+  $(openssh_client_install_hint)
+EOF
+        exit 1
+    fi
+
+    key_loaded=0
+    if [[ -n "$ssh_keygen_cmd" ]]; then
+        fingerprint=$("$ssh_keygen_cmd" -lf "$key_path" 2>/dev/null | awk '{print $2}')
+        if [[ -n "$fingerprint" ]] && "$ssh_add_cmd" -l 2>/dev/null | grep -qF "$fingerprint"; then
+            key_loaded=1
+        fi
+    fi
+
+    if [[ $key_loaded -eq 1 ]]; then
+        log "OK       SSH key already cached: $label"
+        return 0
+    fi
+
+    if ! tty_dev="$(bootstrap_tty)"; then
+        die "passphrase required but no TTY; run from a real terminal (not a non-interactive pipe without /dev/tty)"
+    fi
+
+    log "Caching SSH key: $label (timeout: $ssh_cache_timeout)"
+    log "         Enter the key passphrase when prompted."
+    if ! env -u DISPLAY -u SSH_ASKPASS SSH_ASKPASS_REQUIRE=never \
+        "$ssh_add_cmd" -t "$ssh_cache_timeout" "$key_path" <"$tty_dev"
+    then
+        die "ssh-add failed for $label (wrong passphrase, or agent issue)"
+    fi
+    log "OK       cached in ssh-agent: $label"
+}
+
+cache_house_key()
+{
+    cache_ssh_key "$house_key" "$house_key"
+}
+
+# Try ssh -T with one IdentityFile. Prints Hi-line on success. Sets github_key.
+try_github_ssh_identity()
+{
+    local key_path="$1"
+    local out
+    local -a ssh_opts
+
+    [[ -f "$key_path" ]] || return 1
+
+    ssh_opts=(
+        -o "User=git"
+        -o "IdentitiesOnly=yes"
+        -o "IdentityFile=${key_path}"
+        -o "PreferredAuthentications=publickey"
+        -o "PubkeyAuthentication=yes"
+        -o "BatchMode=yes"
+        -o "ConnectTimeout=15"
+    )
+    if [[ "$key_path" == "$house_key" ]]; then
+        ssh_opts+=(-o "$(github_ssh_rsa_sha2_opt)")
+    fi
+
+    out=$(ssh "${ssh_opts[@]}" -T git@github.com 2>&1) || true
+    if printf '%s\n' "$out" | grep -qiE 'successfully authenticated|Hi .+!'; then
+        github_key="$key_path"
+        log "OK       $out"
+        log "OK       GitHub SSH via ${key_path/#$HOME/~}"
+        return 0
+    fi
+    return 1
+}
+
+verify_github_ssh()
+{
+    local verbose_tail fp ssh_ver try_key
+    local -a verbose_opts
+
+    log "Checking  ssh -T git@github.com …"
+
+    # Prefer house key when present; else other preferred / generic key (FIPS / GitHub-only).
+    if [[ -f "$house_key" ]] && try_github_ssh_identity "$house_key"; then
+        write_github_ssh_snippet
+        return 0
+    fi
+    if [[ -f "$house_key" ]]; then
+        log "WARN     house key declined by GitHub; trying ${github_ed25519_key/#$HOME/~} …"
+    fi
+
+    if [[ -f "$github_ed25519_key" ]]; then
+        cache_ssh_key "$github_ed25519_key" "$github_ed25519_key" || true
+        if try_github_ssh_identity "$github_ed25519_key"; then
+            write_github_ssh_snippet
+            return 0
+        fi
+    fi
+
+    fp=
+    [[ -f "$house_key" ]] && fp=$(ssh-keygen -lf "$house_key" 2>/dev/null | awk '{print $1" "$2}' || true)
+    [[ -z "$fp" && -f "$github_ed25519_key" ]] \
+        && fp=$(ssh-keygen -lf "$github_ed25519_key" 2>/dev/null | awk '{print $1" "$2}' || true)
+    ssh_ver=$(ssh -V 2>&1 || true)
+    try_key="$house_key"
+    [[ -f "$try_key" ]] || try_key="$github_ed25519_key"
+    verbose_opts=(
+        -v -o BatchMode=yes -o User=git -o IdentitiesOnly=yes
+        -o "IdentityFile=${try_key}"
+    )
+    if [[ -f "$house_key" && "$try_key" == "$house_key" ]]; then
+        verbose_opts+=(-o "$(github_ssh_rsa_sha2_opt)")
+    fi
+    verbose_tail=$(ssh "${verbose_opts[@]}" -T git@github.com 2>&1 | tail -n 25 || true)
+
+    cat >&2 <<EOF
+
+ERROR: GitHub SSH auth failed.
+
+  house candidate: ${house_key} $([[ -f "$house_key" ]] && echo present || echo MISSING)
+  key fp:          ${fp:-unknown}
+  ssh:             ${ssh_ver:-unknown}
+  other candidate: ${github_ed25519_key} $([[ -f "$github_ed25519_key" ]] && echo present || echo MISSING)
+
+Prefer HTTPS:
+  bootstrap_host --github-https
+
+Or place a working IdentityFile under ~/.ssh (see private overlay config.github),
+cache it (cache_ssh / ssh-add), then re-run --github-ssh.
+
+ssh -v (tail):
+$verbose_tail
+EOF
+    return 1
+}
+
+# Drop a value from install_args (e.g. strip --github-ssh before adding --github-https).
+strip_install_arg()
+{
+    local want="$1"
+    local -a kept=()
+    local a
+    for a in "${install_args[@]+"${install_args[@]}"}"; do
+        [[ "$a" == "$want" ]] && continue
+        kept+=("$a")
+    done
+    install_args=("${kept[@]+"${kept[@]}"}")
+}
+
+# After GitHub SSH fails: switch this host to HTTPS when gh can authenticate.
+# Returns 0 on successful switch; 1 if HTTPS is not available.
+fallback_github_https_after_ssh_fail()
+{
+    local gh_bin
+
+    gh_bin="$(command -v gh 2>/dev/null || true)"
+    if [[ -z "$gh_bin" || ! -x "$gh_bin" ]] || ! "$gh_bin" auth status >/dev/null 2>&1; then
+        if [[ $quiet -eq 0 && -t 0 && -t 2 ]]; then
+            cat >&2 <<EOF
+
+GitHub SSH failed. Prefer HTTPS for cloning init-files when the repo is public
+(or when gh can authenticate). House hops still use the house key when present.
+EOF
+            if prompt_yn "Fall back to GitHub HTTPS via gh auth login? [Y/n]"; then
+                github_https=1
+                github_transport_explicit=1
+                strip_install_arg --github-ssh
+                install_args+=(--github-https)
+                setup_https_mode
+                log "OK       switched to GitHub HTTPS after SSH auth failure"
+                return 0
+            fi
+        fi
+        return 1
+    fi
+
+    log "WARN     GitHub SSH failed; gh is authenticated — falling back to HTTPS"
+    github_https=1
+    github_transport_explicit=1
+    strip_install_arg --github-ssh
+    install_args+=(--github-https)
+    clear_github_ssh_insteadof
+    # Remember HTTPS for this host (provision also writes the flag).
+    mkdir -p "$tools_dir" 2>/dev/null || true
+    printf '1\n' > "$init_files_github_https_flag" 2>/dev/null || true
+    rm -f "$init_files_github_ssh_flag" 2>/dev/null || true
+    log "OK       switched to GitHub HTTPS (remembered for ${init_files_host})"
+    return 0
+}
+
+# Copy house key (+ optional .pub) from a donor host in one SSH auth (one password).
+fetch_house_key_from_host()
+{
+    local src_host="$1"
+    local key_basename remote_script
+
+    [[ -n "$src_host" ]] || die "fetch_house_key_from_host: empty host"
+    require_openssh_client
+    resolve_bootstrap_ssh_keys
+
+    if declare -F init_files_house_key_basename > /dev/null 2>&1; then
+        key_basename="$(init_files_house_key_basename)"
+    else
+        key_basename="$(basename -- "${house_key:-id_ed25519_house}")"
+    fi
+    if [[ $quiet -eq 0 && -t 0 && -t 2 ]]; then
+        if ! prompt_yn "Fetch ~/.ssh/${key_basename} from ${src_host}? [Y/n]"; then
+            key_basename="$(prompt_line "House key basename on ${src_host}:")"
+        fi
+    fi
+    [[ -n "$key_basename" ]] || key_basename="id_ed25519_house"
+    if declare -F init_files_ssh_key_basename_ok > /dev/null 2>&1; then
+        if ! init_files_ssh_key_basename_ok "$key_basename"; then
+            die "unsafe house key basename: ${key_basename} (use a simple filename under ~/.ssh)"
+        fi
+    else
+        case "$key_basename" in
+            */*|*" "*|*$'\n'*) die "unsafe house key basename: ${key_basename}" ;;
+        esac
+    fi
+    house_key="${HOME}/.ssh/${key_basename}"
+    house_pub="${house_key}.pub"
+    if declare -F init_files_remember_house_key_basename > /dev/null 2>&1; then
+        init_files_remember_house_key_basename "$key_basename" || true
+    fi
+
+    mkdir -p "$ssh_dir" || die "cannot create $ssh_dir"
+    chmod 700 "$ssh_dir" || true
+
+    if [[ -f "$house_key" && $force -eq 0 ]]; then
+        log "OK       house key already present; skip fetch from ${src_host} (use -f to overwrite)"
+        return 0
+    fi
+
+    log "Fetching house key from ${src_host} (single SSH login) …"
+    log "         remote path: ~/.ssh/${key_basename}"
+
+    # One ssh connection: stream key (+ pub if present) as a tar to avoid two scp passwords.
+    # key_basename is validated above (safe filename charset) before interpolation.
+    remote_script=$(cat <<EOF
+set -e
+cd "\${HOME}/.ssh" || exit 1
+test -f ${key_basename} || { echo "missing ~/.ssh/${key_basename} on remote" >&2; exit 1; }
+if test -f ${key_basename}.pub; then
+  tar cf - ${key_basename} ${key_basename}.pub
+else
+  tar cf - ${key_basename}
+fi
+EOF
+)
+    # shellcheck disable=SC2029
+    if ! ssh -o ControlMaster=no "$src_host" "$remote_script" | tar -C "$ssh_dir" -xf -; then
+        die "failed to fetch house key from ${src_host}. Check SSH access / basename, then retry."
+    fi
+    [[ -f "$house_key" ]] || die "fetch produced no $house_key"
+    chmod 600 "$house_key" || true
+    if [[ -f "$house_pub" ]]; then
+        chmod 644 "$house_pub" || true
+        log "OK       fetched key + pubkey from ${src_host}"
+    else
+        log "OK       fetched private key from ${src_host} (no pubkey on remote)"
+    fi
+}
+
+setup_ssh_mode()
+{
+    resolve_bootstrap_ssh_keys
+    # House key may already have been fetched in main (--key-from).
+    if [[ -n "$key_from_host" && ! -f "$house_key" ]]; then
+        fetch_house_key_from_host "$key_from_host"
+        resolve_bootstrap_ssh_keys
+    fi
+
+    if [[ $quiet -eq 0 && -t 0 && -t 2 ]]; then
+        bootstrap_source_github_lib
+        guided_setup_github_ssh
+        return 0
+    fi
+
+    mkdir -p "$ssh_dir"
+    chmod 700 "$ssh_dir" || true
+
+    if [[ -f "$house_key" ]]; then
+        chmod 600 "$house_key" || true
+        if [[ -f "$house_pub" ]]; then
+            chmod 644 "$house_pub" || true
+        fi
+        log "OK       house key present (${house_key/#$HOME/~})"
+    elif [[ -f "$github_ed25519_key" ]]; then
+        chmod 600 "$github_ed25519_key" || true
+        log "OK       GitHub SSH key present (${github_ed25519_key/#$HOME/~}); no house key on this host"
+    else
+        cat >&2 <<EOF
+ERROR: no GitHub SSH key on this host.
+
+Need a key at one of:
+  $house_key
+  $github_ed25519_key
+(or IdentityFiles from the private config overlay)
+
+Prefer HTTPS instead:
+  bootstrap_host --github-https    # runs gh auth login if needed
+
+House key (for house hops; does not require GitHub SSH):
+  bootstrap_host --key-from user@host --github-https
+EOF
+        exit 1
+    fi
+
+    require_cmd git
+    require_cmd ssh
+    ensure_ssh_config_include
+    write_github_ssh_snippet
+    set_github_ssh_insteadof
+    ensure_github_known_hosts
+    if [[ -f "$house_key" ]]; then
+        cache_house_key
+    elif [[ -f "$github_ed25519_key" ]]; then
+        cache_ssh_key "$github_ed25519_key" "$github_ed25519_key"
+    fi
+    if ! verify_github_ssh; then
+        if fallback_github_https_after_ssh_fail; then
+            return 0
+        fi
+        die "GitHub SSH auth failed and HTTPS fallback unavailable (install/login gh, or use --github-https)"
+    fi
+}
+
+setup_https_mode()
+{
+    require_cmd git
+    clear_github_ssh_insteadof
+
+    if [[ $quiet -eq 0 && -t 0 && -t 2 ]]; then
+        bootstrap_source_github_lib
+        bootstrap_guided_github_https || die "GitHub HTTPS setup incomplete"
+    else
+        ensure_gh_authenticated
+    fi
+
+    # Ensure install receives --github-https even when preference was remembered.
+    if [[ $github_transport_explicit -eq 0 ]]; then
+        install_args+=(--github-https)
+    fi
+
+    # House key is optional in HTTPS mode but useful for cssh / house hops.
+    if [[ -f "$house_key" ]]; then
+        chmod 600 "$house_key" || true
+        ensure_ssh_config_include
+        if [[ $quiet -eq 0 ]]; then
+            log "OK       house key present for house hops (${house_key/#$HOME/~})"
+        fi
+        # Cache when interactive so cssh works immediately after bootstrap.
+        if [[ -t 0 && -t 2 ]]; then
+            cache_house_key || true
+        fi
+    elif [[ -n "$key_from_host" ]]; then
+        log "WARN     --key-from was set but house key missing after fetch"
+    fi
+}
+
+clone_repo_if_needed()
+{
+    require_cmd git
+    if [[ -d "$clone_dir/.git" ]]; then
+        log "OK       clone already present: $clone_dir"
+        return 0
+    fi
+
+    if [[ -e "$clone_dir" ]] && [[ ! -d "$clone_dir/.git" ]]; then
+        die "$clone_dir exists but is not a git clone; move it aside and re-run"
+    fi
+
+    mkdir -p "$(dirname "$clone_dir")" || die "cannot create $(dirname "$clone_dir")"
+    log "Cloning  $repo_https -> $clone_dir"
+    # Force the same GitHub SSH identity as verify (do not rely on Include alone).
+    if [[ $github_https -eq 0 ]]; then
+        local id="${github_key:-$github_ed25519_key}"
+        [[ -f "$id" ]] || id="$house_key"
+        if [[ "$id" == "$house_key" ]]; then
+            GIT_SSH_COMMAND="ssh -o User=git -o IdentitiesOnly=yes -o IdentityFile=${id} -o $(github_ssh_rsa_sha2_opt)" \
+                git clone "$repo_https" "$clone_dir" || die "git clone failed"
+        else
+            GIT_SSH_COMMAND="ssh -o User=git -o IdentitiesOnly=yes -o IdentityFile=${id}" \
+                git clone "$repo_https" "$clone_dir" || die "git clone failed"
+        fi
+    else
+        git clone "$repo_https" "$clone_dir" || die "git clone failed"
+    fi
+}
+
+run_install()
+{
+    local install_bin="${clone_dir}/provision_init_files"
+    [[ -x "$install_bin" ]] || die "missing executable $install_bin"
+
+    log "Running  $install_bin ${install_args[*]:-}"
+    # shellcheck disable=SC2086
+    "$install_bin" ${install_args[@]+"${install_args[@]}"}
+}
+
+print_verify_summary()
+{
+    local head_sha tools_file link_target instead
+
+    printf '\n=== bootstrap_host verify (%s) ===\n' "$init_files_host"
+
+    if [[ -L "${HOME}/.bashrc" ]]; then
+        link_target=$(readlink "${HOME}/.bashrc" 2>/dev/null || true)
+        printf 'bashrc:   %s -> %s\n' "${HOME}/.bashrc" "$link_target"
+        if [[ "$link_target" == "${clone_dir}/bashrc" ]]; then
+            printf '          OK (symlink into clone)\n'
+        else
+            printf '          WARN (expected %s/bashrc)\n' "$clone_dir"
+        fi
+    else
+        printf 'bashrc:   WARN ~/.bashrc is not a symlink\n'
+    fi
+
+    if [[ -d "$clone_dir/.git" ]]; then
+        head_sha=$(git -C "$clone_dir" rev-parse --short HEAD 2>/dev/null || echo '?')
+        printf 'HEAD:     %s\n' "$head_sha"
+    else
+        printf 'HEAD:     missing clone\n'
+    fi
+
+    if [[ -f "${tools_dir}/tools.${init_files_host}" ]]; then
+        tools_file="${tools_dir}/tools.${init_files_host}"
+    elif [[ -f "${tools_dir}/tools" ]]; then
+        tools_file="${tools_dir}/tools"
+    else
+        tools_file=
+    fi
+    if [[ -n "$tools_file" ]]; then
+        printf 'tools:    %s\n' "$tools_file"
+    else
+        printf 'tools:    WARN missing tools file under %s\n' "$tools_dir"
+    fi
+
+    if [[ $github_https -eq 1 ]]; then
+        printf 'GitHub:   HTTPS mode\n'
+        if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+            printf '          gh auth: OK\n'
+        else
+            printf '          gh auth: not logged in (may need credentials)\n'
+        fi
+    else
+        instead=$(git config --global --get "url.${github_insteadof_to}.insteadof" 2>/dev/null || true)
+        printf 'GitHub:   SSH mode (insteadOf=%s)\n' "${instead:-unset}"
+        if ssh -o BatchMode=yes -o ConnectTimeout=10 -T git@github.com 2>&1 | grep -qiE 'successfully authenticated|Hi .+!'; then
+            printf '          ssh -T: OK\n'
+        else
+            printf '          ssh -T: FAIL (run: cache_ssh && ssh -T git@github.com)\n'
+        fi
+    fi
+
+    printf '\nNext: source ~/.bashrc   (or open a new shell)\n'
+    if [[ $no_dev -eq 0 ]]; then
+        printf 'Optional: check_tool_versions\n'
+    fi
+
+    if [[ "${OSTYPE:-}" == darwin* ]]; then
+        printf '\nmacOS: curated iTerm2 prefs are merged by provision_init_files.\n'
+        printf '  Quit and reopen iTerm2 (Cmd-Q) to pick up fonts/colors.\n'
+        printf '  Re-apply later: refresh_iterm_settings\n'
+
+        # Tip when UserShell is not preferred Homebrew Cellar bash.
+        preferred=
+        tools_file=
+        if [[ -f "${tools_dir}/tools.${init_files_host}" ]]; then
+            tools_file="${tools_dir}/tools.${init_files_host}"
+        elif [[ -f "${tools_dir}/tools" ]]; then
+            tools_file="${tools_dir}/tools"
+        fi
+        if [[ -n "$tools_file" ]]; then
+            preferred=$(awk -F= '/^init_tool_bash=/ { print substr($0, index($0,"=")+1); exit }' "$tools_file")
+        fi
+        if [[ -n "$preferred" && -x "$preferred" ]]; then
+            cellar=
+            if command -v python3 >/dev/null 2>&1; then
+                cellar=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$preferred" 2>/dev/null || true)
+            fi
+            [[ -n "$cellar" ]] || cellar="$preferred"
+            current_shell=
+            if command -v dscl >/dev/null 2>&1; then
+                current_shell=$(dscl . -read "/Users/$(id -un)" UserShell 2>/dev/null | awk '{ print $2; exit }' || true)
+            fi
+            [[ -n "$current_shell" ]] || current_shell="${SHELL:-}"
+            same=0
+            if [[ -n "$current_shell" && -e "$current_shell" && -e "$cellar" ]]; then
+                if command -v python3 >/dev/null 2>&1; then
+                    python3 -c 'import os,sys; raise SystemExit(0 if os.path.samefile(sys.argv[1], sys.argv[2]) else 1)' \
+                        "$current_shell" "$cellar" 2>/dev/null && same=1
+                elif [[ "$current_shell" == "$cellar" ]]; then
+                    same=1
+                fi
+            fi
+            if [[ $same -eq 0 ]]; then
+                cat <<EOF
+
+To use Homebrew bash as your login shell:
+  1. grep -qxF $cellar /etc/shells || echo $cellar | sudo tee -a /etc/shells
+  2. chsh -s $cellar
+  3. Quit and reopen the terminal
+(If chsh rejects Full Name, remove commas from that field / System Settings, then retry.)
+EOF
+            fi
+        fi
+    fi
+}
+
+# --- main --------------------------------------------------------------------
+
+printf 'bootstrap_host (%s) starting on %s…\n' \
+    "key-from-independent-2026-08-06" "${init_files_host}"
+
+resolve_bootstrap_ssh_keys
+
+# House key fetch is independent of GitHub transport (HTTPS vs SSH).
+if [[ -n "$key_from_host" ]]; then
+    fetch_house_key_from_host "$key_from_host"
+    resolve_bootstrap_ssh_keys
+fi
+
+choose_github_transport
+
+if [[ $github_https -eq 1 ]]; then
+    log "Mode:    HTTPS GitHub on ${init_files_host}"
+    setup_https_mode
+else
+    log "Mode:    SSH GitHub on ${init_files_host}"
+    setup_ssh_mode
+fi
+
+clone_repo_if_needed
+if [[ -f "${clone_dir}/lib/config_paths" ]]; then
+    # shellcheck disable=SC1091
+    . "${clone_dir}/lib/config_paths"
+    if declare -F init_files_ensure_private_config_repo > /dev/null 2>&1; then
+        init_files_ensure_private_config_repo "$(( quiet == 0 ))" || true
+    fi
+fi
+if [[ $github_https -eq 1 && $quiet -eq 0 && -t 0 && -t 2 ]]; then
+    bootstrap_source_github_lib 2>/dev/null || true
+    if declare -F bootstrap_offer_node_toolchain > /dev/null 2>&1; then
+        bootstrap_offer_node_toolchain "$clone_dir"
+    fi
+fi
+run_install
+print_verify_summary

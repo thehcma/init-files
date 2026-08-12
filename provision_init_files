@@ -1,0 +1,2616 @@
+#!/usr/bin/env bash
+# Provision init-files on this host: tools paths, bashrc/vimrc symlinks, SSH materials.
+set -euo pipefail
+
+repo_dir="$(cd "$(dirname "$0")" && pwd)"
+src="$repo_dir/bashrc"
+dest="${HOME}/.bashrc"
+tools_dir="${XDG_CONFIG_HOME:-$HOME/.config}/init-files"
+force=0
+quiet=0
+no_dev=0
+dev_mode_explicit=0
+github_https=0
+github_transport_explicit=0
+skip_iterm=0
+init_files_state_dir="${init_files_state_dir:-${XDG_STATE_HOME:-$HOME/.local/state}/init-files}"
+init_files_repo_https="${init_files_repo_https:-https://github.com/thehcma/init-files.git}"
+init_files_repo_ssh="${init_files_repo_ssh:-git@github.com:thehcma/init-files.git}"
+
+# Script error helpers (die/warn/log). Not for sourced bashrc.
+if [[ ! -f "${repo_dir}/lib/error" ]]; then
+    echo "ERROR: missing ${repo_dir}/lib/error (clone incomplete?)" >&2
+    exit 1
+fi
+# shellcheck disable=SC1091
+. "${repo_dir}/lib/error"
+
+# Private config overlay (URL prompted / INIT_FILES_CONFIG_REPO; not hardcoded).
+# shellcheck disable=SC1091
+. "${repo_dir}/lib/config_paths"
+
+# Hostname-scoped paths so NFS-shared homes (multiple short hostnames) can differ.
+# Same host key as PS1 / bashrc: macOS ComputerName (not Bonjour LocalHostName).
+_init_files_raw_host_label()
+{
+    local scutil_bin name
+    if [[ "${OSTYPE:-}" == darwin* ]]; then
+        scutil_bin="$(command -v scutil 2>/dev/null || true)"
+        [[ -n "$scutil_bin" ]] || scutil_bin=/usr/sbin/scutil
+        if [[ -x "$scutil_bin" ]]; then
+            name="$("$scutil_bin" --get ComputerName 2>/dev/null || true)"
+            if [[ -n "$name" ]]; then
+                printf '%s\n' "$name"
+                return 0
+            fi
+        fi
+    fi
+    hostname -s 2>/dev/null || hostname 2>/dev/null || echo host
+}
+
+_init_files_sanitize_host()
+{
+    local host="${1:-}"
+    host="${host%%.*}"
+    host="${host//[^A-Za-z0-9._-]/_}"
+    [[ -n "$host" ]] || host="unknown-host"
+    printf '%s\n' "$host"
+}
+
+init_files_host="$(_init_files_sanitize_host "$(_init_files_raw_host_label)")"
+
+# When Bonjour LocalHostName differs (e.g. hostname-3 vs ComputerName),
+# rename preference/tools files onto the ComputerName key so prefs are not orphaned.
+# Also migrate hostname -s / -f scoped leftovers when they differ from init_files_host.
+# Call after log() is defined.
+_init_files_migrate_bonjour_scoped_files()
+{
+    local scutil_bin local_raw local_host prefix src dest tag
+    local -a legacy_hosts=()
+
+    mkdir -p "$tools_dir" 2>/dev/null || true
+
+    if [[ "${OSTYPE:-}" == darwin* ]]; then
+        scutil_bin="$(command -v scutil 2>/dev/null || true)"
+        [[ -n "$scutil_bin" ]] || scutil_bin=/usr/sbin/scutil
+        if [[ -x "$scutil_bin" ]]; then
+            local_raw="$("$scutil_bin" --get LocalHostName 2>/dev/null || true)"
+            if [[ -n "$local_raw" ]]; then
+                local_host="$(_init_files_sanitize_host "$local_raw")"
+                [[ "$local_host" != "$init_files_host" ]] && legacy_hosts+=("$local_host")
+            fi
+        fi
+    fi
+
+    tag="$(_init_files_sanitize_host "$(hostname -s 2>/dev/null || true)")"
+    [[ -n "$tag" && "$tag" != "$init_files_host" ]] && legacy_hosts+=("$tag")
+    tag="$(_init_files_sanitize_host "$(hostname -f 2>/dev/null || true)")"
+    [[ -n "$tag" && "$tag" != "$init_files_host" ]] && legacy_hosts+=("$tag")
+
+    for local_host in "${legacy_hosts[@]}"; do
+        for prefix in no-dev github-https github-ssh fancy-prompt tools; do
+            src="$tools_dir/${prefix}.${local_host}"
+            dest="$tools_dir/${prefix}.${init_files_host}"
+            if [[ -e "$src" && ! -e "$dest" ]]; then
+                mv "$src" "$dest" 2>/dev/null || true
+                if [[ -e "$dest" ]]; then
+                    log "Migrated ${prefix}.${local_host} -> ${prefix}.${init_files_host}"
+                fi
+            fi
+        done
+    done
+}
+
+# Move ~/.local/opt/pipx/<legacy-hostname> onto init_files_host when needed.
+_init_files_migrate_pipx_layout()
+{
+    local canonical src tag
+    local -a legacy_tags=()
+
+    canonical="${HOME}/.local/opt/pipx/${init_files_host}"
+    [[ -x "$canonical/current/bin/pipx" ]] && return 0
+
+    legacy_tags+=("$(hostname -f 2>/dev/null || true)")
+    legacy_tags+=("$(hostname -s 2>/dev/null || true)")
+    if [[ "${OSTYPE:-}" == darwin* ]]; then
+        legacy_tags+=("$(scutil --get LocalHostName 2>/dev/null || true)")
+    fi
+
+    for tag in "${legacy_tags[@]}"; do
+        [[ -n "$tag" ]] || continue
+        tag="${tag//[^[:alnum:]._-]/-}"
+        src="${HOME}/.local/opt/pipx/${tag}"
+        [[ "$src" != "$canonical" ]] || continue
+        [[ -x "$src/current/bin/pipx" ]] || continue
+        mkdir -p "${HOME}/.local/opt/pipx" || return 0
+        [[ -e "$canonical" ]] && return 0
+        if mv "$src" "$canonical" 2>/dev/null; then
+            log "Migrated pipx ${tag} -> ${init_files_host}"
+            return 0
+        fi
+    done
+    return 0
+}
+
+# Rebake pipx host wrapper if it still expands $init_tool_python3.
+_init_files_rewrite_stale_pipx_wrapper()
+{
+    local py wrapper tools_py
+
+    wrapper="${HOME}/.local/opt/pipx/${init_files_host}/current/bin/pipx"
+    [[ -f "$wrapper" ]] || return 0
+    grep -qE '\$\{?init_tool_python3\}?' "$wrapper" 2>/dev/null || return 0
+
+    tools_py=
+    if [[ -f "$tools_file" ]]; then
+        # shellcheck disable=SC1090
+        tools_py="$(grep -E '^init_tool_python3=' "$tools_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d \"\' || true)"
+    fi
+    py="${tools_py:-}"
+    [[ -n "$py" && -x "$py" ]] || py="$(command -v python3 2>/dev/null || true)"
+    [[ -n "$py" && -x "$py" ]] || {
+        log "WARN     stale pipx wrapper at $wrapper but no python3 to rebake; run update_pipx after fixing python"
+        return 0
+    }
+
+    cat > "$wrapper" <<EOF || return 0
+#!/usr/bin/env bash
+set -e
+
+script_dir="\$(cd -- "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
+site_dir="\${script_dir%/bin}/site"
+
+export PYTHONPATH="\${site_dir}\${PYTHONPATH:+:\$PYTHONPATH}"
+export PIPX_HOME="\$HOME/.local/share/pipx"
+export PIPX_BIN_DIR="\$HOME/.local/bin"
+
+exec env -u PIP_PREFIX $(printf '%q' "$py") -m pipx "\$@"
+EOF
+    chmod 775 "$wrapper" || true
+    log "Rewrote stale pipx wrapper -> $wrapper"
+}
+
+usage()
+{
+    cat <<'EOF'
+Usage: provision_init_files [-f|--force] [-q|--quiet] [--no-dev|--dev]
+               [--github-https|--github-ssh] [-h|--help]
+
+  Checks for tools the bashrc uses, writes absolute paths to
+  ~/.config/init-files/tools.<hostname>, symlinks ~/.bashrc to this repo's
+  bashrc, and installs house + GitHub SSH materials from the private
+  config overlay (~/.local/share/config/.ssh/) when present (authorized_keys
+  merge, config.d snippets, git insteadOf rewrite unless this host prefers
+  HTTPS).
+
+  Homebrew paths are used only on modern macOS (26+ / Darwin 25+).
+  On older macOS, brew is not recommended (unsupported formulae /
+  multi-hour from-source builds) even if brew is installed.
+
+  On modern macOS with a TTY (and without -q/--force), when required
+  or optional tools are missing and have brew install hints, provision
+  offers to install Homebrew (if needed), then required packages,
+  then optional packages (two separate Y/n prompts). Formulae and
+  casks are never mixed in one brew command; packages install one at
+  a time so a single failure does not abort the rest. Required on
+  modern macOS includes Homebrew bash and bash-completion@2 (Apple
+  /bin/bash does not satisfy the bash requirement). Non-admin accounts
+  get a cut-and-paste block for an admin instead of running brew.
+
+  -f, --force   continue even if required tools are missing
+  -q, --quiet   less status output (skips brew Y/n offers)
+  --no-dev      do not require development tools (git, python3, make,
+                patch, gdb, colordiff); still resolve
+                them when present. Core shell tools (ssh, curl, vim,
+                gpg, cmp) remain required. Remembers THIS host as
+                non-dev (~/.config/init-files/no-dev.<hostname>) so
+                NFS-shared homes can mix dev and non-dev boxes.
+  --dev         require development tools again (clears this host's
+                saved non-dev preference)
+  --github-https
+                use HTTPS for GitHub git (no SSH insteadOf). Remembers
+                THIS host (~/.config/init-files/github-https.<hostname>).
+                Also the default when gh is authenticated and SSH was not
+                explicitly preferred (github-ssh.<hostname>).
+  --github-ssh  use SSH for GitHub (insteadOf https→ssh). Remembers THIS
+                host (~/.config/init-files/github-ssh.<hostname>) so gh
+                auth does not auto-switch back to HTTPS.
+  --no-iterm    on macOS, skip merging curated iTerm2 prefs (default: merge
+                when not -q).
+  --iterm       merge curated iTerm2 prefs on macOS (default when not -q;
+                kept for compatibility).
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -f|--force) force=1; shift ;;
+        -q|--quiet) quiet=1; shift ;;
+        --no-dev) no_dev=1; dev_mode_explicit=1; shift ;;
+        --dev) no_dev=0; dev_mode_explicit=1; shift ;;
+        --github-https) github_https=1; github_transport_explicit=1; shift ;;
+        --github-ssh) github_https=0; github_transport_explicit=1; shift ;;
+        --no-iterm) skip_iterm=1; shift ;;
+        --iterm) skip_iterm=0; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *)
+            usage >&2
+            init_files_die "unknown option: $1"
+            ;;
+    esac
+done
+
+log()
+{
+    init_files_log_quiet=$quiet
+    init_files_log "$@"
+}
+
+# Migrate Bonjour-scoped prefs onto ComputerName, then resolve tools/flag paths.
+_init_files_migrate_bonjour_scoped_files
+
+# Prefer host-scoped tools; fall back to legacy unscoped names.
+if [[ -n "${init_files_tools_file:-${INIT_FILES_TOOLS_FILE:-}}" ]]; then
+    tools_file="${init_files_tools_file:-$INIT_FILES_TOOLS_FILE}"
+elif [[ -f "$tools_dir/tools.${init_files_host}" ]]; then
+    tools_file="$tools_dir/tools.${init_files_host}"
+elif [[ -f "$tools_dir/tools" ]]; then
+    tools_file="$tools_dir/tools"
+elif [[ -f "$tools_dir/tools.sh" ]]; then
+    tools_file="$tools_dir/tools.sh"
+else
+    tools_file="$tools_dir/tools.${init_files_host}"
+fi
+
+# Remembered --no-dev is per hostname (NFS-safe).
+init_files_no_dev_flag="${init_files_no_dev_flag:-$tools_dir/no-dev.${init_files_host}}"
+init_files_no_dev_flag_unscoped="${tools_dir}/no-dev"
+init_files_no_dev_flag_legacy="${init_files_state_dir}/no-dev"
+# Remembered GitHub transport (NFS-safe). Prefer HTTPS when gh is logged in
+# unless github-ssh.<host> opts out. HTTPS uses `gh auth git-credential`
+# (not osxkeychain). Note: insteadOf lives in ~/.gitconfig (shared on NFS) —
+# last host to run install/apply wins for that rewrite; flags stay per-host.
+init_files_github_https_flag="${init_files_github_https_flag:-$tools_dir/github-https.${init_files_host}}"
+init_files_github_ssh_flag="${init_files_github_ssh_flag:-$tools_dir/github-ssh.${init_files_host}}"
+
+# Honor a previously saved --no-dev preference when neither --dev nor --no-dev
+# was passed. Prefer hostname-scoped flag (NFS-safe); migrate legacy unscoped
+# / state flags onto this host only.
+if [[ $dev_mode_explicit -eq 0 ]]; then
+    if [[ ! -f "$init_files_no_dev_flag" ]]; then
+        mkdir -p "$tools_dir" 2>/dev/null || true
+        if [[ -f "$init_files_no_dev_flag_unscoped" ]]; then
+            cp "$init_files_no_dev_flag_unscoped" "$init_files_no_dev_flag" 2>/dev/null || true
+            # Drop unscoped so another NFS host is not forced into no-dev.
+            rm -f "$init_files_no_dev_flag_unscoped" 2>/dev/null || true
+            log "Migrated unscoped no-dev -> ${init_files_no_dev_flag/#$HOME/~}"
+        elif [[ -f "$init_files_no_dev_flag_legacy" ]]; then
+            mv "$init_files_no_dev_flag_legacy" "$init_files_no_dev_flag" 2>/dev/null \
+                || cp "$init_files_no_dev_flag_legacy" "$init_files_no_dev_flag" 2>/dev/null \
+                || true
+            rm -f "$init_files_no_dev_flag_legacy" 2>/dev/null || true
+            log "Migrated legacy no-dev -> ${init_files_no_dev_flag/#$HOME/~}"
+        fi
+    fi
+    if [[ -f "$init_files_no_dev_flag" ]]; then
+        no_dev=1
+    fi
+fi
+
+# Transport when neither --github-https nor --github-ssh was passed:
+# remembered HTTPS, else remembered SSH opt-out, else gh auth → HTTPS.
+if [[ $github_transport_explicit -eq 0 ]]; then
+    if [[ -f "$init_files_github_https_flag" ]]; then
+        github_https=1
+    elif [[ -f "$init_files_github_ssh_flag" ]]; then
+        github_https=0
+    else
+        gh_bin="$(command -v gh 2>/dev/null || true)"
+        if [[ -n "$gh_bin" && -x "$gh_bin" ]] && "$gh_bin" auth status >/dev/null 2>&1; then
+            github_https=1
+            log "GitHub: gh authenticated — preferring HTTPS on ${init_files_host}"
+        fi
+    fi
+fi
+
+persist_no_dev_preference()
+{
+    mkdir -p "$tools_dir" || return 0
+    if [[ $no_dev -eq 1 ]]; then
+        printf '1\n' > "$init_files_no_dev_flag" || true
+        # Do not remove another host's scoped flag; only clear unscoped/legacy.
+        rm -f "$init_files_no_dev_flag_unscoped" "$init_files_no_dev_flag_legacy" 2>/dev/null || true
+        log "Mode: --no-dev (remembered for host ${init_files_host} in ${init_files_no_dev_flag/#$HOME/~})"
+    else
+        if [[ -f "$init_files_no_dev_flag" || -f "$init_files_no_dev_flag_unscoped" || -f "$init_files_no_dev_flag_legacy" ]]; then
+            rm -f "$init_files_no_dev_flag" "$init_files_no_dev_flag_unscoped" "$init_files_no_dev_flag_legacy" || true
+            log "Mode: full provision (cleared --no-dev preference for host ${init_files_host})"
+        fi
+    fi
+}
+
+persist_github_transport_preference()
+{
+    mkdir -p "$tools_dir" || return 0
+    if [[ $github_https -eq 1 ]]; then
+        printf '1\n' > "$init_files_github_https_flag" || true
+        rm -f "$init_files_github_ssh_flag" 2>/dev/null || true
+        log "GitHub: HTTPS (remembered for host ${init_files_host} in ${init_files_github_https_flag/#$HOME/~})"
+    elif [[ $github_transport_explicit -eq 1 ]]; then
+        # Explicit --github-ssh: remember opt-out so gh auth does not flip back.
+        rm -f "$init_files_github_https_flag" 2>/dev/null || true
+        printf '1\n' > "$init_files_github_ssh_flag" || true
+        log "GitHub: SSH (remembered for host ${init_files_host} in ${init_files_github_ssh_flag/#$HOME/~})"
+    else
+        # Default SSH with no gh auth — leave any ssh opt-out alone; clear https.
+        if [[ -f "$init_files_github_https_flag" ]]; then
+            rm -f "$init_files_github_https_flag" || true
+            log "GitHub: SSH (cleared github-https preference for host ${init_files_host})"
+        else
+            log "GitHub: SSH (insteadOf https→ssh)"
+        fi
+    fi
+}
+
+persist_no_dev_preference
+persist_github_transport_preference
+
+is_darwin()
+{
+    [[ "${OSTYPE:-}" == darwin* ]]
+}
+
+# macOS 26+ (Darwin 25+): the only macOS tier where Homebrew is supported.
+is_modern_macos()
+{
+    local major
+    is_darwin || return 1
+    # Robust way to get macOS version: fallback to safer defaults
+    major="$(uname -r 2>/dev/null || echo "0")"
+    if [[ -n "$major" && "$major" != *[!0-9.]* ]]; then
+        # Remove any non-numeric parts and take first number
+        major="${major%%.*}"
+        [[ "$major" =~ ^[0-9]+$ ]] || return 1
+        (( major >= 25 ))
+    else
+        # Log warning for unexpected uname output, but fail gracefully
+        # This prevents crashes on edge case systems while maintaining security
+        log "WARNING: Unexpected uname -r output: '$major' (failing gracefully as non-modern macOS)"
+        return 1
+    fi
+}
+
+# Shared absolute-path verification (same rules as bashrc). Clean break: no
+# legacy wrappers — call init_files_* from lib/tool_path only.
+[[ -f "${repo_dir}/lib/tool_path" ]] \
+    || init_files_die "missing ${repo_dir}/lib/tool_path (clone incomplete?)"
+# repo_dir is resolved from this script at runtime.
+# shellcheck disable=SC1091
+. "${repo_dir}/lib/tool_path"
+[[ -f "${repo_dir}/lib/host_paths" ]] \
+    || init_files_die "missing ${repo_dir}/lib/host_paths (clone incomplete?)"
+# shellcheck disable=SC1091
+. "${repo_dir}/lib/host_paths"
+
+# Thin alias — discovery lives in lib/host_paths.
+homebrew_prefix()
+{
+    init_files_homebrew_prefix
+}
+
+resolve_tool()
+{
+    local candidate
+    for candidate in "$@"; do
+        [[ -n "$candidate" ]] || continue
+        if init_files_verify_tool_path "$candidate"; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+resolve_from_path()
+{
+    local name="$1"
+    local path
+    path="$(command -v "$name" 2>/dev/null || true)"
+    # Ignore shell aliases/functions; only absolute filesystem paths count.
+    [[ -n "$path" && "$path" == /* ]] || return 1
+
+    if init_files_verify_tool_path "$path"; then
+        printf '%s\n' "$path"
+        return 0
+    fi
+    return 1
+}
+
+brew_prefix=""
+if is_modern_macos; then
+    brew_prefix="$(homebrew_prefix || true)"
+fi
+
+# Bump when the record_tool set changes so refresh_init_files can detect drift.
+# Keep in sync with INIT_FILES_TOOLS_REVISION in bashrc.
+INIT_FILES_TOOLS_REVISION=10
+
+declare -a REQUIRED_MISSING=()
+declare -a OPTIONAL_MISSING=()
+declare -a TOOL_EXPORTS=()
+
+# Development tools: required by default; optional with --no-dev.
+is_dev_tool()
+{
+    case "$1" in
+        git|python3|make|patch|gdb|colordiff) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# record_tool NAME REQUIRED hint candidates...
+# REQUIRED is "required" or "optional". With --no-dev, known dev tools
+# are forced to optional so minimal hosts can still install bashrc.
+#
+# Why candidate lists differ by OS: modern macOS may record Homebrew absolutes;
+# older macOS (Darwin < 25) rejects brew via lib/tool_path; Linux uses distro
+# paths. Layout probes live in lib/host_paths. See AGENTS.md platform isolation
+# and .cursor/rules/tool-path-consistency.mdc — do not merge OS tiers into one
+# ungated PATH heuristic.
+record_tool()
+{
+    local name="$1"
+    local required="$2"
+    local hint="$3"
+    shift 3
+    local path="" var
+
+    if [[ $no_dev -eq 1 ]] && is_dev_tool "$name" && [[ "$required" == "required" ]]; then
+        required="optional"
+    fi
+
+    path="$(resolve_tool "$@" || true)"
+    if [[ -z "$path" ]]; then
+        path="$(resolve_from_path "$name" || true)"
+    fi
+
+    # Modern macOS: Homebrew bash is mandatory. Reject Apple /bin/bash (and any
+    # non-brew bash from PATH) so provision offers `brew install bash`.
+    if [[ "$name" == "bash" ]] && is_modern_macos && [[ -n "$path" ]]; then
+        case "$path" in
+            */Cellar/bash/*|*/opt/bash/*)
+                ;;
+            *)
+                if [[ -z "$brew_prefix" || "$path" != "$brew_prefix"/* ]]; then
+                    path=""
+                fi
+                ;;
+        esac
+    fi
+
+    # Final gate: never record a path that is not present/executable on this host.
+    if [[ -n "$path" ]] && ! init_files_verify_tool_path "$path"; then
+        log "  REJECT   ${name} -> ${path} (not an executable file on this host)"
+        path=""
+    fi
+
+    var="init_tool_$(printf '%s' "$name" | tr '[:upper:]-' '[:lower:]_')"
+
+    if [[ -n "$path" ]]; then
+        TOOL_EXPORTS+=("${var}=${path}")
+        log "  OK       ${name} -> ${path}"
+    else
+        TOOL_EXPORTS+=("${var}=")
+        if [[ "$required" == "required" ]]; then
+            REQUIRED_MISSING+=("$name|$hint")
+            log "  MISSING  ${name} (required) — ${hint}"
+        else
+            OPTIONAL_MISSING+=("$name|$hint")
+            if [[ $no_dev -eq 1 ]] && is_dev_tool "$name"; then
+                log "  missing  ${name} (optional, --no-dev) — ${hint}"
+            else
+                log "  missing  ${name} (optional) — ${hint}"
+            fi
+        fi
+    fi
+}
+
+# Parse a brew install hint into "formula:NAME" or "cask:NAME" on stdout.
+# Prints nothing and fails for non-brew hints. Strips trailing comments.
+# Never emit a bare "--cask NAME" token: Homebrew's --cask flag applies to
+# *all* named args in one `brew install`, so mixing formulae + casks in a
+# single command incorrectly treats formulae as casks.
+brew_spec_from_hint()
+{
+    local hint="$1"
+    local rest
+
+    hint="${hint%%#*}"
+    hint="${hint%"${hint##*[![:space:]]}"}"
+    case "$hint" in
+        "brew install --cask "*)
+            rest="${hint#brew install --cask }"
+            rest="${rest%%[[:space:]]*}"
+            [[ -n "$rest" ]] || return 1
+            printf 'cask:%s\n' "$rest"
+            ;;
+        "brew install "*)
+            rest="${hint#brew install }"
+            # Reject a misplaced --cask after "brew install " (should use the
+            # --cask branch above). Avoid treating "--cask" as a formula name.
+            case "$rest" in
+                --cask|--cask\ *) return 1 ;;
+            esac
+            rest="${rest%%[[:space:]]*}"
+            [[ -n "$rest" ]] || return 1
+            printf 'formula:%s\n' "$rest"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# True when a formula:NAME / cask:NAME brew spec is already installed (path check).
+brew_spec_present()
+{
+    local spec="$1"
+
+    case "$spec" in
+        cask:*) brew_cask_present "${spec#cask:}" ;;
+        formula:*) brew_formula_present "${spec#formula:}" ;;
+        *) return 1 ;;
+    esac
+}
+
+# Collect unique brew specs from name|hint entries (stdout, one per line).
+# Skips specs already present under Cellar/Caskroom so we never Y/n-offer a
+# no-op reinstall (e.g. font cask installed but file heuristics lagged).
+brew_specs_from_missing()
+{
+    local entry hint spec out=""
+
+    for entry in "$@"; do
+        [[ -n "$entry" ]] || continue
+        hint="${entry#*|}"
+        spec="$(brew_spec_from_hint "$hint" || true)"
+        [[ -n "$spec" ]] || continue
+        brew_spec_present "$spec" && continue
+        case $'\n'"$out"$'\n' in
+            *$'\n'"$spec"$'\n'*) continue ;;
+        esac
+        out+="${spec}"$'\n'
+    done
+    printf '%s' "$out"
+}
+
+# Map a missing tool name to an apt package (Debian/Ubuntu). Empty → skip.
+apt_package_for_tool()
+{
+    case "$1" in
+        fzf) printf 'fzf\n' ;;
+        bat) printf 'bat\n' ;;
+        lsd) printf 'lsd\n' ;;
+        rg) printf 'ripgrep\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+# Collect unique apt packages from name|hint entries (stdout, one per line).
+# Only emits packages for known shell-UX tools (fzf/bat/lsd/rg).
+apt_packages_from_missing()
+{
+    local entry name pkg out=""
+
+    for entry in "$@"; do
+        [[ -n "$entry" ]] || continue
+        name="${entry%%|*}"
+        pkg="$(apt_package_for_tool "$name" || true)"
+        [[ -n "$pkg" ]] || continue
+        case $'\n'"$out"$'\n' in
+            *$'\n'"$pkg"$'\n'*) continue ;;
+        esac
+        out+="${pkg}"$'\n'
+    done
+    printf '%s' "$out"
+}
+
+# Y/n prompt (default yes). Returns 0 on yes. No prompt under -q / non-TTY → no.
+prompt_yn()
+{
+    local prompt="$1"
+    local reply
+
+    if [[ $quiet -eq 1 ]] || [[ ! -t 0 || ! -t 2 ]]; then
+        return 1
+    fi
+    printf '%s ' "$prompt" >&2
+    read -r reply || reply=n
+    case "$reply" in
+        ''|y|Y|yes|YES) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+refresh_brew_prefix()
+{
+    local brew_bin candidate
+
+    brew_bin="$(command -v brew 2>/dev/null || true)"
+    if [[ -z "$brew_bin" || ! -x "$brew_bin" ]]; then
+        brew_bin=""
+        while IFS= read -r candidate; do
+            [[ -n "$candidate" && -x "$candidate" ]] || continue
+            brew_bin="$candidate"
+            break
+        done < <(init_files_brew_bin_candidates)
+    fi
+    if [[ -n "$brew_bin" ]]; then
+        # shellcheck disable=SC1090
+        eval "$("$brew_bin" shellenv 2>/dev/null)" 2>/dev/null || true
+        export PATH
+    fi
+    brew_prefix="$(homebrew_prefix || true)"
+}
+
+# Locate a brew binary if present (PATH or known prefixes). Prints path or nothing.
+find_brew_bin()
+{
+    local brew_bin candidate
+
+    brew_bin="$(command -v brew 2>/dev/null || true)"
+    if [[ -z "$brew_bin" || ! -x "$brew_bin" ]]; then
+        brew_bin=""
+        while IFS= read -r candidate; do
+            [[ -n "$candidate" && -x "$candidate" ]] || continue
+            brew_bin="$candidate"
+            break
+        done < <(init_files_brew_bin_candidates)
+    fi
+    [[ -n "$brew_bin" && -x "$brew_bin" ]] || return 1
+    printf '%s\n' "$brew_bin"
+}
+
+# True when brew exists and responds (prefix check), not merely when a shim is on PATH.
+brew_is_usable()
+{
+    local brew_bin prefix
+
+    brew_bin="$(find_brew_bin 2>/dev/null || true)"
+    [[ -n "$brew_bin" && -x "$brew_bin" ]] || return 1
+    prefix="$("$brew_bin" --prefix 2>/dev/null)" || return 1
+    [[ -n "$prefix" && -d "$prefix" ]] || return 1
+    return 0
+}
+
+# Human-readable brew install line for a formula:NAME / cask:NAME spec.
+# Always use printf -- so a leading --cask in the format cannot be parsed as a flag.
+brew_install_display()
+{
+    local spec="$1"
+    case "$spec" in
+        cask:*) printf -- 'brew install --cask %s\n' "${spec#cask:}" ;;
+        formula:*) printf -- 'brew install %s\n' "${spec#formula:}" ;;
+        *) printf -- 'brew install %s\n' "$spec" ;;
+    esac
+}
+
+# True when this macOS account can administer the machine (admin group or root).
+# Non-admins should not run the Homebrew installer / privileged brew steps —
+# print copy-paste commands for an admin instead.
+is_macos_admin()
+{
+    local user
+
+    is_darwin || return 1
+    [[ "$(id -u)" -eq 0 ]] && return 0
+
+    user="$(id -un 2>/dev/null || true)"
+    [[ -n "$user" ]] || return 1
+
+    if command -v dseditgroup >/dev/null 2>&1; then
+        dseditgroup -o checkmember -m "$user" admin >/dev/null 2>&1 && return 0
+        return 1
+    fi
+    # Fallback when dseditgroup is unavailable.
+    id -Gn 2>/dev/null | grep -qw admin
+}
+
+# Print a forwardable Homebrew handoff for IT / an admin (MDM non-admin Macs).
+# Args: optional brew specs (formula:NAME / cask:NAME). When brew is missing,
+# includes the official installer line first. See tool-path-consistency rule.
+print_brew_admin_copy_paste()
+{
+    local -a specs=("$@")
+    local spec need_bootstrap=0
+    local user re_run host_label
+
+    user="$(id -un 2>/dev/null || echo unknown)"
+    re_run="${repo_dir:-$HOME/.local/share/init-files}/provision_init_files"
+    host_label=""
+    if [[ -x /usr/sbin/scutil ]]; then
+        host_label="$(/usr/sbin/scutil --get ComputerName 2>/dev/null || true)"
+    fi
+    [[ -n "$host_label" ]] || host_label="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown-host)"
+
+    # Need Homebrew installer when brew is missing or does not respond (--prefix).
+    brew_is_usable || need_bootstrap=1
+
+    printf -- '\n' >&2
+    printf -- '----------------------------------------------------------------------\n' >&2
+    printf -- 'ADMIN HANDOFF — MDM / non-admin macOS account\n' >&2
+    printf -- 'Host:  %s\n' "$host_label" >&2
+    printf -- 'User:  %s (not in the admin group — cannot run brew installs)\n' "$user" >&2
+    printf -- '\n' >&2
+    printf -- 'Non-admin: forward this entire block to IT / a macOS administrator.\n' >&2
+    printf -- 'Admin: run the commands below in Terminal ON THIS MAC, then tell the\n' >&2
+    printf -- 'user to re-run (as themselves, no sudo):\n' >&2
+    printf -- '  %s\n' "$re_run" >&2
+    printf -- '\n' >&2
+    if [[ $need_bootstrap -eq 1 ]]; then
+        printf -- '# 1) Install Homebrew (admin password / MDM approval may be required)\n' >&2
+        # Print the installer command without executing substitutions.
+        # shellcheck disable=SC2016
+        printf -- '%s\n' '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"' >&2
+        # Print the shellenv example literally for the administrator.
+        # shellcheck disable=SC2016
+        printf -- '%s\n' '# After install, follow the "Next steps" it prints (eval "$(...shellenv)"), then:' >&2
+        printf -- '\n' >&2
+    fi
+    if ((${#specs[@]} > 0)); then
+        if [[ $need_bootstrap -eq 1 ]]; then
+            printf -- '# 2) Install packages (one line each; do not mix --cask with formulae)\n' >&2
+        else
+            printf -- '# Install packages (one line each; do not mix --cask with formulae)\n' >&2
+        fi
+        for spec in "${specs[@]}"; do
+            brew_install_display "$spec" >&2
+        done
+        printf -- '\n' >&2
+    fi
+    printf -- '# User-local installs (nvm Node, Meslo font zip) do NOT need admin — skip those.\n' >&2
+    printf -- '----------------------------------------------------------------------\n' >&2
+}
+
+# Offer official Homebrew bootstrap on modern macOS when brew is missing.
+# Returns 0 when brew is usable afterward.
+offer_homebrew_bootstrap()
+{
+    local brew_bin
+
+    refresh_brew_prefix
+    if brew_is_usable; then
+        return 0
+    fi
+
+    # No interactive offer under -q / non-TTY.
+    if [[ $quiet -eq 1 ]] || [[ ! -t 0 || ! -t 2 ]]; then
+        return 1
+    fi
+
+    echo "Homebrew is not installed or not usable (needed for missing tools on modern macOS)." >&2
+    if ! is_macos_admin; then
+        # Non-admin: handoff is emitted once via ensure_brew_admin_handoff.
+        echo "Skipped Homebrew install (not an admin on this Mac)." >&2
+        return 1
+    fi
+    if ! prompt_yn "Install Homebrew now? [Y/n]"; then
+        echo "Skipped Homebrew install." >&2
+        return 1
+    fi
+    if ! /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"; then
+        init_files_warn "Homebrew install failed"
+        return 1
+    fi
+    refresh_brew_prefix
+    brew_is_usable
+}
+
+# Install one brew spec (formula:NAME or cask:NAME). Returns brew's exit status.
+brew_install_one()
+{
+    local brew_bin="$1"
+    local spec="$2"
+    local name
+
+    case "$spec" in
+        cask:*)
+            name="${spec#cask:}"
+            [[ -n "$name" ]] || return 1
+            "$brew_bin" install --cask "$name"
+            ;;
+        formula:*)
+            name="${spec#formula:}"
+            [[ -n "$name" ]] || return 1
+            # Explicit --formula so a future accidental cask-named collision
+            # cannot flip the whole batch (and documents intent).
+            "$brew_bin" install --formula "$name"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# Offer brew install for a kind (required|optional). Args: kind, then brew specs
+# (formula:NAME / cask:NAME). Formulae and casks are never mixed in one brew
+# invocation. Packages are installed one-by-one so a single failure does not
+# abort the rest. Returns 0 if at least one install succeeded (caller should
+# rediscover); 1 if skipped, brew missing, or every install failed.
+offer_brew_packages()
+{
+    local kind="$1"
+    shift
+    local -a specs=("$@")
+    local spec brew_bin
+    local ok=0 fail=0
+
+    ((${#specs[@]} > 0)) || return 1
+
+    # No interactive offer under -q / non-TTY (print_install_suggestions still runs).
+    if [[ $quiet -eq 1 ]] || [[ ! -t 0 || ! -t 2 ]]; then
+        return 1
+    fi
+
+    printf '\nMissing %s Homebrew packages:\n' "$kind" >&2
+    for spec in "${specs[@]}"; do
+        printf '  ' >&2
+        brew_install_display "$spec" >&2
+    done
+
+    if ! is_macos_admin; then
+        # Non-admin: consolidated copy-paste is printed by maybe_offer_brew_for_missing.
+        echo "Skipped ${kind} Homebrew packages (not an admin on this Mac)." >&2
+        return 1
+    fi
+
+    if ! prompt_yn "Install ${#specs[@]} ${kind} Homebrew package(s)? [Y/n]"; then
+        echo "Skipped ${kind} Homebrew packages." >&2
+        return 1
+    fi
+
+    brew_bin="$(find_brew_bin 2>/dev/null || true)"
+    if [[ -z "$brew_bin" ]] || ! brew_is_usable; then
+        init_files_warn "brew not found or not usable after bootstrap"
+        return 1
+    fi
+
+    for spec in "${specs[@]}"; do
+        printf '\n→ %s' "$(brew_install_display "$spec")" >&2
+        if brew_install_one "$brew_bin" "$spec"; then
+            ok=1
+        else
+            fail=1
+            echo "WARNING: brew install failed for: $(brew_install_display "$spec" | tr -d '\n')" >&2
+        fi
+    done
+
+    refresh_brew_prefix
+
+    if [[ $fail -eq 1 ]]; then
+        init_files_warn "some ${kind} Homebrew package(s) failed to install"
+    fi
+    # Rediscover whenever anything landed, even if other packages failed.
+    [[ $ok -eq 1 ]]
+}
+
+if [[ ! -f "$src" ]]; then
+    init_files_die "missing $src"
+fi
+
+# Migrate legacy unscoped tools names into this host's scoped file when needed.
+if [[ -z "${init_files_tools_file:-${INIT_FILES_TOOLS_FILE:-}}" ]]; then
+    tools_file="$tools_dir/tools.${init_files_host}"
+    if [[ ! -f "$tools_file" ]]; then
+        if [[ -f "$tools_dir/tools" ]]; then
+            cp "$tools_dir/tools" "$tools_file" 2>/dev/null || true
+            log "Copied legacy tools -> ${tools_file/#$HOME/~} (NFS-safe per-host copy)"
+        elif [[ -f "$tools_dir/tools.sh" ]]; then
+            cp "$tools_dir/tools.sh" "$tools_file" 2>/dev/null || true
+            log "Copied legacy tools.sh -> ${tools_file/#$HOME/~}"
+        fi
+    fi
+fi
+
+log "Checking tools for init-files bashrc (host ${init_files_host})..."
+# Candidate hints below are OS-tier specific (modern brew vs older system vs
+# Linux packages). Verification always goes through lib/tool_path.
+if is_darwin; then
+    if is_modern_macos; then
+        log "Platform: modern macOS (Homebrew paths enabled)"
+    else
+        log "Platform: older macOS (system paths only; Homebrew not recommended — unsupported formulae / slow builds)"
+    fi
+fi
+log
+
+if is_modern_macos; then
+    hint_gpg="brew install gnupg"
+    hint_vim="brew install vim"
+    hint_git="brew install git"
+    hint_curl="brew install curl"
+    hint_python="brew install python"
+    hint_make="brew install make"
+    hint_rsync="brew install rsync"
+    hint_colordiff="brew install colordiff"
+    hint_gdb="brew install gdb"
+    hint_patch="brew install gpatch   # or Xcode CLT"
+    hint_rs="brew install rsync"
+    hint_mvim="brew install --cask macvim-app"
+    hint_gvim=""
+    hint_vlc="brew install --cask vlc"
+    hint_coreutils="brew install coreutils"
+    hint_grep="brew install grep"
+    hint_bash="brew install bash"
+    hint_fzf="brew install fzf"
+    hint_bat="brew install bat"
+    hint_lsd="brew install lsd"
+    hint_rg="brew install ripgrep"
+    hint_mosh="brew install mosh"
+    hint_et="brew install et"
+    # Discover-only: niche hardware CLI; do not offer brew install to every host.
+    hint_litra=""
+elif is_darwin; then
+    hint_gpg="install GnuPG via system/Xcode tooling or MacGPG2 (brew often infeasible on this macOS)"
+    hint_vim="use /usr/bin/vim or install without Homebrew"
+    hint_git="use Xcode CLT git (/usr/bin/git); brew often infeasible on this macOS"
+    hint_curl="use /usr/bin/curl"
+    hint_python="install python3 without Homebrew (brew builds can take forever on this macOS)"
+    hint_make="use Xcode CLT make"
+    hint_rsync="use /usr/bin/rsync"
+    hint_colordiff="install colordiff without Homebrew"
+    hint_gdb="install gdb without Homebrew"
+    hint_patch="use Xcode CLT patch"
+    hint_rs="$hint_rsync"
+    hint_mvim="install MacVim.app under /Applications"
+    hint_gvim=""
+    hint_vlc="install VLC.app under /Applications"
+    hint_coreutils="use system /bin/ls /bin/rm /bin/ln"
+    hint_grep="use system /usr/bin/grep"
+    hint_bash="Apple /bin/bash is frozen at 3.2.x on this macOS; do not use Homebrew bash"
+    hint_fzf="install fzf from GitHub releases into ~/.local (do not use Homebrew on this macOS)"
+    hint_bat=""
+    hint_lsd=""
+    hint_rg=""
+    hint_mosh="install mosh without Homebrew (e.g. build into ~/.local; brew often infeasible on this macOS)"
+    hint_et="install Eternal Terminal without Homebrew (build into ~/.local; brew often infeasible on this macOS)"
+    hint_litra=""
+else
+    hint_gpg="sudo dnf install gnupg2   # or: sudo apt install gnupg"
+    hint_vim="sudo dnf install vim-enhanced   # or: sudo apt install vim"
+    hint_git="sudo dnf install git   # or: sudo apt install git"
+    hint_curl="sudo dnf install curl   # or: sudo apt install curl"
+    hint_python="sudo dnf install python3   # or: sudo apt install python3"
+    hint_make="sudo dnf install make   # or: sudo apt install make"
+    hint_rsync="sudo dnf install rsync   # or: sudo apt install rsync"
+    hint_colordiff="sudo dnf install colordiff   # or: sudo apt install colordiff"
+    hint_gdb="sudo dnf install gdb   # or: sudo apt install gdb"
+    hint_patch="sudo dnf install patch   # or: sudo apt install patch"
+    hint_rs="$hint_rsync"
+    hint_mvim=""
+    hint_gvim="sudo dnf install vim-X11   # or: sudo apt install vim-gtk3"
+    hint_vlc=""
+    hint_coreutils="coreutils package"
+    hint_grep="grep package"
+    hint_bash="sudo dnf install bash   # or: sudo apt install bash"
+    hint_fzf="sudo apt install fzf   # or: sudo dnf install fzf"
+    hint_bat="sudo apt install bat   # or: sudo dnf install bat  (Debian/Ubuntu binary may be batcat)"
+    hint_lsd="sudo apt install lsd   # or: sudo dnf install lsd"
+    hint_rg="sudo apt install ripgrep   # or: sudo dnf install ripgrep"
+    hint_mosh="sudo apt install mosh   # or: sudo dnf install mosh"
+    hint_et="sudo add-apt-repository ppa:jgmath2000/et && sudo apt install et   # or build from MisterTea/EternalTerminal"
+    hint_litra=""
+fi
+
+# True when a Homebrew formula is linked/installed — path check only.
+# Never use `brew list` here: it walks Cellar (can hang for minutes on large
+# formulae like bash-completion@2) and blocks interactive check_tool_versions.
+brew_formula_present()
+{
+    local name="$1"
+    local prefix="${2:-${brew_prefix:-}}"
+
+    [[ -n "$name" ]] || return 1
+    if [[ -z "$prefix" ]]; then
+        prefix="$(homebrew_prefix 2>/dev/null || true)"
+    fi
+    [[ -n "$prefix" ]] || return 1
+    [[ -e "$prefix/opt/$name" || -d "$prefix/Cellar/$name" ]]
+}
+
+# True when a Homebrew cask is installed — Caskroom path check only (no brew list).
+brew_cask_present()
+{
+    local name="$1"
+    local prefix="${2:-${brew_prefix:-}}"
+
+    [[ -n "$name" ]] || return 1
+    if [[ -z "$prefix" ]]; then
+        prefix="$(homebrew_prefix 2>/dev/null || true)"
+    fi
+    [[ -n "$prefix" ]] || return 1
+    [[ -d "$prefix/Caskroom/$name" ]]
+}
+
+# True when Meslo LGS Nerd Font is usable for THIS user (readable font files).
+# Do not treat a Homebrew cask owned by another account as installed — Caskroom
+# entries are often symlinks into that owner's ~/Library/Fonts (unreadable here).
+meslo_nerd_font_installed()
+{
+    local dir f
+    local -a dirs=()
+
+    dirs=("${HOME}/Library/Fonts" "/Library/Fonts")
+
+    for dir in "${dirs[@]}"; do
+        [[ -d "$dir" ]] || continue
+        # Prefer the Mono Regular file the curated iTerm profile uses.
+        for f in \
+            "$dir/MesloLGSNerdFontMono-Regular.ttf" \
+            "$dir/MesloLGSNerdFontMono-Regular.otf" \
+            "$dir/MesloLGSNFM-Regular.ttf" \
+            "$dir/MesloLGSNFM-Regular.otf" \
+            "$dir/MesloLGS Nerd Font Mono.ttf"
+        do
+            [[ -r "$f" ]] && return 0
+        done
+        # Any readable Meslo LGS Nerd Font face is enough for the optional offer;
+        # iterm2 check-fonts does the precise PostScript match later.
+        if compgen -G "$dir/MesloLGS*NerdFont*.ttf" > /dev/null 2>&1 \
+            || compgen -G "$dir/MesloLGS*NerdFont*.otf" > /dev/null 2>&1 \
+            || compgen -G "$dir/MesloLGS*NFM*.ttf" > /dev/null 2>&1 \
+            || compgen -G "$dir/MesloLGS NF*.ttf" > /dev/null 2>&1
+        then
+            # Ensure at least one match is readable (not a dangling/other-user link).
+            for f in "$dir"/MesloLGS*NerdFont*.ttf "$dir"/MesloLGS*NerdFont*.otf \
+                "$dir"/MesloLGS*NFM*.ttf "$dir"/MesloLGS\ NF*.ttf
+            do
+                [[ -r "$f" ]] && return 0
+            done
+        fi
+    done
+    return 1
+}
+
+# Optional Meslo Nerd Font for iTerm/Vim — user-local zip (no sudo), not brew.
+# Not recorded as init_tool_* (font files are not executables).
+record_optional_meslo_nerd_font()
+{
+    local name="meslo-nerd-font"
+    local hint helper
+
+    is_darwin || return 0
+
+    if meslo_nerd_font_installed; then
+        log "  OK       ${name} (Meslo LGS Nerd Font present in ~/Library/Fonts)"
+        return 0
+    fi
+
+    helper="${repo_dir}/iterm2/install_meslo_nerd_font"
+    hint="${helper}   # Meslo.zip → ~/Library/Fonts (no sudo)"
+    OPTIONAL_MISSING+=("${name}|${hint}")
+    log "  missing  ${name} (optional) — ${hint}"
+}
+
+# Required bash-completion@2 on modern macOS (readable script, not an executable).
+# Older macOS / Linux: optional presence only (no brew on older macOS).
+record_bash_completion()
+{
+    local name="bash-completion"
+    local hint candidate path=""
+
+    if is_modern_macos; then
+        hint="brew install bash-completion@2"
+        for candidate in \
+            ${brew_prefix:+"$brew_prefix/etc/profile.d/bash_completion.sh"} \
+            ${brew_prefix:+"$brew_prefix/share/bash-completion/bash_completion"}
+        do
+            if [[ -n "$candidate" && -r "$candidate" ]]; then
+                path="$candidate"
+                break
+            fi
+        done
+        if [[ -n "$path" ]]; then
+            # Record path for bashrc; skipped by init_files_verify_tool_path (-x) so we do
+            # not put it in TOOL_EXPORTS — only REQUIRED_MISSING when absent.
+            log "  OK       ${name} -> ${path}"
+            return 0
+        fi
+        REQUIRED_MISSING+=("${name}|${hint}")
+        log "  MISSING  ${name} (required) — ${hint}"
+        return 0
+    fi
+
+    if is_darwin; then
+        hint="install bash-completion without Homebrew (brew not recommended on this macOS)"
+    elif command -v apt-get >/dev/null 2>&1 || command -v apt >/dev/null 2>&1; then
+        hint="sudo apt install bash-completion"
+    elif command -v dnf >/dev/null 2>&1; then
+        hint="sudo dnf install bash-completion"
+    else
+        hint="install bash-completion via your OS package manager"
+    fi
+
+    for candidate in \
+        ${brew_prefix:+"$brew_prefix/etc/profile.d/bash_completion.sh"} \
+        /usr/share/bash-completion/bash_completion \
+        /etc/bash_completion \
+        /usr/local/etc/profile.d/bash_completion.sh \
+        /usr/local/etc/bash_completion
+    do
+        if [[ -n "$candidate" && -r "$candidate" ]]; then
+            log "  OK       ${name} -> ${candidate}"
+            return 0
+        fi
+    done
+    OPTIONAL_MISSING+=("${name}|${hint}")
+    log "  missing  ${name} (optional) — ${hint}"
+}
+
+# Discover / re-discover tools (clears prior results). Safe to call again after brew.
+discover_tools()
+{
+    TOOL_EXPORTS=()
+    REQUIRED_MISSING=()
+    OPTIONAL_MISSING=()
+
+# --- required ---
+# Older macOS: system/Xcode first. Modern macOS: Homebrew prefix first.
+# init_files_verify_tool_path also rejects Homebrew-resolved shims on older macOS.
+if is_modern_macos; then
+    # Homebrew bash is mandatory on modern macOS — do not accept Apple /bin/bash
+    # as satisfying the requirement (that would skip the brew install offer).
+    record_tool bash required "$hint_bash" \
+        ${brew_prefix:+"$brew_prefix/bin/bash"} \
+        ${brew_prefix:+"$brew_prefix/opt/bash/bin/bash"}
+
+    record_tool git required "$hint_git" \
+        ${brew_prefix:+"$brew_prefix/bin/git"} \
+        /usr/local/bin/git \
+        /usr/bin/git
+
+    record_tool gpg required "$hint_gpg" \
+        ${brew_prefix:+"$brew_prefix/opt/gnupg/bin/gpg"} \
+        ${brew_prefix:+"$brew_prefix/bin/gpg"} \
+        /usr/local/bin/gpg \
+        /usr/bin/gpg \
+        /bin/gpg
+
+    record_tool vim required "$hint_vim" \
+        ${brew_prefix:+"$brew_prefix/bin/vim"} \
+        /usr/local/bin/vim \
+        /usr/bin/vim \
+        /bin/vim
+
+    record_tool curl required "$hint_curl" \
+        ${brew_prefix:+"$brew_prefix/opt/curl/bin/curl"} \
+        ${brew_prefix:+"$brew_prefix/bin/curl"} \
+        /usr/bin/curl \
+        /bin/curl
+
+    record_tool python3 required "$hint_python" \
+        ${brew_prefix:+"$brew_prefix/bin/python3"} \
+        /usr/local/bin/python3 \
+        /usr/bin/python3
+else
+    record_tool bash required "$hint_bash" \
+        /bin/bash \
+        /usr/bin/bash
+
+    record_tool git required "$hint_git" \
+        /usr/bin/git \
+        /usr/local/bin/git
+
+    record_tool gpg required "$hint_gpg" \
+        /usr/bin/gpg \
+        /bin/gpg \
+        /usr/local/bin/gpg
+
+    record_tool vim required "$hint_vim" \
+        /usr/bin/vim \
+        /bin/vim \
+        /usr/local/bin/vim
+
+    record_tool curl required "$hint_curl" \
+        /usr/bin/curl \
+        /bin/curl
+
+    record_tool python3 required "$hint_python" \
+        /usr/bin/python3 \
+        /usr/local/bin/python3
+fi
+
+record_tool ssh required "OpenSSH client package" \
+    /usr/bin/ssh \
+    /bin/ssh \
+    ${brew_prefix:+"$brew_prefix/bin/ssh"}
+
+record_tool ssh-add required "OpenSSH client package" \
+    /usr/bin/ssh-add \
+    ${brew_prefix:+"$brew_prefix/bin/ssh-add"}
+
+record_tool ssh-agent required "OpenSSH client package" \
+    /usr/bin/ssh-agent \
+    ${brew_prefix:+"$brew_prefix/bin/ssh-agent"}
+
+record_tool ssh-keygen required "OpenSSH client package" \
+    /usr/bin/ssh-keygen \
+    ${brew_prefix:+"$brew_prefix/bin/ssh-keygen"}
+
+record_tool cmp required "diffutils package" \
+    /usr/bin/cmp \
+    /bin/cmp \
+    ${brew_prefix:+"$brew_prefix/bin/cmp"}
+
+# --- optional / nice-to-have ---
+record_tool make optional "$hint_make" \
+    ${brew_prefix:+"$brew_prefix/opt/make/libexec/gnubin/make"} \
+    ${brew_prefix:+"$brew_prefix/bin/gmake"} \
+    ${brew_prefix:+"$brew_prefix/bin/make"} \
+    /usr/bin/make
+
+record_tool rsync optional "$hint_rs" \
+    ${brew_prefix:+"$brew_prefix/bin/rsync"} \
+    /usr/bin/rsync
+
+record_tool colordiff optional "$hint_colordiff" \
+    ${brew_prefix:+"$brew_prefix/bin/colordiff"} \
+    /usr/bin/colordiff \
+    /usr/local/bin/colordiff
+
+record_tool patch optional "$hint_patch" \
+    ${brew_prefix:+"$brew_prefix/bin/gpatch"} \
+    ${brew_prefix:+"$brew_prefix/bin/patch"} \
+    /usr/bin/patch
+
+record_tool gdb optional "$hint_gdb" \
+    ${brew_prefix:+"$brew_prefix/bin/gdb"} \
+    /usr/bin/gdb
+
+# Userland tools used by aliases (prefer Homebrew GNU on modern macOS).
+record_tool ls optional "$hint_coreutils" \
+    ${brew_prefix:+"$brew_prefix/opt/coreutils/libexec/gnubin/ls"} \
+    ${brew_prefix:+"$brew_prefix/bin/gls"} \
+    ${brew_prefix:+"$brew_prefix/bin/ls"} \
+    /bin/ls \
+    /usr/bin/ls
+
+record_tool grep optional "$hint_grep" \
+    ${brew_prefix:+"$brew_prefix/opt/grep/libexec/gnubin/grep"} \
+    ${brew_prefix:+"$brew_prefix/bin/ggrep"} \
+    ${brew_prefix:+"$brew_prefix/bin/grep"} \
+    /usr/bin/grep \
+    /bin/grep
+
+record_tool rm optional "$hint_coreutils" \
+    ${brew_prefix:+"$brew_prefix/opt/coreutils/libexec/gnubin/rm"} \
+    ${brew_prefix:+"$brew_prefix/bin/grm"} \
+    /bin/rm \
+    /usr/bin/rm
+
+record_tool ln optional "$hint_coreutils" \
+    ${brew_prefix:+"$brew_prefix/opt/coreutils/libexec/gnubin/ln"} \
+    ${brew_prefix:+"$brew_prefix/bin/gln"} \
+    /bin/ln \
+    /usr/bin/ln
+
+record_tool bc optional "bc package" \
+    ${brew_prefix:+"$brew_prefix/bin/bc"} \
+    /usr/bin/bc \
+    /bin/bc
+
+# Mobile shell client (cmsh); server binary must also exist on remotes.
+record_tool mosh optional "$hint_mosh" \
+    ${brew_prefix:+"$brew_prefix/bin/mosh"} \
+    "$HOME/.local/bin/mosh" \
+    /usr/bin/mosh \
+    /usr/local/bin/mosh
+
+# Eternal Terminal client (cesh); etserver must also run on remotes (port 2022).
+record_tool et optional "$hint_et" \
+    ${brew_prefix:+"$brew_prefix/bin/et"} \
+    "$HOME/.local/bin/et" \
+    /usr/bin/et \
+    /usr/local/bin/et
+
+if is_modern_macos; then
+    record_tool fzf optional "$hint_fzf" \
+        ${brew_prefix:+"$brew_prefix/bin/fzf"} \
+        "$HOME/.local/bin/fzf" \
+        /usr/local/bin/fzf
+    # fzf preview / search helpers (Ctrl-T/Alt-C / fif) when present.
+    record_tool bat optional "$hint_bat" \
+        ${brew_prefix:+"$brew_prefix/bin/bat"} \
+        "$HOME/.local/bin/bat"
+    record_tool lsd optional "$hint_lsd" \
+        ${brew_prefix:+"$brew_prefix/bin/lsd"} \
+        "$HOME/.local/bin/lsd"
+    record_tool rg optional "$hint_rg" \
+        ${brew_prefix:+"$brew_prefix/bin/rg"} \
+        "$HOME/.local/bin/rg"
+elif is_darwin; then
+    record_tool fzf optional "$hint_fzf" \
+        "$HOME/.local/bin/fzf" \
+        /usr/local/bin/fzf
+else
+    record_tool fzf optional "$hint_fzf" \
+        /usr/bin/fzf \
+        "$HOME/.local/bin/fzf" \
+        /usr/local/bin/fzf
+    # Same UX helpers as modern macOS; Debian/Ubuntu may ship bat as batcat.
+    record_tool bat optional "$hint_bat" \
+        /usr/bin/bat \
+        /usr/bin/batcat \
+        "$HOME/.local/bin/bat"
+    record_tool lsd optional "$hint_lsd" \
+        /usr/bin/lsd \
+        "$HOME/.local/bin/lsd"
+    record_tool rg optional "$hint_rg" \
+        /usr/bin/rg \
+        "$HOME/.local/bin/rg"
+fi
+
+record_tool clear optional "ncurses package" \
+    ${brew_prefix:+"$brew_prefix/bin/clear"} \
+    /usr/bin/clear \
+    /bin/clear
+
+record_tool less optional "less package" \
+    ${brew_prefix:+"$brew_prefix/bin/less"} \
+    /usr/bin/less \
+    /bin/less
+
+record_tool more optional "util-linux / system more" \
+    /usr/bin/more \
+    /bin/more
+
+if is_darwin; then
+    # Prefer the cask app under /Applications (open -a MacVim); brew bin
+    # links and the formula Cellar path are fallbacks (modern macOS only).
+    mvim_cands=()
+    while IFS= read -r _mvim_c; do
+        [[ -n "$_mvim_c" ]] || continue
+        mvim_cands+=("$_mvim_c")
+    done < <(init_files_macvim_bin_candidates "${brew_prefix:-}")
+    unset _mvim_c
+    record_tool mvim optional "${hint_mvim}" "${mvim_cands[@]}"
+    unset mvim_cands
+
+    record_tool scutil optional "macOS system tool" \
+        /usr/sbin/scutil \
+        /usr/bin/scutil
+
+    record_tool osascript optional "macOS system tool" \
+        /usr/bin/osascript
+
+    record_tool open optional "macOS system tool" \
+        /usr/bin/open
+
+    record_tool system_profiler optional "macOS system tool" \
+        /usr/sbin/system_profiler
+
+    record_tool killall optional "macOS system tool" \
+        /usr/bin/killall
+
+    record_tool launchctl optional "macOS system tool" \
+        /bin/launchctl
+
+    record_tool vlc optional "${hint_vlc}" \
+        /Applications/VLC.app/Contents/MacOS/VLC \
+        ${brew_prefix:+"$brew_prefix/bin/vlc"}
+
+    # Logitech Litra CLI (optional; lt → litra toggle). Brew path only on modern.
+    if is_modern_macos; then
+        record_tool litra optional "${hint_litra}" \
+            ${brew_prefix:+"$brew_prefix/bin/litra"} \
+            "$HOME/.local/bin/litra"
+    else
+        record_tool litra optional "${hint_litra}" \
+            "$HOME/.local/bin/litra"
+    fi
+
+    if [[ -n "$brew_prefix" ]]; then
+        # Prefer discovering user-local corepack; hint never suggests brew.
+        record_tool corepack optional "${repo_dir}/install_node_toolchain   # nvm Node includes corepack" \
+            ${NVM_DIR:+"$NVM_DIR"/versions/node/*/bin/corepack} \
+            "$HOME/.nvm"/versions/node/*/bin/corepack \
+            "$HOME/.local/share/fnm/aliases/default/bin/corepack" \
+            ${brew_prefix:+"$brew_prefix/opt/corepack/bin/corepack"} \
+            ${brew_prefix:+"$brew_prefix/bin/corepack"}
+    fi
+
+    # Meslo LG Nerd Font (iTerm / Vim glyphs) — user-local zip, not brew cask.
+    record_optional_meslo_nerd_font
+else
+    record_tool gvim optional "${hint_gvim}" \
+        /usr/bin/gvim \
+        /usr/local/bin/gvim \
+        /bin/gvim
+
+    record_tool vncserver optional "sudo dnf install tigervnc-server   # or apt install tigervnc-standalone-server" \
+        /usr/bin/vncserver
+
+    record_tool vncconfig optional "tigervnc package" \
+        /usr/bin/vncconfig
+
+    record_tool terminator optional "sudo dnf install terminator   # or apt install terminator" \
+        /usr/bin/terminator
+
+    record_tool lsb_release optional "sudo dnf install redhat-lsb-core   # or apt install lsb-release" \
+        /usr/bin/lsb_release
+
+    record_tool google-chrome optional "Google Chrome package" \
+        /usr/bin/google-chrome \
+        /usr/bin/google-chrome-stable \
+        /usr/bin/chromium-browser \
+        /usr/bin/chromium
+
+    record_tool kwin optional "KDE Plasma (kwin)" \
+        /usr/bin/kwin \
+        /usr/bin/kwin_x11 \
+        /usr/bin/kwin_wayland
+fi
+
+    # bash-completion: required brew cask/formula on modern macOS; optional elsewhere.
+    record_bash_completion
+
+    log
+}
+
+discover_tools
+
+# Set when print_brew_admin_copy_paste has already run this provision.
+# Non-admin modern macOS: emit the handoff at most once; never also list brew install lines.
+admin_handoff_emitted=0
+
+# Emit the MDM admin handoff at most once for this run. Args: brew specs.
+# No-op for admins / non-modern-macOS / empty spec list.
+ensure_brew_admin_handoff()
+{
+    local -a specs=("$@")
+
+    # No-ops must return 0: this runs under set -e at the top level.
+    is_modern_macos || return 0
+    is_macos_admin && return 0
+    ((${#specs[@]} > 0)) || return 0
+    (( admin_handoff_emitted == 1 )) && return 0
+
+    print_brew_admin_copy_paste "${specs[@]}"
+    admin_handoff_emitted=1
+    return 0
+}
+
+print_install_suggestions()
+{
+    local title="$1"
+    shift
+    local entry name hint
+    local -a brew_entries=() other_entries=() brew_specs=()
+    local spec
+
+    (($# > 0)) || return 0
+
+    # Auto-detect: non-admin on modern macOS gets brew packages only via the
+    # forwardable handoff (not duplicated "install: brew …" lines).
+    if is_modern_macos && ! is_macos_admin; then
+        for entry in "$@"; do
+            name="${entry%%|*}"
+            hint="${entry#*|}"
+            if [[ "$hint" == brew\ * ]]; then
+                brew_entries+=("$entry")
+                if spec="$(brew_spec_from_hint "$hint" 2>/dev/null)"; then
+                    brew_specs+=("$spec")
+                fi
+            else
+                other_entries+=("$entry")
+            fi
+        done
+
+        if ((${#brew_specs[@]} > 0)); then
+            ensure_brew_admin_handoff "${brew_specs[@]}"
+        fi
+
+        if ((${#other_entries[@]} > 0)); then
+            printf '\n%s\n' "$title"
+            for entry in "${other_entries[@]}"; do
+                name="${entry%%|*}"
+                hint="${entry#*|}"
+                if [[ -n "$hint" ]]; then
+                    printf '  %-14s  install: %s\n' "$name" "$hint"
+                else
+                    printf '  %-14s  (no install hint for this platform)\n' "$name"
+                fi
+            done
+        elif ((${#brew_entries[@]} > 0)); then
+            printf '\n%s\n' "$title"
+            printf '  Homebrew packages: see ADMIN HANDOFF above (forward to IT), then re-run ./provision_init_files\n'
+        fi
+        return 0
+    fi
+
+    # Admin (or non-modern-macOS / Linux): direct install hints only — never an admin handoff.
+    printf '\n%s\n' "$title"
+    for entry in "$@"; do
+        name="${entry%%|*}"
+        hint="${entry#*|}"
+        if [[ -n "$hint" ]]; then
+            printf '  %-14s  install: %s\n' "$name" "$hint"
+        else
+            printf '  %-14s  (no install hint for this platform)\n' "$name"
+        fi
+    done
+}
+
+# Re-verify every resolved path before writing tools file / installing bashrc.
+verify_discovered_tools()
+{
+    local local_line var val
+    VERIFY_FAILED=()
+    for local_line in "${TOOL_EXPORTS[@]}"; do
+        var="${local_line%%=*}"
+        val="${local_line#*=}"
+        [[ -n "$val" ]] || continue
+        if ! init_files_verify_tool_path "$val"; then
+            VERIFY_FAILED+=("${var}=${val}")
+            log "  VERIFY FAIL  ${var} -> ${val}"
+        fi
+    done
+}
+
+# Modern macOS: offer Homebrew bootstrap + required then optional packages.
+# Rediscover after required installs *before* optional, so a later optional
+# failure cannot leave required tools looking missing. No-ops on older macOS /
+# Linux, --force, or when nothing brew-installable is missing.
+# Non-admin accounts never run brew installs — print cut-and-paste for an admin.
+maybe_offer_brew_for_missing()
+{
+    local -a req_specs=() opt_specs=()
+    local line
+
+    is_modern_macos || return 0
+    [[ $force -eq 0 ]] || return 0
+
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && req_specs+=("$line")
+    done < <(brew_specs_from_missing "${REQUIRED_MISSING[@]+"${REQUIRED_MISSING[@]}"}")
+
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && opt_specs+=("$line")
+    done < <(brew_specs_from_missing "${OPTIONAL_MISSING[@]+"${OPTIONAL_MISSING[@]}"}")
+
+    ((${#req_specs[@]} + ${#opt_specs[@]} > 0)) || return 0
+
+    if ! is_macos_admin; then
+        # Non-admin / MDM: do not prompt or run brew. Handoff is emitted once
+        # later via ensure_brew_admin_handoff (see print_install_suggestions).
+        return 0
+    fi
+
+    if ! offer_homebrew_bootstrap; then
+        return 0
+    fi
+
+    if ((${#req_specs[@]} > 0)); then
+        if offer_brew_packages required "${req_specs[@]}"; then
+            log
+            log "Re-checking tools after required Homebrew install..."
+            discover_tools
+            verify_discovered_tools
+            # Refresh optional list in case required installs pulled deps.
+            opt_specs=()
+            while IFS= read -r line; do
+                [[ -n "$line" ]] && opt_specs+=("$line")
+            done < <(brew_specs_from_missing "${OPTIONAL_MISSING[@]+"${OPTIONAL_MISSING[@]}"}")
+        fi
+    fi
+    if ((${#opt_specs[@]} > 0)); then
+        if offer_brew_packages optional "${opt_specs[@]}"; then
+            log
+            log "Re-checking tools after optional Homebrew install..."
+            discover_tools
+            verify_discovered_tools
+        fi
+    fi
+}
+
+# Linux (Debian/Ubuntu): offer apt install for optional shell-UX packages.
+# Rediscover after a successful install. No-ops without apt-get, on Darwin,
+# --force, -q / non-TTY, or when nothing apt-installable is missing.
+maybe_offer_apt_for_missing()
+{
+    local -a pkgs=()
+    local line
+
+    is_darwin && return 0
+    command -v apt-get > /dev/null 2>&1 || return 0
+    [[ $force -eq 0 ]] || return 0
+
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && pkgs+=("$line")
+    done < <(apt_packages_from_missing "${OPTIONAL_MISSING[@]+"${OPTIONAL_MISSING[@]}"}")
+
+    ((${#pkgs[@]} > 0)) || return 0
+
+    if [[ $quiet -eq 1 ]] || [[ ! -t 0 || ! -t 2 ]]; then
+        return 0
+    fi
+
+    printf '\nMissing optional apt packages (fzf / bat / lsd / ripgrep):\n' >&2
+    for line in "${pkgs[@]}"; do
+        printf '  sudo apt install %s\n' "$line" >&2
+    done
+
+    if ! prompt_yn "Install ${#pkgs[@]} optional apt package(s)? [Y/n]"; then
+        echo "Skipped optional apt packages." >&2
+        return 0
+    fi
+
+    if ! sudo apt-get update || ! sudo apt-get install -y "${pkgs[@]}"; then
+        echo "WARNING: apt install reported failure for optional packages" >&2
+        return 0
+    fi
+
+    log
+    log "Re-checking tools after apt install..."
+    discover_tools
+    verify_discovered_tools
+}
+
+# Darwin/Linux: offer user-local Meslo.zip install when the curated font is missing.
+# No sudo — writes only under the current user's font directory.
+maybe_offer_meslo_user_font()
+{
+    local helper entry name
+    local need=0
+
+    [[ $quiet -eq 1 || $force -eq 1 ]] && return 0
+    [[ -t 0 && -t 2 ]] || return 0
+
+    helper="${repo_dir}/iterm2/install_meslo_nerd_font"
+    [[ -x "$helper" ]] || return 0
+
+    if meslo_nerd_font_installed 2>/dev/null; then
+        return 0
+    fi
+
+    # Only offer when we recorded it missing (Darwin), or always when missing on Linux
+    # with a GUI/font need — keep it to Darwin + when listed optional for now.
+    for entry in "${OPTIONAL_MISSING[@]+"${OPTIONAL_MISSING[@]}"}"; do
+        name="${entry%%|*}"
+        if [[ "$name" == "meslo-nerd-font" || "$name" == "font-meslo-lg-nerd-font" ]]; then
+            need=1
+            break
+        fi
+    done
+    # If discover already ran and font is missing on Darwin even without OPTIONAL entry.
+    if [[ $need -eq 0 ]] && is_darwin && ! meslo_nerd_font_installed; then
+        need=1
+    fi
+    (( need == 1 )) || return 0
+
+    printf '\nMeslo LGS Nerd Font missing for this user (iTerm / Vim glyphs).\n' >&2
+    printf 'Install into your own Fonts folder (no sudo; preferred over brew cask):\n' >&2
+    printf '  %s\n' "$helper" >&2
+    if prompt_yn "Download and install Meslo Nerd Font now? [Y/n]"; then
+        if "$helper" --yes; then
+            if meslo_nerd_font_installed; then
+                log "OK       meslo-nerd-font installed under ~/Library/Fonts"
+            fi
+        else
+            echo "WARNING: install_meslo_nerd_font failed" >&2
+        fi
+    else
+        echo "Skipped Meslo Nerd Font install." >&2
+    fi
+}
+
+declare -a VERIFY_FAILED=()
+verify_discovered_tools
+
+if ((${#VERIFY_FAILED[@]} > 0)); then
+    echo "ERROR: provision refused — recorded tool paths that are not executable files on this host:" >&2
+    for local_line in "${VERIFY_FAILED[@]}"; do
+        echo "  - $local_line" >&2
+    done
+    init_files_die "fix recorded tool paths (or re-run with --force after fixing)"
+fi
+
+maybe_offer_brew_for_missing
+maybe_offer_apt_for_missing
+maybe_offer_meslo_user_font
+
+# Non-admin modern macOS: one forwardable brew handoff for all still-missing
+# brew packages (required + optional), before per-section suggestions.
+if is_modern_macos && ! is_macos_admin; then
+    all_specs=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && all_specs+=("$line")
+    done < <(brew_specs_from_missing \
+        "${REQUIRED_MISSING[@]+"${REQUIRED_MISSING[@]}"}" \
+        "${OPTIONAL_MISSING[@]+"${OPTIONAL_MISSING[@]}"}")
+    ensure_brew_admin_handoff "${all_specs[@]+"${all_specs[@]}"}"
+fi
+
+if ((${#VERIFY_FAILED[@]} > 0)); then
+    echo "ERROR: provision refused — recorded tool paths that are not executable files on this host:" >&2
+    for local_line in "${VERIFY_FAILED[@]}"; do
+        echo "  - $local_line" >&2
+    done
+    init_files_die "fix recorded tool paths (or re-run with --force after fixing)"
+fi
+
+if ((${#REQUIRED_MISSING[@]} > 0)); then
+    print_install_suggestions "Required tools missing — install them, then re-run ./provision_init_files:" \
+        "${REQUIRED_MISSING[@]}"
+    if [[ $force -eq 0 ]]; then
+        if is_modern_macos && ! is_macos_admin && (( admin_handoff_emitted == 1 )); then
+            init_files_die "refusing to provision; forward the ADMIN HANDOFF above to IT, then re-run ./provision_init_files (or use --force)"
+        else
+            init_files_die "refusing to provision; fix the tools above or re-run with --force"
+        fi
+    fi
+    init_files_warn "continuing due to --force"
+fi
+
+if ((${#OPTIONAL_MISSING[@]} > 0)); then
+    print_install_suggestions "Optional tools missing — install if you want the related aliases/features:" \
+        "${OPTIONAL_MISSING[@]}"
+fi
+
+# Look up the install hint recorded for a missing init_tool_* variable.
+hint_for_missing_var()
+{
+    local want="$1"
+    local entry name hint var
+
+    for entry in "${REQUIRED_MISSING[@]+"${REQUIRED_MISSING[@]}"}" "${OPTIONAL_MISSING[@]+"${OPTIONAL_MISSING[@]}"}"; do
+        [[ -n "$entry" ]] || continue
+        name="${entry%%|*}"
+        hint="${entry#*|}"
+        var="init_tool_$(printf '%s' "$name" | tr '[:upper:]-' '[:lower:]_')"
+        if [[ "$var" == "$want" ]]; then
+            printf '%s' "$hint"
+            return 0
+        fi
+    done
+    return 1
+}
+
+mkdir -p "$tools_dir"
+{
+    printf '# Generated by init-files/provision_init_files on %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '# Absolute tool paths for bashrc (shell vars; not exported).\n'
+    printf '# Re-run provision_init_files after upgrading/moving tools.\n'
+    printf 'init_files_tools_revision=%s\n' "$INIT_FILES_TOOLS_REVISION"
+    {
+        local_line=
+        for local_line in "${TOOL_EXPORTS[@]}"; do
+            var="${local_line%%=*}"
+            printf '%s\n' "${var#init_tool_}"
+        done
+    } | sort -u | paste -sd, - | {
+        IFS= read -r names || names=""
+        printf 'init_files_tools_names=%s\n' "$names"
+    }
+    printf '\n'
+    local_line=
+    for local_line in "${TOOL_EXPORTS[@]}"; do
+        var="${local_line%%=*}"
+        val="${local_line#*=}"
+        if [[ -n "$val" ]]; then
+            printf '%s=%q\n' "$var" "$val"
+        else
+            hint="$(hint_for_missing_var "$var" || true)"
+            if [[ -n "$hint" ]]; then
+                printf '# %s=   # not found; install: %s\n' "$var" "$hint"
+            else
+                printf '# %s=   # not found at install time\n' "$var"
+            fi
+        fi
+    done
+} > "$tools_file"
+log "Wrote tool paths -> $tools_file"
+
+_init_files_migrate_pipx_layout
+_init_files_rewrite_stale_pipx_wrapper
+
+# ---------------------------------------------------------------------------
+# SSH: house hosts + GitHub (SSH remotes without HTTPS credentials).
+# Materials live in the private config overlay clone (.ssh/).
+# ---------------------------------------------------------------------------
+ssh_dir="${HOME}/.ssh"
+config_ssh_dir="$(init_files_config_ssh_dir)"
+ssh_auth_src="${config_ssh_dir}/authorized_keys.house"
+ssh_house_config_src="${config_ssh_dir}/config.house"
+ssh_github_config_src="${config_ssh_dir}/config.github"
+# GitHub Host block is generated from config.github IdentityFile lines so
+# missing IdentityFiles are omitted — see install_github_ssh_snippet.
+ssh_config_d="${ssh_dir}/config.d"
+ssh_house_snippet="${ssh_config_d}/init-files-house.conf"
+ssh_github_snippet="${ssh_config_d}/init-files-github.conf"
+ssh_config_file="${ssh_dir}/config"
+ssh_auth_file="${ssh_dir}/authorized_keys"
+
+github_insteadof_from='https://github.com/'
+github_insteadof_to='git@github.com:'
+
+# OpenSSH option so house RSA can auth to GitHub (needed on some 8.x / FIPS hosts).
+github_ssh_rsa_sha2_line()
+{
+    local ver major=0 minor=0
+
+    ver=$(ssh -V 2>&1 || true)
+    if [[ "$ver" =~ OpenSSH_([0-9]+)\.([0-9]+) ]]; then
+        major="${BASH_REMATCH[1]}"
+        minor="${BASH_REMATCH[2]}"
+    fi
+    if (( major > 8 || (major == 8 && minor >= 5) )); then
+        printf '    PubkeyAcceptedAlgorithms rsa-sha2-512,rsa-sha2-256\n'
+    else
+        printf '    PubkeyAcceptedKeyTypes rsa-sha2-512,rsa-sha2-256\n'
+    fi
+}
+
+# Install GitHub Host block with absolute IdentityFiles for keys that exist.
+# Never list a missing IdentityFile (IdentitiesOnly + missing path aborts auth on
+# some OpenSSH builds before later keys are tried).
+install_github_ssh_snippet()
+{
+    local -a ids=()
+    local id dest_tmp need_rsa=0
+
+    ensure_ssh_config_include || return 1
+    mkdir -p "$ssh_config_d" || return 1
+
+    if [[ ! -f "$ssh_github_config_src" ]]; then
+        log "SKIP     GitHub SSH snippet (missing ${ssh_github_config_src/#$HOME/~})"
+        return 0
+    fi
+
+    while IFS= read -r id || [[ -n "$id" ]]; do
+        [[ -n "$id" ]] && ids+=("$id")
+    done < <(init_files_github_identity_files_from_template "$ssh_github_config_src")
+
+    if ((${#ids[@]} == 0)); then
+        log "WARN     no GitHub SSH keys on disk; skip ${ssh_github_snippet/#$HOME/~}"
+        return 0
+    fi
+
+    dest_tmp=$(mktemp) || return 1
+    need_rsa=0
+    for id in "${ids[@]}"; do
+        if declare -F init_files_ssh_key_is_rsa > /dev/null 2>&1 && init_files_ssh_key_is_rsa "$id"; then
+            need_rsa=1
+            break
+        fi
+        case "$(basename -- "$id")" in
+            id_rsa|id_rsa_*) need_rsa=1; break ;;
+        esac
+    done
+    {
+        printf '%s\n' \
+            '# Managed by init-files (from private config .ssh/config.github; keys filtered).' \
+            '' \
+            'Host github.com' \
+            '    HostName github.com' \
+            '    User git'
+        for id in "${ids[@]}"; do
+            printf '    IdentityFile %s\n' "$id"
+        done
+        if [[ $need_rsa -eq 1 ]]; then
+            github_ssh_rsa_sha2_line
+        fi
+        printf '%s\n' '    IdentitiesOnly yes' '    VisualHostKey no'
+    } > "$dest_tmp"
+
+    if [[ -f "$ssh_github_snippet" ]] && cmp -s "$dest_tmp" "$ssh_github_snippet" 2>/dev/null; then
+        rm -f "$dest_tmp"
+        log "OK       ${ssh_github_snippet/#$HOME/~}"
+        return 0
+    fi
+    mv "$dest_tmp" "$ssh_github_snippet" || {
+        rm -f "$dest_tmp"
+        return 1
+    }
+    chmod 600 "$ssh_github_snippet" || true
+    log "Installed ${ssh_github_snippet/#$HOME/~}"
+}
+
+install_house_authorized_keys()
+{
+    local line keyblob tmp existing
+    local added=0
+
+    [[ -f "$ssh_auth_src" ]] || {
+        log "SKIP     house authorized_keys (missing $ssh_auth_src)"
+        return 0
+    }
+
+    mkdir -p "$ssh_dir" || return 1
+    chmod 700 "$ssh_dir" || true
+    touch "$ssh_auth_file" || return 1
+    chmod 600 "$ssh_auth_file" || true
+
+    existing=$(cat "$ssh_auth_file" 2>/dev/null || true)
+    tmp=$(mktemp) || return 1
+    printf '%s\n' "$existing" > "$tmp"
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -n "$line" && "$line" != \#* ]] || continue
+        # Compare on the key material (field 2) so comment changes do not duplicate.
+        keyblob=$(printf '%s\n' "$line" | awk '{print $2}')
+        [[ -n "$keyblob" ]] || continue
+        if grep -qF -- "$keyblob" "$tmp" 2>/dev/null; then
+            continue
+        fi
+        printf '%s\n' "$line" >> "$tmp"
+        added=$((added + 1))
+    done < "$ssh_auth_src"
+
+    if [[ $added -gt 0 ]]; then
+        cp "$tmp" "$ssh_auth_file" || {
+            rm -f "$tmp"
+            return 1
+        }
+        chmod 600 "$ssh_auth_file" || true
+        log "Updated  ~/.ssh/authorized_keys (+$added house key(s))"
+    else
+        log "OK       ~/.ssh/authorized_keys (house keys already present)"
+    fi
+    rm -f "$tmp"
+}
+
+ensure_ssh_config_include()
+{
+    # Prefer ~/.ssh/... so relative Includes are not cwd-based. Eternal Terminal
+    # (et 7) aborts on relative Include config.d/*.conf when cwd ≠ ~/.ssh
+    # (MisterTea/EternalTerminal#747). OpenSSH accepts the tilde form.
+    local include_line='Include ~/.ssh/config.d/*.conf'
+    local tmp
+
+    mkdir -p "$ssh_config_d" || return 1
+    chmod 700 "$ssh_dir" || true
+
+    if [[ ! -f "$ssh_config_file" ]]; then
+        printf '%s\n' "$include_line" > "$ssh_config_file" || return 1
+        chmod 600 "$ssh_config_file" || true
+        log "Created  ~/.ssh/config with Include ~/.ssh/config.d/*.conf"
+        return 0
+    fi
+
+    if grep -Eq '^[[:space:]]*Include[[:space:]]+~/\.ssh/config\.d/\*\.conf[[:space:]]*$' "$ssh_config_file"; then
+        return 0
+    fi
+
+    # Migrate legacy relative Include (OpenSSH-ok, et-abort) → tilde form.
+    if grep -Eq '^[[:space:]]*Include[[:space:]]+config\.d/\*\.conf[[:space:]]*$' "$ssh_config_file"; then
+        tmp=$(mktemp) || return 1
+        sed -E 's|^([[:space:]]*Include[[:space:]]+)config\.d/\*\.conf([[:space:]]*)$|\1~/.ssh/config.d/*.conf\2|' \
+            "$ssh_config_file" > "$tmp" || {
+            rm -f "$tmp"
+            return 1
+        }
+        cp "$tmp" "$ssh_config_file" || {
+            rm -f "$tmp"
+            return 1
+        }
+        rm -f "$tmp"
+        chmod 600 "$ssh_config_file" || true
+        log "Updated  ~/.ssh/config Include → ~/.ssh/config.d/*.conf (et-safe)"
+        return 0
+    fi
+
+    # Prepend Include so house/GitHub Host blocks are seen before a catch-all Host *.
+    tmp=$(mktemp) || return 1
+    {
+        printf '%s\n\n' "$include_line"
+        cat "$ssh_config_file"
+    } > "$tmp" || {
+        rm -f "$tmp"
+        return 1
+    }
+    cp "$tmp" "$ssh_config_file" || {
+        rm -f "$tmp"
+        return 1
+    }
+    rm -f "$tmp"
+    chmod 600 "$ssh_config_file" || true
+    log "Prepended Include ~/.ssh/config.d/*.conf to ~/.ssh/config"
+}
+
+install_ssh_config_snippet()
+{
+    local src_file="$1"
+    local dest_file="$2"
+    local label="$3"
+
+    [[ -f "$src_file" ]] || {
+        log "SKIP     ${label} (missing $src_file)"
+        return 0
+    }
+
+    ensure_ssh_config_include || return 1
+    mkdir -p "$ssh_config_d" || return 1
+
+    if [[ -f "$dest_file" ]] && cmp -s "$src_file" "$dest_file" 2>/dev/null; then
+        log "OK       ${dest_file/#$HOME/~}"
+        return 0
+    fi
+
+    cp "$src_file" "$dest_file" || return 1
+    chmod 600 "$dest_file" || true
+    log "Installed ${dest_file/#$HOME/~}"
+}
+
+ensure_github_known_hosts()
+{
+    local known="${ssh_dir}/known_hosts"
+
+    mkdir -p "$ssh_dir" || return 1
+    touch "$known" || return 1
+    chmod 600 "$known" || true
+
+    if grep -qE '^(github\.com|[0-9.]+\s+.*github)' "$known" 2>/dev/null \
+        || grep -q ' github.com ' "$known" 2>/dev/null
+    then
+        return 0
+    fi
+
+    if command -v ssh-keyscan > /dev/null 2>&1; then
+        ssh-keyscan -t ed25519,rsa github.com >> "$known" 2>/dev/null || true
+        if grep -q 'github.com' "$known" 2>/dev/null; then
+            log "Added    github.com to ~/.ssh/known_hosts"
+        else
+            log "WARN     could not ssh-keyscan github.com (check later with: ssh -T git@github.com)"
+        fi
+    fi
+}
+
+ensure_github_https_credentials()
+{
+    # Use `gh auth git-credential` for GitHub HTTPS. Seeding osxkeychain caused
+    # repeated Keychain ACL dialogs (get+store per git op), especially from
+    # non-Terminal parents (Cursor/agent). Empty helper clears inherited
+    # system osxkeychain so github.com never hits it.
+    local git_bin="${1:-}"
+    local gh_bin gh_helper='!gh auth git-credential'
+
+    gh_bin="$(command -v gh 2>/dev/null || true)"
+    [[ -n "$gh_bin" && -x "$gh_bin" ]] || {
+        log "WARN     gh not on PATH; HTTPS git may prompt for credentials"
+        log "         Install gh, then: gh auth login && provision_init_files --github-https"
+        return 0
+    }
+    if ! "$gh_bin" auth status >/dev/null 2>&1; then
+        log "WARN     gh not logged in; run: gh auth login && provision_init_files --github-https"
+        return 0
+    fi
+
+    "$git_bin" config --global --unset-all credential.https://github.com.helper 2>/dev/null || true
+    "$git_bin" config --global --unset-all credential.https://gist.github.com.helper 2>/dev/null || true
+    "$git_bin" config --global --add credential.https://github.com.helper '' || true
+    "$git_bin" config --global --add credential.https://github.com.helper "$gh_helper" || true
+    "$git_bin" config --global --add credential.https://gist.github.com.helper '' || true
+    "$git_bin" config --global --add credential.https://gist.github.com.helper "$gh_helper" || true
+    log "OK       GitHub HTTPS via gh auth git-credential"
+}
+
+ensure_github_git_transport()
+{
+    local git_bin existing desired_remote configured
+
+    git_bin="$(command -v git 2>/dev/null || true)"
+    [[ -n "$git_bin" && -x "$git_bin" ]] || {
+        log "SKIP     git GitHub transport (git not on PATH; install git then re-run provision_init_files)"
+        return 0
+    }
+
+    if [[ $github_https -eq 1 ]]; then
+        existing=$("$git_bin" config --global --get "url.${github_insteadof_to}.insteadof" 2>/dev/null || true)
+        if [[ -n "$existing" ]]; then
+            "$git_bin" config --global --unset-all "url.${github_insteadof_to}.insteadOf" 2>/dev/null || true
+            log "Cleared  git url.${github_insteadof_to}.insteadOf (HTTPS preferred on ${init_files_host})"
+        else
+            log "OK       no https→ssh insteadOf (HTTPS preferred on ${init_files_host})"
+        fi
+        "$git_bin" config --global --unset-all core.sshCommand 2>/dev/null || true
+        ensure_github_https_credentials "$git_bin"
+        desired_remote="$init_files_repo_https"
+    else
+        existing=$("$git_bin" config --global --get "url.${github_insteadof_to}.insteadof" 2>/dev/null || true)
+        if [[ "$existing" == "$github_insteadof_from" ]]; then
+            log "OK       git url.${github_insteadof_to}.insteadOf -> ${github_insteadof_from}"
+        else
+            if "$git_bin" config --global "url.${github_insteadof_to}.insteadOf" "$github_insteadof_from"; then
+                log "Set      git url.${github_insteadof_to}.insteadOf ${github_insteadof_from}"
+            else
+                log "WARN     failed to set git insteadOf for GitHub SSH"
+            fi
+        fi
+        # Never prompt for passphrase/askpass during git; fail fast if key not loaded.
+        if "$git_bin" config --global core.sshCommand "ssh -o BatchMode=yes -o ConnectTimeout=10"; then
+            log "Set      git core.sshCommand BatchMode (no passphrase prompts)"
+        fi
+        # Keep a documented HTTPS remote; insteadOf rewrites operations to SSH.
+        desired_remote="$init_files_repo_https"
+    fi
+
+    if [[ -d "$repo_dir/.git" ]]; then
+        configured=$("$git_bin" -C "$repo_dir" config --get remote.origin.url 2>/dev/null || true)
+        if [[ -n "$desired_remote" && "$configured" != "$desired_remote" ]]; then
+            "$git_bin" -C "$repo_dir" remote set-url origin "$desired_remote" >/dev/null 2>&1 || true
+            log "Set      init-files origin -> $desired_remote"
+        fi
+    fi
+}
+
+warn_if_github_key_missing()
+{
+    local id
+
+    if [[ $github_https -eq 1 ]]; then
+        log "OK       GitHub HTTPS mode (SSH key optional for git on ${init_files_host})"
+        return 0
+    fi
+    if [[ ! -f "$ssh_github_config_src" ]]; then
+        return 0
+    fi
+    while IFS= read -r id || [[ -n "$id" ]]; do
+        [[ -n "$id" ]] || continue
+        log "OK       GitHub SSH key present (${id/#$HOME/~})"
+        return 0
+    done < <(init_files_github_identity_files_from_template "$ssh_github_config_src")
+    log "WARN     no GitHub SSH keys from ${ssh_github_config_src/#$HOME/~} on this host"
+    log "         Copy a GitHub-registered key, then: cache_ssh && ssh -T git@github.com"
+    log "         Or: provision_init_files --github-https if this host uses gh/HTTPS instead."
+}
+
+init_files_ensure_private_config_repo "$(( quiet == 0 ))" || true
+# Hint when overlay clone is behind cached origin/main (full pull is daily -q).
+if [[ $quiet -eq 0 ]] && declare -F init_files_private_config_behind_cached > /dev/null 2>&1 \
+    && init_files_private_config_behind_cached; then
+    log "WARN     private config behind origin/main — pull, then re-run provision:"
+    log "         git -C $(init_files_private_config_dir) pull --ff-only"
+fi
+if [[ $quiet -eq 0 ]] && declare -F init_files_private_config_url_drifted > /dev/null 2>&1 \
+    && init_files_private_config_url_drifted; then
+    log "WARN     private config remembered URL differs from clone origin"
+    log "         check INIT_FILES_CONFIG_REPO / ~/.config/init-files/config-repo"
+fi
+config_ssh_dir="$(init_files_config_ssh_dir)"
+ssh_auth_src="${config_ssh_dir}/authorized_keys.house"
+ssh_house_config_src="${config_ssh_dir}/config.house"
+ssh_github_config_src="${config_ssh_dir}/config.github"
+install_house_authorized_keys
+install_ssh_config_snippet "$ssh_house_config_src" "$ssh_house_snippet" "house ssh config"
+install_github_ssh_snippet
+ensure_github_known_hosts
+ensure_github_git_transport
+warn_if_github_key_missing
+
+# ~/.bashrc is a symlink into the clone so refresh_init_files only needs to git pull.
+link_bashrc_to_repo()
+{
+    local current
+
+    if [[ ! -f "$src" ]]; then
+        init_files_warn "missing $src"
+        return 1
+    fi
+
+    if [[ -L "$dest" ]]; then
+        current=$(readlink "$dest" 2>/dev/null || true)
+        if [[ "$current" == "$src" ]]; then
+            log "OK       ~/.bashrc -> $src"
+            return 0
+        fi
+        log "Replacing symlink ~/.bashrc ($current) -> $src"
+        rm -f "$dest" || return 1
+    elif [[ -e "$dest" ]]; then
+        if [[ ! -f "$dest" ]]; then
+            init_files_warn "$dest exists and is not a regular file or symlink"
+            return 1
+        fi
+        backup="${dest}.bak.$(date +%Y%m%d-%H%M%S)"
+        cp -p "$dest" "$backup" || return 1
+        log "Backed up existing ~/.bashrc -> $backup"
+        rm -f "$dest" || return 1
+    fi
+
+    ln -s "$src" "$dest" || return 1
+    log "Linked   ~/.bashrc -> $src"
+}
+
+link_bashrc_to_repo
+log "Run: source ~/.bashrc"
+
+# ~/.vimrc symlink + vim-plug bootstrap + headless PlugInstall (warn-only on fail).
+# Single config: vim/vimrc covers terminal vim and MacVim/gvim (GUI via GUIEnter).
+# Preserves any pre-existing ~/.vimrc as ~/.vimrc.bak.<timestamp> (and a copy under
+# ~/.local/state/init-files/vim-backup/). Retires ~/.gvimrc the same way so it
+# cannot override the one-file model. Does not delete ~/.vim contents.
+vimrc_src="$repo_dir/vim/vimrc"
+vimrc_dest="${HOME}/.vimrc"
+gvimrc_dest="${HOME}/.gvimrc"
+vim_plug_url='https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim'
+vim_plug_path="${HOME}/.vim/autoload/plug.vim"
+vim_backup_dir="${XDG_STATE_HOME:-$HOME/.local/state}/init-files/vim-backup"
+
+_init_files_vim_bin()
+{
+    local v
+    if [[ -n "${init_tool_vim:-}" && -x "${init_tool_vim}" ]]; then
+        printf '%s' "$init_tool_vim"
+        return 0
+    fi
+    # tools file may not be sourced in this script — read recorded path if present.
+    if [[ -r "$tools_file" ]]; then
+        v=$(awk -F= '$1 == "init_tool_vim" { print $2; exit }' "$tools_file" 2>/dev/null || true)
+        if [[ -n "$v" && -x "$v" ]]; then
+            printf '%s' "$v"
+            return 0
+        fi
+    fi
+    command -v vim 2>/dev/null || return 1
+}
+
+_init_files_is_modern_macos()
+{
+    local major
+    [[ "${OSTYPE:-}" == darwin* ]] || return 1
+    major="$(uname -r 2>/dev/null | cut -d. -f1)"
+    [[ "$major" =~ ^[0-9]+$ ]] || return 1
+    (( major >= 25 ))
+}
+
+_init_files_vim_font_hint()
+{
+    local helper="${repo_dir}/iterm2/install_meslo_nerd_font"
+    if [[ "${OSTYPE:-}" == darwin* ]]; then
+        log "Note: Nerd Font for Vim glyphs: ${helper}   # Meslo.zip → ~/Library/Fonts (no sudo)"
+    else
+        log "Note: Nerd Font for Vim glyphs: ${helper}   # or Meslo.zip → ~/.local/share/fonts && fc-cache -f"
+    fi
+}
+
+backup_existing_vimrc()
+{
+    local backup stamp state_copy current
+
+    [[ -e "$vimrc_dest" || -L "$vimrc_dest" ]] || return 0
+
+    # Already our symlink — nothing to save.
+    if [[ -L "$vimrc_dest" ]]; then
+        current=$(readlink "$vimrc_dest" 2>/dev/null || true)
+        if [[ "$current" == "$vimrc_src" ]]; then
+            return 0
+        fi
+    fi
+
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$vim_backup_dir" 2>/dev/null || true
+
+    if [[ -L "$vimrc_dest" ]]; then
+        backup="${vimrc_dest}.bak.${stamp}"
+        # Preserve the old symlink target path in a small sidecar text file.
+        printf '%s\n' "$(readlink "$vimrc_dest" 2>/dev/null || true)" > "${backup}.linktarget"
+        rm -f "$vimrc_dest" || return 1
+        log "Removed previous ~/.vimrc symlink (target saved in ${backup}.linktarget)"
+        return 0
+    fi
+
+    if [[ ! -f "$vimrc_dest" ]]; then
+        init_files_warn "$vimrc_dest exists and is not a regular file or symlink"
+        return 1
+    fi
+
+    backup="${vimrc_dest}.bak.${stamp}"
+    cp -p "$vimrc_dest" "$backup" || return 1
+    state_copy="${vim_backup_dir}/vimrc.${stamp}"
+    cp -p "$vimrc_dest" "$state_copy" 2>/dev/null || true
+    log "Backed up existing ~/.vimrc -> $backup"
+    [[ -f "$state_copy" ]] && log "         (also $state_copy)"
+    rm -f "$vimrc_dest" || return 1
+}
+
+# One-file model: GUI settings live in vim/vimrc. A host ~/.gvimrc loads after
+# vimrc and would override guifont etc. — back it up and remove it.
+retire_host_gvimrc()
+{
+    local backup stamp state_copy current
+
+    [[ -e "$gvimrc_dest" || -L "$gvimrc_dest" ]] || {
+        log "OK       no ~/.gvimrc (single vimrc model)"
+        return 0
+    }
+
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$vim_backup_dir" 2>/dev/null || true
+
+    if [[ -L "$gvimrc_dest" ]]; then
+        current=$(readlink "$gvimrc_dest" 2>/dev/null || true)
+        printf '%s\n' "$current" > "${gvimrc_dest}.bak.${stamp}.linktarget"
+        printf '%s\n' "$current" > "${vim_backup_dir}/gvimrc.${stamp}.linktarget" 2>/dev/null || true
+        rm -f "$gvimrc_dest" || return 1
+        log "Retired  ~/.gvimrc symlink (target saved in ${gvimrc_dest}.bak.${stamp}.linktarget)"
+        return 0
+    fi
+
+    if [[ ! -f "$gvimrc_dest" ]]; then
+        init_files_warn "$gvimrc_dest exists and is not a regular file or symlink"
+        return 1
+    fi
+
+    backup="${gvimrc_dest}.bak.${stamp}"
+    cp -p "$gvimrc_dest" "$backup" || return 1
+    state_copy="${vim_backup_dir}/gvimrc.${stamp}"
+    cp -p "$gvimrc_dest" "$state_copy" 2>/dev/null || true
+    rm -f "$gvimrc_dest" || return 1
+    log "Retired  ~/.gvimrc -> $backup (GUI settings are in vim/vimrc)"
+    [[ -f "$state_copy" ]] && log "         (also $state_copy)"
+}
+
+link_vimrc_to_repo()
+{
+    local current
+
+    if [[ ! -f "$vimrc_src" ]]; then
+        log "Skip vimrc: missing $vimrc_src"
+        return 0
+    fi
+
+    if [[ -L "$vimrc_dest" ]]; then
+        current=$(readlink "$vimrc_dest" 2>/dev/null || true)
+        if [[ "$current" == "$vimrc_src" ]]; then
+            log "OK       ~/.vimrc -> $vimrc_src"
+            return 0
+        fi
+    fi
+
+    backup_existing_vimrc || return 1
+    ln -s "$vimrc_src" "$vimrc_dest" || return 1
+    log "Linked   ~/.vimrc -> $vimrc_src"
+}
+
+bootstrap_vim_plug()
+{
+    local curl_bin
+    if [[ -f "$vim_plug_path" ]]; then
+        log "OK       vim-plug ($vim_plug_path)"
+        return 0
+    fi
+    curl_bin="$(command -v curl 2>/dev/null || true)"
+    if [[ -z "$curl_bin" ]]; then
+        log "WARN     curl missing; cannot bootstrap vim-plug"
+        return 1
+    fi
+    mkdir -p "$(dirname "$vim_plug_path")" || return 1
+    if ! "$curl_bin" -fsSL --connect-timeout 10 --max-time 60 \
+        -o "$vim_plug_path" "$vim_plug_url"; then
+        log "WARN     failed to download vim-plug"
+        rm -f "$vim_plug_path"
+        return 1
+    fi
+    log "Installed vim-plug -> $vim_plug_path"
+}
+
+run_vim_plug_install()
+{
+    local vim_bin
+    vim_bin="$(_init_files_vim_bin)" || {
+        log "WARN     vim not found; skip PlugInstall"
+        return 1
+    }
+    mkdir -p "${HOME}/.vim/plugged" "${HOME}/.vim/undo" 2>/dev/null || true
+    # Headless PlugInstall; warn-only for provision_init_files.
+    if ! "$vim_bin" -n -u "$vimrc_dest" +PlugInstall +qall \
+        --not-a-term </dev/null >/dev/null 2>&1 \
+        && ! "$vim_bin" -n -u "$vimrc_dest" +PlugInstall +qall \
+        </dev/null >/dev/null 2>&1; then
+        log "WARN     vim PlugInstall failed (network?). Retry: refresh_vimrc"
+        return 1
+    fi
+    log "OK       vim plugins (PlugInstall)"
+}
+
+link_vimrc_to_repo
+retire_host_gvimrc || true
+if bootstrap_vim_plug; then
+    run_vim_plug_install || true
+else
+    log "WARN     skip PlugInstall until vim-plug is available"
+fi
+_init_files_vim_font_hint
+
+# Login shells (Debian/Ubuntu SSH, macOS Terminal) read ~/.profile or
+# ~/.bash_profile — not ~/.bashrc — unless those files source it.
+# Always install our marker when missing. bashrc is idempotent
+# (INIT_FILES_BASHRC_LOADED), so a second source from Debian's default
+# .profile block is harmless.
+ensure_login_shell_sources_bashrc()
+{
+    local marker_begin='# >>> init-files >>>'
+    local marker_end='# <<< init-files <<<'
+    local block target target_real bashrc_real
+
+    # bash(1): .bash_profile / .bash_login suppress .profile
+    if [[ -e "${HOME}/.bash_profile" ]]; then
+        target="${HOME}/.bash_profile"
+    elif [[ -e "${HOME}/.bash_login" ]]; then
+        target="${HOME}/.bash_login"
+    else
+        target="${HOME}/.profile"
+    fi
+
+    if [[ "$(basename "$target")" == ".bash_profile" || "$(basename "$target")" == ".bash_login" ]]; then
+        # .bash_profile shadows .profile — pull .profile in first (PATH, cargo,
+        # etc.), then ensure bashrc. bashrc ignores a duplicate source.
+        block=$(cat <<EOF
+${marker_begin}
+# bash login shells read this file instead of ~/.profile.
+if [ -f "\$HOME/.profile" ]; then
+    . "\$HOME/.profile"
+fi
+if [ -n "\${BASH_VERSION:-}" ] && [ -f "\$HOME/.bashrc" ]; then
+    . "\$HOME/.bashrc"
+fi
+${marker_end}
+EOF
+)
+    else
+        block=$(cat <<EOF
+${marker_begin}
+# Ensure bash login shells load ~/.bashrc (init-files symlink).
+if [ -n "\${BASH_VERSION:-}" ]; then
+    if [ -f "\$HOME/.bashrc" ]; then
+        . "\$HOME/.bashrc"
+    fi
+fi
+${marker_end}
+EOF
+)
+    fi
+
+    # If .bash_profile is a symlink to .bashrc (some macOS setups), login
+    # shells already load init-files — do not append into bashrc itself.
+    bashrc_real=$(cd "$(dirname "${HOME}/.bashrc")" && pwd)/$(basename "${HOME}/.bashrc")
+    if [[ -L "${HOME}/.bashrc" ]]; then
+        bashrc_real=$(readlink "${HOME}/.bashrc" 2>/dev/null || true)
+        [[ "$bashrc_real" == /* ]] || bashrc_real="${HOME}/.local/share/init-files/bashrc"
+    fi
+    if [[ -L "$target" || -f "$target" ]]; then
+        target_real=$(readlink "$target" 2>/dev/null || true)
+        if [[ -n "$target_real" ]]; then
+            [[ "$target_real" == /* ]] || target_real="$(cd "$(dirname "$target")" && pwd)/$target_real"
+            if [[ "$target_real" == "$bashrc_real" || "$target_real" == "${HOME}/.bashrc" \
+                || "$target_real" == *"init-files/bashrc" ]]; then
+                log "OK       ${target/#$HOME/~} already resolves to init-files bashrc"
+                return 0
+            fi
+        fi
+    fi
+
+    if [[ ! -e "$target" ]]; then
+        printf '%s\n' "$block" > "$target" || return 1
+        chmod 644 "$target" || true
+        log "Created  ${target/#$HOME/~} to source ~/.bashrc on login"
+        return 0
+    fi
+
+    if [[ ! -f "$target" ]]; then
+        log "WARN     ${target/#$HOME/~} exists but is not a regular file; source ~/.bashrc from login shells manually"
+        return 0
+    fi
+
+    if grep -Fq "$marker_begin" "$target" 2>/dev/null; then
+        log "OK       ${target/#$HOME/~} already has init-files bashrc hook"
+        return 0
+    fi
+
+    # Always append our marker. Do not skip just because a distro .profile
+    # already has a conditional ". ~/.bashrc" — some hosts also have a
+    # .bash_profile that shadows .profile without sourcing bashrc, and
+    # bashrc itself ignores a second source in the same shell.
+    printf '\n%s\n' "$block" >> "$target" || return 1
+    log "Updated  ${target/#$HOME/~} to source ~/.bashrc on login shells"
+}
+
+ensure_login_shell_sources_bashrc
+log "Note: this shell still needs: source ~/.bashrc   (new login shells pick it up automatically)"
+
+# --- macOS: curated iTerm2 prefs + Homebrew bash login-shell tip ---------------
+
+maybe_install_iterm_prefs()
+{
+    local install_bin plist
+
+    [[ $quiet -eq 1 || $skip_iterm -eq 1 ]] && return 0
+    is_darwin || return 0
+
+    install_bin="${repo_dir}/iterm2/install"
+    plist="${repo_dir}/iterm2/com.googlecode.iterm2.plist"
+    [[ -x "$install_bin" && -f "$plist" ]] || {
+        log "Note: curated iTerm2 prefs not available under ${repo_dir}/iterm2/"
+        return 0
+    }
+
+    log "Merging curated iTerm2 prefs (font/colors/keys)…"
+    if ! "$install_bin" "$plist"; then
+        log "WARN     iterm2/install failed (Cmd-Q / reopen iTerm after fixing fonts or re-run refresh_iterm_settings)"
+        return 0
+    fi
+    log "OK       iTerm2 prefs merged — quit and reopen iTerm2 (Cmd-Q) to see fonts/colors"
+}
+
+# Resolve recorded init_tool_bash from TOOL_EXPORTS (absolute brew path when present).
+provision_recorded_bash()
+{
+    local entry
+    for entry in "${TOOL_EXPORTS[@]+"${TOOL_EXPORTS[@]}"}"; do
+        [[ "$entry" == init_tool_bash=* ]] || continue
+        printf '%s\n' "${entry#init_tool_bash=}"
+        return 0
+    done
+    return 1
+}
+
+bash_paths_same_file()
+{
+    local left="$1" right="$2"
+    local left_real right_real
+
+    [[ -n "$left" && -n "$right" ]] || return 1
+    [[ "$left" == "$right" ]] && return 0
+    [[ -e "$left" && -e "$right" ]] || return 1
+
+    if command -v python3 > /dev/null 2>&1; then
+        python3 -c 'import os,sys; raise SystemExit(0 if os.path.samefile(sys.argv[1], sys.argv[2]) else 1)' \
+            "$left" "$right" 2>/dev/null
+        return
+    fi
+    left_real=$(init_files_resolve_realpath "$left" 2>/dev/null || printf '%s' "$left")
+    right_real=$(init_files_resolve_realpath "$right" 2>/dev/null || printf '%s' "$right")
+    [[ "$left_real" == "$right_real" ]]
+}
+
+print_brew_bash_login_shell_tip()
+{
+    local preferred cellar current_shell
+
+    [[ $quiet -eq 1 ]] && return 0
+    is_modern_macos || return 0
+
+    preferred="$(provision_recorded_bash 2>/dev/null || true)"
+    [[ -n "$preferred" && -x "$preferred" ]] || return 0
+
+    cellar="$(init_files_resolve_realpath "$preferred" 2>/dev/null || printf '%s' "$preferred")"
+    [[ -n "$cellar" && -x "$cellar" ]] || cellar="$preferred"
+
+    current_shell=
+    if command -v dscl > /dev/null 2>&1; then
+        current_shell="$(dscl . -read "/Users/$(id -un)" UserShell 2>/dev/null \
+            | awk '{ print $2; exit }' || true)"
+    fi
+    [[ -n "$current_shell" ]] || current_shell="${SHELL:-}"
+
+    if [[ -n "$current_shell" ]] && bash_paths_same_file "$current_shell" "$cellar"; then
+        log "OK       login shell already Homebrew bash ($current_shell)"
+        return 0
+    fi
+
+    cat <<EOF
+
+To use Homebrew bash as your login shell (Apple /bin/bash is 3.2.x):
+  1. Add the Cellar path to /etc/shells (chpass wants a regular file, not the brew bin symlink):
+       $cellar
+     (or: grep -qxF $cellar /etc/shells || echo $cellar | sudo tee -a /etc/shells)
+  2. chsh -s $cellar
+  3. Quit and reopen the terminal (Default login shell)
+
+Note: /opt/homebrew/bin/bash is only a symlink; chsh to the Cellar path above.
+If chsh rejects your Full Name field, remove commas from that GECOS field (or use System Settings → Users), then retry.
+EOF
+}
+
+maybe_install_iterm_prefs
+print_brew_bash_login_shell_tip

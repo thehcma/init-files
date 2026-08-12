@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# Try curated iTerm2 prefs from the repo; revert live prefs if verification fails.
+set -euo pipefail
+
+repo_iterm2="$(cd "$(dirname "$0")" && pwd)"
+prefs_py="$repo_iterm2/_prefs.py"
+domain="com.googlecode.iterm2"
+curated_plist="$repo_iterm2/com.googlecode.iterm2.plist"
+meta_json="$repo_iterm2/meta.json"
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/init-files/iterm2-test"
+
+if [[ "${OSTYPE:-}" != darwin* ]]; then
+    printf 'iterm2/test: macOS only\n' >&2
+    exit 1
+fi
+
+if ! command -v defaults >/dev/null 2>&1; then
+    printf 'iterm2/test: defaults(1) not found\n' >&2
+    exit 1
+fi
+
+python3_bin="$(command -v python3 2>/dev/null || true)"
+if [[ -z "$python3_bin" ]]; then
+    printf 'iterm2/test: python3 required\n' >&2
+    exit 1
+fi
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --plist)
+            curated_plist="${2:?iterm2/test: --plist requires a path}"
+            shift 2
+            ;;
+        --meta)
+            meta_json="${2:?iterm2/test: --meta requires a path}"
+            shift 2
+            ;;
+        -h|--help)
+            cat <<'EOF'
+Usage: iterm2/test [--plist CURATED.plist] [--meta META.json]
+
+Backup live iTerm2 prefs, merge curated prefs from the repo, verify fonts and
+app presence. On failure, restore the backup. Soft iTerm version mismatch only
+warns (does not fail).
+EOF
+            exit 0
+            ;;
+        *)
+            printf 'iterm2/test: unknown option: %s\n' "$1" >&2
+            exit 1
+            ;;
+    esac
+done
+
+if [[ ! -f "$curated_plist" ]]; then
+    printf 'iterm2/test: missing curated plist %s\n' "$curated_plist" >&2
+    exit 1
+fi
+
+mkdir -p "$state_dir"
+backup="$state_dir/prefs-backup.plist"
+restore_needed=0
+
+_iterm2_restore()
+{
+    if [[ $restore_needed -eq 1 && -f "$backup" ]]; then
+        defaults import "$domain" "$backup" 2>/dev/null || true
+        printf 'iterm2/test: restored previous prefs from %s\n' "$backup" >&2
+    fi
+}
+
+if ! defaults export "$domain" "$backup" 2>/dev/null; then
+    "$python3_bin" -c 'import plistlib,sys; plistlib.dump({}, open(sys.argv[1],"wb"), fmt=plistlib.FMT_XML)' \
+        "$backup"
+fi
+restore_needed=1
+printf 'iterm2/test: saved live prefs to %s\n' "$backup"
+
+# Apply curated prefs (install prints soft version + font hints).
+if ! "$repo_iterm2/install" --no-backup --meta "$meta_json" "$curated_plist"; then
+    printf 'iterm2/test: install failed; reverting\n' >&2
+    _iterm2_restore
+    exit 1
+fi
+
+fail=0
+
+iterm_app=
+for candidate in /Applications/iTerm.app /Applications/iTerm2.app; do
+    if [[ -d "$candidate" ]]; then
+        iterm_app="$candidate"
+        break
+    fi
+done
+if [[ -z "$iterm_app" ]]; then
+    printf 'iterm2/test: FAIL: iTerm.app not found\n' >&2
+    fail=1
+fi
+
+set +e
+font_report="$("$python3_bin" "$prefs_py" check-fonts "$curated_plist")"
+font_status=$?
+set -e
+if [[ "$font_status" -ne 0 ]]; then
+    printf 'iterm2/test: FAIL: required profile font(s) missing\n' >&2
+    while IFS=$'\t' read -r status family spec _hint_key; do
+        [[ "$status" == "missing" ]] || continue
+        [[ -n "$family" ]] || continue
+        printf '  missing: %s (%s)\n' "$family" "$spec" >&2
+    done <<< "$font_report"
+    fail=1
+fi
+
+# Confirm curated keys are present in the live domain after merge.
+live_tmp="$(mktemp -t iterm2-test-live.XXXXXX)"
+if defaults export "$domain" "$live_tmp" 2>/dev/null; then
+    curated_tmp="$(mktemp -t iterm2-test-curated.XXXXXX)"
+    if "$python3_bin" "$prefs_py" curate "$live_tmp" "$curated_tmp" \
+        && ! "$python3_bin" "$prefs_py" equal "$curated_tmp" "$curated_plist"; then
+        printf 'iterm2/test: FAIL: live curated prefs do not match repo slice after merge\n' >&2
+        fail=1
+    fi
+    rm -f "$curated_tmp"
+else
+    printf 'iterm2/test: FAIL: cannot re-export prefs domain after merge\n' >&2
+    fail=1
+fi
+rm -f "$live_tmp"
+
+if [[ $fail -ne 0 ]]; then
+    _iterm2_restore
+    printf 'iterm2/test: FAILED — previous settings restored\n' >&2
+    printf '  fix fonts/app (see install hints above), then retry test_iterm_settings\n' >&2
+    exit 1
+fi
+
+restore_needed=0
+printf 'iterm2/test: OK — repo prefs kept\n'
+printf '  Fully quit iTerm (Cmd-Q) and reopen to see them.\n'
+printf '  Backup still at %s (manual restore: defaults import %s %s)\n' \
+    "$backup" "$domain" "$backup"

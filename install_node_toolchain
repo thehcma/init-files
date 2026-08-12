@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# Bootstrap a user-local Node toolchain (nvm + LTS + corepack).
+set -euo pipefail
+
+repo_dir="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+. "${repo_dir}/lib/error"
+
+# Pin may lag; see https://github.com/nvm-sh/nvm/releases
+nvm_install_version="${INIT_FILES_NVM_VERSION:-v0.40.6}"
+nvm_install_url="${INIT_FILES_NVM_INSTALL_URL:-https://raw.githubusercontent.com/nvm-sh/nvm/${nvm_install_version}/install.sh}"
+
+usage()
+{
+    cat <<'EOF'
+Usage: install_node_toolchain [-y|--yes] [-h|--help]
+
+Install nvm under ~/.nvm (PROFILE=/dev/null so it does not edit ~/.bashrc),
+install Node LTS (includes npm + corepack), and enable corepack.
+
+  -y, --yes   do not prompt
+EOF
+}
+
+assume_yes=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -y|--yes) assume_yes=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *)
+            usage >&2
+            init_files_die "install_node_toolchain: unknown option: $1"
+            ;;
+    esac
+done
+
+prompt_yn()
+{
+    local prompt="$1" reply
+    [[ $assume_yes -eq 1 ]] && return 0
+    if [[ ! -t 0 || ! -t 2 ]]; then
+        return 1
+    fi
+    printf '%s ' "$prompt" >&2
+    read -r reply || reply=n
+    case "$reply" in
+        ''|y|Y|yes|YES) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+curl_bin="$(command -v curl 2>/dev/null || true)"
+[[ -n "$curl_bin" && -x "$curl_bin" ]] \
+    || init_files_die "install_node_toolchain: curl required"
+
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+
+if [[ $assume_yes -eq 0 ]]; then
+    if [[ -s "$NVM_DIR/nvm.sh" ]]; then
+        prompt="Install Node LTS under ${NVM_DIR/#$HOME/~}? [Y/n]"
+    else
+        prompt="Install nvm + Node LTS under ${NVM_DIR/#$HOME/~}? [Y/n]"
+    fi
+    if ! prompt_yn "$prompt"; then
+        printf 'install_node_toolchain: skipped\n' >&2
+        exit 0
+    fi
+fi
+
+if [[ ! -s "$NVM_DIR/nvm.sh" ]]; then
+    printf 'install_node_toolchain: installing nvm %s…\n' "$nvm_install_version" >&2
+    # PROFILE=/dev/null: ~/.bashrc is an init-files symlink; nvm must not append.
+    if ! PROFILE=/dev/null bash -c \
+        "$curl_bin --fail --location --silent --show-error '$nvm_install_url' | bash"
+    then
+        init_files_die "install_node_toolchain: nvm install failed"
+    fi
+fi
+
+# nvm.sh is not `set -u` clean; keep the rest of this script strict.
+set +u
+# shellcheck disable=SC1091
+. "$NVM_DIR/nvm.sh"
+set -u
+
+printf 'install_node_toolchain: installing Node LTS…\n' >&2
+nvm install --lts || init_files_die "install_node_toolchain: nvm install --lts failed"
+nvm alias default 'lts/*' >/dev/null 2>&1 || true
+# Explicitly select default/LTS — "already installed" can leave "system"
+# (Homebrew) current when brew node is ahead on PATH.
+nvm use default >/dev/null 2>&1 || nvm use --lts \
+    || init_files_die "install_node_toolchain: nvm use default/--lts failed"
+
+hash -r
+
+# Guarantee nvm's bin wins over Homebrew for the rest of this process and
+# for the version line we print (npm uses #!/usr/bin/env node).
+node_path="$(command -v node 2>/dev/null || true)"
+case "$node_path" in
+    "$NVM_DIR"/*) ;;
+    *)
+        # Fall back to the default alias path even if PATH is hostile.
+        if [[ -x "$NVM_DIR/nvm.sh" ]]; then
+            node_path="$(nvm which default 2>/dev/null || nvm which current 2>/dev/null || true)"
+        fi
+        ;;
+esac
+case "$node_path" in
+    "$NVM_DIR"/*)
+        nvm_bin="$(cd "$(dirname "$node_path")" && pwd)"
+        export PATH="$nvm_bin:$PATH"
+        hash -r
+        ;;
+    *)
+        init_files_die "install_node_toolchain: node not under NVM_DIR after install (got ${node_path:-none})"
+        ;;
+esac
+
+command -v npm >/dev/null 2>&1 \
+    || init_files_die "install_node_toolchain: npm missing after nvm install"
+case "$(command -v npm)" in
+    "$NVM_DIR"/*) ;;
+    *)
+        init_files_warn "install_node_toolchain: npm still not under NVM_DIR (got $(command -v npm))"
+        init_files_die "install_node_toolchain: refuse to use Homebrew npm"
+        ;;
+esac
+
+if command -v corepack >/dev/null 2>&1; then
+    printf 'install_node_toolchain: enabling corepack…\n' >&2
+    # Same PATH discipline: enable the nvm corepack, not brew's.
+    PATH="$(dirname "$(command -v npm)"):$PATH" corepack enable >/dev/null 2>&1 || true
+fi
+
+printf 'install_node_toolchain: node %s  npm %s  (%s)\n' \
+    "$(node --version 2>/dev/null || echo '?')" \
+    "$(npm --version 2>/dev/null || echo '?')" \
+    "$(command -v npm)" >&2
+printf 'install_node_toolchain: open a new shell (or: source ~/.bashrc) so PATH prefers nvm\n' >&2

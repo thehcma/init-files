@@ -1,0 +1,589 @@
+#!/usr/bin/env bash
+# Private config overlay paths for init-files. Sourced by provision_init_files,
+# bootstrap_host, and bashrc. Not executed standalone.
+# shellcheck shell=bash
+#
+# The overlay clone holds user-specific house SSH materials and policy. Its git
+# URL is never hardcoded here — set INIT_FILES_CONFIG_REPO, remember it via
+# interactive prompt (~/.config/init-files/config-repo), or skip the overlay.
+
+# XDG data dir for the private overlay clone (house SSH, user policy).
+init_files_private_config_dir()
+{
+    printf '%s\n' "${INIT_FILES_PRIVATE_CONFIG_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/config}"
+}
+
+# Remembered private-config git URL (one line). Not hostname-scoped (shared home).
+init_files_config_repo_pref_file()
+{
+    printf '%s\n' "${INIT_FILES_CONFIG_REPO_PREF:-${XDG_CONFIG_HOME:-$HOME/.config}/init-files/config-repo}"
+}
+
+# Private config git URL: env wins, else remembered pref file. Empty if unset.
+init_files_config_repo_url()
+{
+    local pref url
+
+    if [[ -n "${INIT_FILES_CONFIG_REPO:-}" ]]; then
+        printf '%s\n' "$INIT_FILES_CONFIG_REPO"
+        return 0
+    fi
+    pref="$(init_files_config_repo_pref_file)"
+    if [[ -f "$pref" ]]; then
+        url="$(tr -d '[:space:]' <"$pref" 2>/dev/null || true)"
+        if [[ -n "$url" ]]; then
+            printf '%s\n' "$url"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Persist private-config git URL for later hosts/sessions.
+init_files_remember_config_repo_url()
+{
+    local url="${1:-}" pref parent
+
+    [[ -n "$url" ]] || return 1
+    pref="$(init_files_config_repo_pref_file)"
+    parent="$(dirname "$pref")"
+    mkdir -p "$parent" || return 1
+    printf '%s\n' "$url" >"$pref" || return 1
+    chmod 600 "$pref" 2>/dev/null || true
+}
+
+init_files_config_ssh_dir()
+{
+    printf '%s\n' "$(init_files_private_config_dir)/.ssh"
+}
+
+init_files_config_default_users_env()
+{
+    printf '%s\n' "$(init_files_private_config_dir)/init-files/default-users.env"
+}
+
+# Optional personal bashrc fragment (aliases / helpers). Sourced by interactive
+# bashrc when present — never required for a generic install.
+init_files_config_bashrc_local()
+{
+    printf '%s\n' "$(init_files_private_config_dir)/init-files/bashrc.local"
+}
+
+# Expected basenames under private config .ssh/ (one per line).
+init_files_config_ssh_expected_basenames()
+{
+    printf '%s\n' \
+        'authorized_keys.house' \
+        'config.house' \
+        'config.github'
+}
+
+# True when the private config tree is present (clone or partial .ssh checkout).
+init_files_private_config_present()
+{
+    local dir ssh_dir
+    dir="$(init_files_private_config_dir)"
+    ssh_dir="$(init_files_config_ssh_dir)"
+    [[ -d "$dir/.git" || -d "$ssh_dir" ]]
+}
+
+# True when private overlay has all expected .ssh materials.
+init_files_private_config_complete()
+{
+    local ssh_dir base
+    ssh_dir="$(init_files_config_ssh_dir)"
+    [[ -d "$ssh_dir" ]] || return 1
+    while IFS= read -r base || [[ -n "$base" ]]; do
+        [[ -n "$base" ]] || continue
+        [[ -f "${ssh_dir}/${base}" ]] || return 1
+    done < <(init_files_config_ssh_expected_basenames)
+    return 0
+}
+
+# Print missing expected .ssh materials (returns 1 if any missing).
+# Requires log from caller when available; falls back to stderr.
+init_files_report_missing_config_ssh()
+{
+    local ssh_dir base missing=0
+
+    ssh_dir="$(init_files_config_ssh_dir)"
+    _init_files_cfg_msg()
+    {
+        if declare -F log > /dev/null 2>&1; then
+            log "$@"
+        else
+            printf '%s\n' "$*" >&2
+        fi
+    }
+
+    if [[ ! -d "$ssh_dir" ]]; then
+        _init_files_cfg_msg "ERROR    private config .ssh missing (${ssh_dir/#$HOME/~})"
+        missing=1
+    else
+        while IFS= read -r base || [[ -n "$base" ]]; do
+            [[ -n "$base" ]] || continue
+            if [[ ! -f "${ssh_dir}/${base}" ]]; then
+                _init_files_cfg_msg "ERROR    missing ${ssh_dir/#$HOME/~}/${base}"
+                missing=1
+            fi
+        done < <(init_files_config_ssh_expected_basenames)
+    fi
+
+    [[ $missing -eq 0 ]]
+}
+
+# Operator-facing fix steps for a missing/incomplete private config overlay.
+init_files_print_config_overlay_fix_steps()
+{
+    local dir ssh_dir pref
+
+    dir="$(init_files_private_config_dir)"
+    ssh_dir="$(init_files_config_ssh_dir)"
+    pref="$(init_files_config_repo_pref_file)"
+
+    cat >&2 <<EOF
+
+ERROR: private config overlay is missing or incomplete.
+House SSH materials (authorized_keys, host aliases, GitHub IdentityFiles) and
+optional primary-user policy live in a private overlay — not in init-files.
+
+Target:
+  ${dir}
+  ${ssh_dir}/authorized_keys.house
+  ${ssh_dir}/config.house
+  ${ssh_dir}/config.github
+  ${dir}/init-files/default-users.env   # optional
+  ${dir}/init-files/bashrc.local        # optional personal aliases/helpers
+
+Fix (pick one):
+
+  1) Clone your private overlay (interactive provision/bootstrap will offer this):
+       export INIT_FILES_CONFIG_REPO='https://github.com/OWNER/private-config.git'
+       # or SSH: git@github.com:OWNER/private-config.git
+       git clone --depth 1 "\$INIT_FILES_CONFIG_REPO" ${dir}
+
+  2) Or create the three .ssh files under ${ssh_dir}/ yourself, then re-run.
+
+Remembered URL (optional): ${pref/#$HOME/~}
+  # written after a successful interactive prompt
+
+Then re-check: provision_init_files   # or bootstrap_host
+
+EOF
+}
+
+# Attempt one clone of the private overlay. Requires log; prompt_line helpful.
+# Returns 0 on successful clone (does not verify .ssh materials).
+init_files_try_clone_private_config()
+{
+    local dir repo git_bin parent
+
+    dir="$(init_files_private_config_dir)"
+    git_bin="$(command -v git 2>/dev/null || true)"
+    [[ -n "$git_bin" && -x "$git_bin" ]] || {
+        log "ERROR    git is required to clone the private config overlay"
+        return 1
+    }
+
+    if [[ -d "$dir/.git" ]]; then
+        log "OK       private config already cloned at ${dir/#$HOME/~}"
+        return 0
+    fi
+    if [[ -e "$dir" ]]; then
+        log "ERROR    ${dir/#$HOME/~} exists but is not a git clone — move it aside and retry"
+        return 1
+    fi
+
+    if ! repo="$(init_files_config_repo_url 2>/dev/null)"; then
+        repo="$(init_files_prompt_config_repo_url)" || {
+            log "ERROR    no private config git URL provided"
+            return 1
+        }
+    else
+        log "Using    remembered/env overlay URL: $repo"
+        if [[ -t 0 && -t 2 ]] && declare -F prompt_yn > /dev/null 2>&1; then
+            if ! prompt_yn "Use this overlay URL? [Y/n]"; then
+                repo="$(init_files_prompt_config_repo_url)" || return 1
+            fi
+        fi
+    fi
+    init_files_remember_config_repo_url "$repo" || true
+
+    parent="$(dirname "$dir")"
+    mkdir -p "$parent" || return 1
+    log "Cloning  $repo -> $dir"
+    if "$git_bin" clone --depth 1 --branch main "$repo" "$dir" 2>/dev/null \
+        || "$git_bin" clone --depth 1 "$repo" "$dir" 2>/dev/null; then
+        log "OK       cloned private config overlay"
+        return 0
+    fi
+
+    log "ERROR    clone failed — check URL / auth (try: gh auth login), then retry"
+    return 1
+}
+
+# Source init-files/default-users.env from the config clone when present.
+# Returns 0 when the file exists and is sourced (even if INIT_FILES_DEFAULT_USERS
+# stays empty); 1 when the file is missing.
+init_files_source_default_users_env()
+{
+    local env_file
+    env_file="$(init_files_config_default_users_env)"
+    [[ -f "$env_file" ]] || return 1
+    # shellcheck disable=SC1090
+    . "$env_file"
+    return 0
+}
+
+# Source optional personal bashrc.local from the private overlay.
+# Returns 0 when sourced; 1 when missing.
+init_files_source_bashrc_local()
+{
+    local local_file
+    local_file="$(init_files_config_bashrc_local)"
+    [[ -f "$local_file" ]] || return 1
+    # shellcheck disable=SC1090
+    . "$local_file"
+    return 0
+}
+
+# Collect IdentityFile paths from a config.github template; keep only files that exist.
+# Usage: init_files_github_identity_files_from_template template_path
+# Prints one absolute path per line.
+init_files_github_identity_files_from_template()
+{
+    local template="${1:-}"
+    local line id
+    [[ -n "$template" && -f "$template" ]] || return 0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" =~ ^[[:space:]]*IdentityFile[[:space:]]+([^[:space:]#]+) ]] || continue
+        id="${BASH_REMATCH[1]}"
+        id="${id/#\~/$HOME}"
+        [[ -f "$id" ]] || continue
+        printf '%s\n' "$id"
+    done < "$template"
+}
+
+# Prompt for private-config git URL (requires prompt_line or read). Prints URL.
+init_files_prompt_config_repo_url()
+{
+    local url=""
+
+    if declare -F prompt_line > /dev/null 2>&1; then
+        url="$(prompt_line 'Private config git URL (HTTPS or SSH):')"
+        printf '%s\n' "$url"
+        return 0
+    fi
+
+    if [[ ! -t 0 || ! -t 2 ]]; then
+        return 1
+    fi
+    while [[ -z "$url" ]]; do
+        printf '%s ' 'Private config git URL (HTTPS or SSH):' >&2
+        read -r url || return 1
+        url="$(printf '%s' "$url" | tr -d '[:space:]')"
+    done
+    printf '%s\n' "$url"
+}
+
+# Y/n with default no (empty → no). Uses caller's quiet if set; needs TTY.
+init_files_prompt_yn_default_no()
+{
+    local prompt="$1"
+    local reply
+
+    if [[ ${quiet:-0} -eq 1 ]] || [[ ! -t 0 || ! -t 2 ]]; then
+        return 1
+    fi
+    printf '%s ' "$prompt" >&2
+    read -r reply || reply=n
+    case "$reply" in
+        y|Y|yes|YES) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Ensure private config overlay is complete (clone + expected .ssh files).
+# offer=1 → interactive fix loop (flag error, show steps, clone/re-check until OK
+# or explicit skip). offer=0 → print error + steps and return 1.
+# Requires log and prompt_yn from the caller when offer=1.
+# Returns 0 when complete; 1 when missing/skipped.
+init_files_ensure_private_config_repo()
+{
+    local offer="${1:-0}"
+    local dir
+
+    dir="$(init_files_private_config_dir)"
+
+    if init_files_private_config_complete; then
+        log "OK       private config overlay ready (${dir/#$HOME/~})"
+        return 0
+    fi
+
+    # Quiet / non-TTY: ERROR + fix steps only — never enter the confirm/retry loop.
+    if [[ "$offer" -eq 0 ]] || [[ ! -t 0 || ! -t 2 ]] || ! declare -F prompt_yn > /dev/null 2>&1; then
+        init_files_report_missing_config_ssh || true
+        init_files_print_config_overlay_fix_steps
+        log "ERROR    private config overlay not ready — fix offline, then re-run interactively (not -q)"
+        return 1
+    fi
+
+    # Interactive confirm/retry until complete or explicit generic-install skip.
+    while true; do
+        init_files_report_missing_config_ssh || true
+        init_files_print_config_overlay_fix_steps
+
+        if ! prompt_yn "Fix private config overlay now? [Y/n]"; then
+            if init_files_prompt_yn_default_no "Skip house SSH and continue with a generic install only? [y/N]"; then
+                log "SKIP     private config overlay (generic install)"
+                return 1
+            fi
+            continue
+        fi
+
+        if ! init_files_private_config_present; then
+            init_files_try_clone_private_config || {
+                prompt_yn "Retry private config overlay setup? [Y/n]" || {
+                    log "ERROR    private config overlay still not ready"
+                    return 1
+                }
+                continue
+            }
+        else
+            log "Found    ${dir/#$HOME/~} — re-checking expected .ssh files…"
+            cat >&2 <<EOF
+
+If files are still missing, add them in your private overlay repo, then:
+  git -C ${dir} pull --ff-only
+(or copy the three .ssh files into place) and choose retry.
+
+EOF
+        fi
+
+        if init_files_private_config_complete; then
+            log "OK       private config overlay ready (${dir/#$HOME/~})"
+            return 0
+        fi
+
+        init_files_report_missing_config_ssh || true
+        if ! prompt_yn "Overlay still incomplete — retry? [Y/n]"; then
+            if init_files_prompt_yn_default_no "Skip house SSH and continue with a generic install only? [y/N]"; then
+                log "SKIP     private config overlay (generic install)"
+                return 1
+            fi
+        fi
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Preferred SSH key paths (overlay first; generic fallbacks — no personal names)
+# ---------------------------------------------------------------------------
+
+# True when $1 is a safe SSH key basename (no slashes/whitespace/metacharacters).
+# Used for --key-from remote scripts and ~/.ssh path construction.
+init_files_ssh_key_basename_ok()
+{
+    local base="${1:-}"
+
+    [[ -n "$base" ]] || return 1
+    case "$base" in
+        .|..) return 1 ;;
+    esac
+    # Alphanumeric + common key-name punctuation only (no path separators or shell meta).
+    [[ "$base" =~ ^[A-Za-z0-9._@+-]+$ ]]
+}
+
+# Absolute paths to try when private overlay config.github is absent.
+init_files_generic_ssh_key_candidates()
+{
+    printf '%s\n' \
+        "${HOME}/.ssh/id_ed25519_github" \
+        "${HOME}/.ssh/id_ed25519_house" \
+        "${HOME}/.ssh/id_ed25519" \
+        "${HOME}/.ssh/id_rsa"
+}
+
+# Print preferred SSH private keys that exist on this host (one absolute path per
+# line). Order: overlay config.github IdentityFiles, then generic candidates.
+init_files_preferred_ssh_keys()
+{
+    local template id seen=$'\n'
+
+    template="$(init_files_config_ssh_dir)/config.github"
+    if [[ -f "$template" ]]; then
+        while IFS= read -r id || [[ -n "$id" ]]; do
+            [[ -n "$id" && -f "$id" ]] || continue
+            case "$seen" in
+                *$'\n'"$id"$'\n'*) continue ;;
+            esac
+            printf '%s\n' "$id"
+            seen+="${id}"$'\n'
+        done < <(init_files_github_identity_files_from_template "$template")
+    fi
+
+    while IFS= read -r id || [[ -n "$id" ]]; do
+        [[ -n "$id" && -f "$id" ]] || continue
+        case "$seen" in
+            *$'\n'"$id"$'\n'*) continue ;;
+        esac
+        printf '%s\n' "$id"
+        seen+="${id}"$'\n'
+    done < <(init_files_generic_ssh_key_candidates)
+}
+
+# First preferred key that exists. Honors SSH_CACHE_KEY / INIT_FILES_HOUSE_KEY
+# when set and the file exists. Returns 1 if none.
+init_files_preferred_ssh_key()
+{
+    local key
+
+    for key in "${SSH_CACHE_KEY:-}" "${INIT_FILES_HOUSE_KEY:-}"; do
+        [[ -n "$key" && -f "$key" ]] || continue
+        printf '%s\n' "$key"
+        return 0
+    done
+    key="$(init_files_preferred_ssh_keys | head -1 || true)"
+    [[ -n "$key" && -f "$key" ]] || return 1
+    printf '%s\n' "$key"
+}
+
+# True when $1 looks like an RSA private key (for PubkeyAcceptedAlgorithms).
+init_files_ssh_key_is_rsa()
+{
+    local key="${1:-}" line
+
+    [[ -n "$key" && -f "$key" ]] || return 1
+    case "$(basename -- "$key")" in
+        id_rsa|id_rsa_*|*.rsa) return 0 ;;
+    esac
+    line="$(ssh-keygen -lf "$key" 2>/dev/null | head -1 || true)"
+    [[ "$line" == *"[RSA]"* || "$line" == *" RSA "* || "$line" == RSA* ]] && return 0
+    # Older ssh-keygen: "2048 SHA256:... comment (RSA)"
+    [[ "$line" == *"(RSA)"* ]] && return 0
+    return 1
+}
+
+# Basename for --key-from house key fetch (no personal default).
+# Order: INIT_FILES_HOUSE_KEY basename, INIT_FILES_HOUSE_KEY_BASENAME, remembered
+# pref, else id_ed25519_house. Invalid values (slashes/metacharacters) are skipped.
+init_files_house_key_basename()
+{
+    local pref key base
+
+    if [[ -n "${INIT_FILES_HOUSE_KEY:-}" ]]; then
+        base="$(basename -- "$INIT_FILES_HOUSE_KEY")"
+        if init_files_ssh_key_basename_ok "$base"; then
+            printf '%s\n' "$base"
+            return 0
+        fi
+    fi
+    if [[ -n "${INIT_FILES_HOUSE_KEY_BASENAME:-}" ]] \
+        && init_files_ssh_key_basename_ok "$INIT_FILES_HOUSE_KEY_BASENAME"; then
+        printf '%s\n' "$INIT_FILES_HOUSE_KEY_BASENAME"
+        return 0
+    fi
+    pref="${INIT_FILES_HOUSE_KEY_BASENAME_PREF:-${XDG_CONFIG_HOME:-$HOME/.config}/init-files/house-key-basename}"
+    if [[ -f "$pref" ]]; then
+        base="$(tr -d '[:space:]' <"$pref" 2>/dev/null || true)"
+        if init_files_ssh_key_basename_ok "$base"; then
+            printf '%s\n' "$base"
+            return 0
+        fi
+    fi
+    # Prefer basename of first overlay IdentityFile when present.
+    key="$(init_files_github_identity_files_from_template "$(init_files_config_ssh_dir)/config.github" 2>/dev/null | head -1 || true)"
+    if [[ -n "$key" ]]; then
+        base="$(basename -- "$key")"
+        if init_files_ssh_key_basename_ok "$base"; then
+            printf '%s\n' "$base"
+            return 0
+        fi
+    fi
+    printf '%s\n' 'id_ed25519_house'
+}
+
+init_files_remember_house_key_basename()
+{
+    local base="${1:-}" pref parent
+
+    init_files_ssh_key_basename_ok "$base" || return 1
+    pref="${INIT_FILES_HOUSE_KEY_BASENAME_PREF:-${XDG_CONFIG_HOME:-$HOME/.config}/init-files/house-key-basename}"
+    parent="$(dirname "$pref")"
+    mkdir -p "$parent" || return 1
+    printf '%s\n' "$base" >"$pref" || return 1
+    chmod 600 "$pref" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# Private config overlay freshness (URL drift + origin/main moved)
+# ---------------------------------------------------------------------------
+
+# Normalize a git remote for equality checks (HTTPS ↔ SSH for github.com).
+init_files_normalize_git_repo_url()
+{
+    local u="${1:-}"
+
+    u="${u#"${u%%[![:space:]]*}"}"
+    u="${u%"${u##*[![:space:]]}"}"
+    u="${u%/}"
+    u="${u%.git}"
+    if [[ "$u" =~ ^git@([^:]+):(.+)$ ]]; then
+        printf 'https://%s/%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+        return 0
+    fi
+    if [[ "$u" =~ ^ssh://([^@/]+@)?([^/]+)/(.+)$ ]]; then
+        printf 'https://%s/%s\n' "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+        return 0
+    fi
+    printf '%s\n' "$u"
+}
+
+# origin URL for the private config clone (empty / fail if not a git clone).
+init_files_private_config_origin_url()
+{
+    local dir git_bin
+
+    dir="$(init_files_private_config_dir)"
+    [[ -d "$dir/.git" ]] || return 1
+    git_bin="$(command -v git 2>/dev/null || true)"
+    [[ -n "$git_bin" && -x "$git_bin" ]] || return 1
+    "$git_bin" -C "$dir" remote get-url origin 2>/dev/null
+}
+
+# True when preferred URL (env/pref) differs from clone origin (both set).
+init_files_private_config_url_drifted()
+{
+    local preferred origin np no
+
+    preferred="$(init_files_config_repo_url 2>/dev/null || true)"
+    origin="$(init_files_private_config_origin_url 2>/dev/null || true)"
+    [[ -n "$preferred" && -n "$origin" ]] || return 1
+    np="$(init_files_normalize_git_repo_url "$preferred")"
+    no="$(init_files_normalize_git_repo_url "$origin")"
+    [[ -n "$np" && -n "$no" && "$np" != "$no" ]]
+}
+
+# True when local HEAD differs from cached origin/main (no network).
+init_files_private_config_behind_cached()
+{
+    local dir git_bin head remote
+
+    dir="$(init_files_private_config_dir)"
+    [[ -d "$dir/.git" ]] || return 1
+    git_bin="$(command -v git 2>/dev/null || true)"
+    [[ -n "$git_bin" && -x "$git_bin" ]] || return 1
+    head="$("$git_bin" -C "$dir" rev-parse HEAD 2>/dev/null || true)"
+    remote="$("$git_bin" -C "$dir" rev-parse origin/main 2>/dev/null || true)"
+    [[ -n "$head" && -n "$remote" && "$head" != "$remote" ]]
+}
+
+# Fast-forward pull private config overlay. Returns 0 on success.
+init_files_pull_private_config()
+{
+    local dir git_bin
+
+    dir="$(init_files_private_config_dir)"
+    git_bin="$(command -v git 2>/dev/null || true)"
+    [[ -d "$dir/.git" && -n "$git_bin" && -x "$git_bin" ]] || return 1
+    "$git_bin" -C "$dir" pull --ff-only
+}

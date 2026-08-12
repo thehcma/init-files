@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# List tracked shell sources for bash -n / shellcheck (stdout: one path per line).
+# Inventory = all git-tracked files minus an exclusion list (this repo is mostly shell).
+# Shared by .github/ci/bash-n and .github/ci/shellcheck.
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$root"
+
+# Return 0 if path should be shellchecked; 1 if excluded.
+shell_file_eligible() {
+  local path="$1"
+  local base first_line
+  [[ -f "$path" ]] || return 1
+  base="$(basename "$path")"
+
+  # Extension / basename exclusions (docs, data, non-shell tooling).
+  case "$base" in
+    *.py|*.md|*.mdc|*.snippet|*.txt|*.yml|*.yaml|*.json|*.toml|*.plist|*.vim|*.png|*.svg|*.html|*.css|*.js|*.ts|*.tsx|*.jsx)
+      return 1
+      ;;
+  esac
+  case "$base" in
+    .gitignore|CODEOWNERS|LICENSE|COPYING)
+      return 1
+      ;;
+  esac
+
+  # Path exclusions (SSH materials, Vim runtime config — not bash).
+  case "$path" in
+    ssh/*|vim/*)
+      return 1
+      ;;
+  esac
+
+  first_line=''
+  IFS= read -r first_line <"$path" || true
+  if [[ "$first_line" == '#!'* ]]; then
+    case "$first_line" in
+      *bash*|*'/sh'*|*'/env sh'*|*dash*|*ash*) ;;
+      *)
+        return 1
+        ;;
+    esac
+  fi
+  return 0
+}
+
+while IFS= read -r -d '' f; do
+  [[ -n "$f" ]] || continue
+  shell_file_eligible "$f" || continue
+  printf '%s\n' "$f"
+done < <(git -C "$root" ls-files -z | sort -z)

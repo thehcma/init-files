@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# Cursor Agent CLI status line + session-id recorder.
+# Wire via ~/.cursor/cli-config.json:
+#   "statusLine": { "type": "command", "command": "~/.local/share/init-files/cursor/statusline" }
+#
+# OSC title must go to the real tty — statusline stdout is captured by the
+# agent UI and never reaches iTerm as escape sequences.
+#
+# Session id goes in the iTerm *tab/window title* (OSC 0/1/2) so it survives
+# SSH into remote panes. No corner badge.
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/init-files"
+mkdir -p "$state_dir"
+
+payload="$(cat || true)"
+[[ -n "$payload" ]] || exit 0
+
+if ! command -v python3 >/dev/null 2>&1; then
+    printf 'agent (python3 missing for statusline)\n'
+    exit 0
+fi
+
+export _INIT_FILES_STATUSLINE_PAYLOAD="$payload"
+parsed="$(python3 - <<'PY'
+import json, os
+
+raw = os.environ.get("_INIT_FILES_STATUSLINE_PAYLOAD", "")
+try:
+    d = json.loads(raw)
+except Exception:
+    raise SystemExit(0)
+
+sid = d.get("session_id") or ""
+cwd = d.get("cwd") or (d.get("workspace") or {}).get("current_dir") or ""
+title = d.get("session_name") or ""
+model = ((d.get("model") or {}).get("display_name")) or ""
+pct = (d.get("context_window") or {}).get("used_percentage")
+pct_s = "" if pct is None else str(int(float(pct)))
+
+def esc(s: str) -> str:
+    return s.replace("\\", "\\\\").replace("'", "'\\''")
+
+print(f"session_id='{esc(sid)}'")
+print(f"cwd='{esc(cwd)}'")
+print(f"title='{esc(title)}'")
+print(f"model='{esc(model)}'")
+print(f"pct='{esc(pct_s)}'")
+PY
+)"
+eval "$parsed" 2>/dev/null || true
+
+_init_files_find_tty()
+{
+    # This agent process tree only — never other iTerm tabs/panes.
+    local pid="$$" tty ppid i=0
+    while [[ -n "$pid" && "$pid" -gt 1 && $i -lt 16 ]]; do
+        tty="$(ps -o tty= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+        if [[ -n "$tty" && "$tty" != "??" && -c "/dev/$tty" && -w "/dev/$tty" ]]; then
+            printf '%s' "/dev/$tty"
+            return 0
+        fi
+        ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+        [[ -z "$ppid" || "$ppid" == "$pid" ]] && break
+        pid="$ppid"
+        i=$((i + 1))
+    done
+    return 1
+}
+
+_init_files_tty_osc()
+{
+    # Prefer the process-tree tty (correct pane under SSH). Only fall back to
+    # /dev/tty when we ourselves have a controlling terminal — Cursor tool
+    # shells often have tty "??" and /dev/tty can hit the wrong session.
+    local ttydev own
+    ttydev="$(_init_files_find_tty 2>/dev/null || true)"
+    if [[ -z "$ttydev" ]]; then
+        own="$(ps -o tty= -p $$ 2>/dev/null | tr -d '[:space:]')"
+        if [[ -n "$own" && "$own" != "??" && -w /dev/tty ]]; then
+            ttydev=/dev/tty
+        fi
+    fi
+    if [[ -n "$ttydev" ]]; then
+        # shellcheck disable=SC2094
+        printf '%s' "$1" >"$ttydev" 2>/dev/null || true
+    fi
+}
+
+_init_files_set_session_title()
+{
+    # Tab/window title — works through SSH; primary identifier for splits.
+    local label="$1"
+    [[ -n "$label" ]] || return 0
+    # Strip OSC-hostile controls.
+    label="${label//$'\033'/}"
+    label="${label//$'\007'/}"
+    label="${label//$'\n'/ }"
+    _init_files_tty_osc "$(printf '\033]0;%s\007' "$label")"
+    _init_files_tty_osc "$(printf '\033]1;%s\007' "$label")"
+    _init_files_tty_osc "$(printf '\033]2;%s\007' "$label")"
+}
+
+name=""
+if [[ -n "${session_id:-}" ]]; then
+    INIT_FILES_RECORD_HOST="$(hostname -s 2>/dev/null || hostname 2>/dev/null || true)" \
+        python3 "$here/agent_sessions.py" record "$session_id" "${cwd:-}" >/dev/null 2>&1 || true
+
+    pending="${XDG_STATE_HOME:-$HOME/.local/state}/init-files/agent-session-pending-name"
+    if [[ -f "$pending" ]]; then
+        pname="$(tr -d '\r\n' <"$pending" 2>/dev/null || true)"
+        if [[ -n "$pname" ]]; then
+            python3 "$here/agent_sessions.py" name "$pname" "$session_id" >/dev/null 2>&1 || true
+            rm -f "$pending" 2>/dev/null || true
+        fi
+    fi
+
+    name="$(python3 - <<PY 2>/dev/null || true
+import json
+from pathlib import Path
+p = Path("${state_dir}/agent-session-names.json")
+sid = "${session_id}"
+if p.is_file():
+    try:
+        d = json.loads(p.read_text())
+        print((d.get(sid) or {}).get("name") or "")
+    except Exception:
+        pass
+PY
+)"
+    [[ -n "$name" ]] || name="${title:-}"
+
+    short="${session_id:0:8}"
+    tab_label="$short"
+    [[ -n "$name" ]] && tab_label="${short}:${name}"
+    _init_files_set_session_title "$tab_label"
+    # Wipe any leftover corner badge from older init-files.
+    if command -v base64 >/dev/null 2>&1; then
+        b64="$(printf '' | base64 | tr -d '\n')"
+        _init_files_tty_osc "$(printf '\033]1337;SetBadgeFormat=%s\007' "$b64")"
+    fi
+fi
+
+short_id="${session_id:0:8}"
+if [[ -n "$short_id" ]]; then
+    shown="$short_id"
+    [[ -n "$name" ]] && shown="${short_id}:${name}"
+    if [[ -n "${pct:-}" ]]; then
+        printf 'agent %s  %s  ctx %s%%' "$shown" "${model:-}" "$pct"
+    else
+        printf 'agent %s  %s' "$shown" "${model:-}"
+    fi
+else
+    printf '%s' "${model:-agent}"
+fi
+printf '\n'

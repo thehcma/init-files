@@ -1,0 +1,108 @@
+# Shared tool-path validation for provision_init_files and bashrc.
+# shellcheck shell=bash
+# Sourced only — do not execute. Clean break: this is the only verifier.
+#
+# Contract (see .cursor/rules/tool-path-consistency.mdc):
+# - Recorded init_tool_* values are absolute filesystem paths (or empty).
+# - A path is valid only if its resolved target is an executable non-directory
+#   file on THIS host (broken / out-of-bound symlinks fail).
+# - Older macOS (Darwin < 25): reject Homebrew-resolved paths.
+
+# Self-contained OS gates (no dual is_* / _init_is_* hooks).
+_init_files_tp_is_darwin()
+{
+    [[ "${OSTYPE:-}" == darwin* ]]
+}
+
+_init_files_tp_is_modern_macos()
+{
+    local major
+
+    _init_files_tp_is_darwin || return 1
+    major="$(uname -r 2>/dev/null || echo 0)"
+    major="${major%%.*}"
+    [[ "$major" =~ ^[0-9]+$ ]] || return 1
+    (( major >= 25 ))
+}
+
+# Resolve to the canonical absolute path. Fails on broken / unresolvable links.
+init_files_resolve_realpath()
+{
+    local path="$1"
+    local resolved
+
+    [[ -n "$path" && "$path" == /* ]] || return 1
+
+    if command -v realpath > /dev/null 2>&1; then
+        resolved=$(realpath "$path" 2> /dev/null) || return 1
+    elif [[ -x /usr/bin/python3 ]]; then
+        resolved=$(/usr/bin/python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$path" 2> /dev/null) || return 1
+    elif command -v python3 > /dev/null 2>&1; then
+        resolved=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$path" 2> /dev/null) || return 1
+    elif [[ -L "$path" ]]; then
+        resolved=$(readlink "$path" 2> /dev/null || true)
+        [[ -n "$resolved" ]] || return 1
+        [[ "$resolved" == /* ]] || resolved="$(cd "$(dirname -- "$path")" && pwd)/$resolved"
+        # One-level readlink is not enough for chains; require the target exists.
+        [[ -e "$resolved" ]] || return 1
+    else
+        resolved="$path"
+    fi
+
+    # Boundary: resolved path must stay absolute (reject relative / empty escapes).
+    [[ -n "$resolved" && "$resolved" == /* ]] || return 1
+    printf '%s\n' "$resolved"
+}
+
+# True when path (or its symlink target) lives under Homebrew — rejected on older macOS.
+# Non-brew /usr/local installs (e.g. MacGPG2) are allowed.
+# Globs must stay aligned with discovery probes in lib/host_paths.
+init_files_is_disallowed_homebrew_path()
+{
+    local path="$1"
+    local resolved
+
+    [[ -n "$path" ]] || return 1
+
+    case "$path" in
+        /opt/homebrew/*|*/homebrew/*|/usr/local/Cellar/*|/usr/local/opt/*|/usr/local/Homebrew/*)
+            return 0
+            ;;
+    esac
+
+    resolved=$(init_files_resolve_realpath "$path" 2> /dev/null || true)
+    [[ -n "$resolved" ]] || return 1
+
+    case "$resolved" in
+        /opt/homebrew/*|*/homebrew/*|/usr/local/Cellar/*|/usr/local/opt/*|/usr/local/Homebrew/*)
+            return 0
+            ;;
+    esac
+
+    return 1
+}
+
+# Accept only an absolute path whose resolved target is an executable non-directory file.
+init_files_verify_tool_path()
+{
+    local path="$1"
+    local resolved
+
+    [[ -n "$path" && "$path" == /* ]] || return 1
+    # Existence before resolve: broken symlinks fail -e on most systems.
+    [[ -e "$path" || -L "$path" ]] || return 1
+    [[ ! -d "$path" ]] || return 1
+
+    resolved=$(init_files_resolve_realpath "$path" 2> /dev/null) || return 1
+    # Boundary: canonical target must be an executable non-directory file.
+    [[ -e "$resolved" && -x "$resolved" && ! -d "$resolved" ]] || return 1
+    [[ -f "$resolved" || -L "$resolved" ]] || return 1
+
+    # Older macOS: never record/keep Homebrew (including /usr/local/bin shims into Cellar).
+    if _init_files_tp_is_darwin && ! _init_files_tp_is_modern_macos \
+        && init_files_is_disallowed_homebrew_path "$path"; then
+        return 1
+    fi
+
+    return 0
+}

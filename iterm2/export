@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Export curated iTerm2 prefs (font/colors/keyboard/mouse) into this repo.
+set -euo pipefail
+
+repo_iterm2="$(cd "$(dirname "$0")" && pwd)"
+prefs_py="$repo_iterm2/_prefs.py"
+out_plist="$repo_iterm2/com.googlecode.iterm2.plist"
+out_meta="$repo_iterm2/meta.json"
+domain="com.googlecode.iterm2"
+
+if [[ "${OSTYPE:-}" != darwin* ]]; then
+    printf 'iterm2/export: macOS only\n' >&2
+    exit 1
+fi
+
+if ! command -v defaults >/dev/null 2>&1; then
+    printf 'iterm2/export: defaults(1) not found\n' >&2
+    exit 1
+fi
+
+python3_bin="$(command -v python3 2>/dev/null || true)"
+if [[ -z "$python3_bin" ]]; then
+    printf 'iterm2/export: python3 required\n' >&2
+    exit 1
+fi
+
+tmp_raw="$(mktemp -t iterm2-raw.XXXXXX)"
+tmp_curated="$(mktemp -t iterm2-curated.XXXXXX)"
+cleanup() {
+    rm -f "$tmp_raw" "$tmp_curated"
+}
+trap cleanup EXIT
+
+if ! defaults export "$domain" "$tmp_raw" 2>/dev/null; then
+    printf 'iterm2/export: cannot export %s (is iTerm2 installed / has it launched once?)\n' \
+        "$domain" >&2
+    exit 1
+fi
+
+"$python3_bin" "$prefs_py" curate "$tmp_raw" "$tmp_curated"
+plutil -convert xml1 -o "$out_plist" "$tmp_curated"
+
+iterm_version="$(defaults read "$domain" "iTerm Version" 2>/dev/null || true)"
+if [[ -z "$iterm_version" ]]; then
+    for app in /Applications/iTerm.app /Applications/iTerm2.app; do
+        if [[ -f "$app/Contents/Info.plist" ]]; then
+            iterm_version="$(
+                /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+                    "$app/Contents/Info.plist" 2>/dev/null || true
+            )"
+            [[ -n "$iterm_version" ]] && break
+        fi
+    done
+fi
+[[ -n "$iterm_version" ]] || iterm_version="unknown"
+
+host_label=
+if command -v scutil >/dev/null 2>&1; then
+    host_label="$(scutil --get ComputerName 2>/dev/null || true)"
+fi
+[[ -n "$host_label" ]] || host_label="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo host)"
+
+"$python3_bin" "$prefs_py" write-meta "$out_meta" "$iterm_version" "$host_label"
+
+profiles="$("$python3_bin" -c '
+import plistlib, sys
+with open(sys.argv[1], "rb") as fh:
+    d = plistlib.load(fh)
+bms = d.get("New Bookmarks") or []
+print(len(bms))
+if bms and isinstance(bms[0], dict):
+    print(bms[0].get("Normal Font", "?"))
+' "$out_plist")"
+
+profile_count="$(printf '%s\n' "$profiles" | sed -n '1p')"
+normal_font="$(printf '%s\n' "$profiles" | sed -n '2p')"
+
+printf 'Wrote %s\n' "$out_plist"
+printf 'Wrote %s (iterm %s @ %s)\n' "$out_meta" "$iterm_version" "$host_label"
+printf '  profiles: %s\n' "$profile_count"
+[[ -n "$normal_font" ]] && printf '  Normal Font: %s\n' "$normal_font"
+printf 'Next: export_iterm_settings is done; upload with upload_iterm_settings\n'

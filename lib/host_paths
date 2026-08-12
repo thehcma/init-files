@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# Shared host path discovery for provision_init_files and bashrc.
+# shellcheck shell=bash
+# Sourced only — do not execute.
+#
+# Probes common install layouts (Homebrew prefixes, MacVim.app). Recorded
+# tools still come from ~/.config/init-files/tools.<hostname> after provision.
+# Keep directory probe order aligned with init_files_is_disallowed_homebrew_path
+# globs in lib/tool_path (older-macOS rejection). No env-var path overrides.
+
+_init_files_hp_is_darwin()
+{
+    [[ "${OSTYPE:-}" == darwin* ]]
+}
+
+_init_files_hp_is_modern_macos()
+{
+    local major
+
+    _init_files_hp_is_darwin || return 1
+    major="$(uname -r 2>/dev/null || echo 0)"
+    major="${major%%.*}"
+    [[ "$major" =~ ^[0-9]+$ ]] || return 1
+    (( major >= 25 ))
+}
+
+# Print Homebrew prefix on modern macOS, or fail.
+# Prefer a working `brew --prefix`; else probe known install roots.
+init_files_homebrew_prefix()
+{
+    local brew_bin prefix candidate
+
+    _init_files_hp_is_modern_macos || return 1
+
+    brew_bin="$(command -v brew 2>/dev/null || true)"
+    if [[ -z "$brew_bin" || ! -x "$brew_bin" ]]; then
+        while IFS= read -r candidate; do
+            [[ -n "$candidate" && -x "$candidate" ]] || continue
+            brew_bin="$candidate"
+            break
+        done < <(init_files_brew_bin_candidates)
+    fi
+    if [[ -n "$brew_bin" && -x "$brew_bin" ]]; then
+        prefix="$("$brew_bin" --prefix 2>/dev/null || true)"
+        if [[ -n "$prefix" && -d "$prefix" ]]; then
+            printf '%s\n' "$prefix"
+            return 0
+        fi
+    fi
+
+    if [[ -d /opt/homebrew ]]; then
+        printf '%s\n' /opt/homebrew
+        return 0
+    fi
+    if [[ -d /usr/local/Homebrew || -x /usr/local/bin/brew || -d /usr/local/opt ]]; then
+        printf '%s\n' /usr/local
+        return 0
+    fi
+    if [[ -d "${HOME}/homebrew" ]]; then
+        printf '%s\n' "${HOME}/homebrew"
+        return 0
+    fi
+    return 1
+}
+
+# Known brew binary locations (one path per line). SYNC order with bootstrap_host.
+init_files_brew_bin_candidates()
+{
+    printf '%s\n' \
+        /opt/homebrew/bin/brew \
+        /usr/local/bin/brew \
+        "${HOME}/homebrew/bin/brew"
+}
+
+# MacVim GUI/CLI candidates. Optional $1 = Homebrew prefix (brew-linked paths).
+# Order matches provision_init_files record_tool mvim. On modern macOS always
+# includes /usr/local/bin/mvim as a late fallback.
+init_files_macvim_bin_candidates()
+{
+    local prefix="${1-}"
+
+    printf '%s\n' /Applications/MacVim.app/Contents/bin/mvim
+    if [[ -n "$prefix" ]]; then
+        printf '%s\n' \
+            "${prefix}/bin/mvim" \
+            "${prefix}/opt/macvim/bin/mvim"
+    fi
+    printf '%s\n' /Applications/MacVim.app/Contents/MacOS/Vim
+    if _init_files_hp_is_modern_macos; then
+        printf '%s\n' /usr/local/bin/mvim
+    fi
+}
+
+# Print "$prefix/bin/$name" when both args are non-empty.
+init_files_prefix_bin()
+{
+    local prefix="${1-}"
+    local name="${2-}"
+
+    [[ -n "$prefix" && -n "$name" ]] || return 1
+    printf '%s/bin/%s\n' "$prefix" "$name"
+}

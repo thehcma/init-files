@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Static tests for lib/github_bootstrap + bootstrap_host guided GitHub UX (issue #18).
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+
+printf '\n=== lib/github_bootstrap ===\n'
+lib_text="$(<"${root}/lib/github_bootstrap")"
+assert_contains 'defines bootstrap_step_run' "$lib_text" 'bootstrap_step_run()'
+assert_contains 'defines guided https' "$lib_text" 'bootstrap_guided_github_https()'
+assert_contains 'defines platform banner' "$lib_text" 'bootstrap_platform_banner()'
+assert_contains 'defines linux sudo check' "$lib_text" 'bootstrap_linux_can_sudo_upgrade()'
+assert_contains 'defines guided openssh' "$lib_text" 'bootstrap_guided_install_openssh()'
+assert_contains 'defines gh release install' "$lib_text" 'bootstrap_install_gh_release()'
+assert_contains 'defines node offer' "$lib_text" 'bootstrap_offer_node_toolchain()'
+
+printf '\n=== bootstrap_host wiring ===\n'
+boot_text="$(<"${root}/bootstrap_host")"
+assert_contains 'sources github lib' "$boot_text" 'bootstrap_source_github_lib'
+assert_contains 'gh Y/n prompt' "$boot_text" 'Authenticate to GitHub with gh (HTTPS)?'
+assert_contains 'guided ssh setup' "$boot_text" 'guided_setup_github_ssh()'
+assert_contains 'setup_https uses guided' "$boot_text" 'bootstrap_guided_github_https'
+assert_contains 'setup_ssh uses guided' "$boot_text" 'guided_setup_github_ssh'
+assert_contains 'optional node after clone' "$boot_text" 'bootstrap_offer_node_toolchain'
+
+printf '\n=== behavioral: bootstrap_step_run ===\n'
+# shellcheck disable=SC1091
+source "${root}/lib/github_bootstrap"
+log() { :; }
+quiet=0
+prompt_yn() { [[ "${1:-}" == *"proceed"* || "${1:-}" == *"Retry"* ]]; }
+calls=0
+demo_run() { calls=$((calls + 1)); [[ $calls -ge 2 ]]; }
+rc=0
+bootstrap_step_run 'demo' demo_run 'true' || rc=$?
+if [[ $calls -eq 2 && $rc -eq 0 ]]; then
+  pass_case 'step_run retries then succeeds'
+else
+  fail_case "step_run retries then succeeds (calls=$calls rc=$rc)"
+fi
+
+test_summary

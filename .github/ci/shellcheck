@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Local + CI shellcheck entrypoint (repository-helpers consumer pattern).
+# Severity matches helpers CI: shellcheck -S info (zero findings).
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$root"
+
+mapfile -t files < <(bash .github/ci/list-shell-files)
+if [[ ${#files[@]} -eq 0 ]]; then
+  exit 0
+fi
+printf 'shellcheck -S info: %s\n' "${files[@]}"
+shellcheck -S info "${files[@]}"

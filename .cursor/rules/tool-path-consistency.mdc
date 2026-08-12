@@ -1,0 +1,45 @@
+---
+description: Keep provision/bashrc tool-path validation identical; admin vs non-admin install handoff
+alwaysApply: true
+---
+
+# Tool path consistency
+
+`provision_init_files` discovers tools; `bashrc` consumes `~/.config/init-files/tools.<hostname>`. Both use **only** [`lib/tool_path`](../../lib/tool_path) (`init_files_verify_tool_path`). Clean break — no legacy `-x`-only gates or dual wrappers.
+
+Host layout probes (Homebrew prefix, brew binary locations, MacVim.app paths) live in [`lib/host_paths`](../../lib/host_paths). That is discovery DRY — **not** a second config system. Recorded `init_tool_*` paths remain the runtime contract. Do **not** add env-var overrides for config dir / brew prefix / candidate lists. `bootstrap_host` stays scp/curl-able alone and keeps an inline brew-bin probe with a `SYNC: lib/host_paths` comment.
+
+## Contract
+
+- Recorded `init_tool_*` values are **absolute** paths (`/*`) or empty.
+- Valid iff the **resolved** target is an executable non-directory file on **this** host (broken / unresolvable symlinks fail; resolved path must stay absolute).
+- Write tools values with `printf %q`.
+- bashrc clears in-memory `init_tool_*` that fail the shared verifier (or clears all recorded paths if the lib is missing).
+- Older macOS (Darwin **&lt; 25**): reject Homebrew paths. Modern macOS may record brew absolutes.
+- Tool **recording** lives in `provision_init_files`; shared **layout probes** live in `lib/host_paths` (also used by bashrc fallbacks).
+
+## Admin vs non-admin (auto-detect)
+
+**Detect once** with `is_macos_admin` / `_init_is_macos_admin`. Emit **only** the matching path.
+
+| Detected role | Emit | Do not emit |
+| --- | --- | --- |
+| **Admin** (modern macOS) | Interactive brew prompts; direct `install: brew …` / `update_*` | `ADMIN HANDOFF`, “ask an admin” |
+| **Non-admin** (MDM) | One `ensure_brew_admin_handoff` / `print_brew_admin_copy_paste`; bashrc `_init_brew_admin_or_handoff` | `brew install` as if the user can run it; duplicate brew lines; Y/n brew prompts |
+
+Handoff uses `brew_is_usable` (binary + successful `brew --prefix`), not a PATH existence check alone. User-local (nvm, Meslo zip, `~/.local`) never goes in the brew handoff. Older macOS / Linux: no brew handoff.
+
+## When changing tools
+
+1. `record_tool` in `provision_init_files` + usage in `bashrc`.
+2. Validation only in `lib/tool_path`; layout probes in `lib/host_paths`; handoff only via `ensure_brew_admin_handoff`.
+3. Bump `INIT_FILES_TOOLS_REVISION` in **both** when the `record_tool` set changes.
+4. Run `tests/tool-path.test` / `tests/host-paths.test` after verifier or probe changes; re-provision on this host.
+
+## Anti-patterns
+
+- Legacy dual validators (`[[ -x ]]` fallback, `verify_tool_path` wrappers beside `init_files_*`).
+- Emitting handoff **and** `install: brew …` to the same non-admin session (or handoff to an admin).
+- Duplicating `/opt/homebrew` / MacVim.app probe lists outside `lib/host_paths` (except `bootstrap_host` SYNC copy).
+- Env-var overrides for `~/.config/init-files` or brew/MacVim candidate paths.
+- Committing `__pycache__` / `*.pyc`.

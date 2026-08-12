@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# Bounded dedupe/rotate helpers for bash history archives (issue #9).
+# shellcheck shell=bash
+# Sourced by bashrc; used by tests/history-rotate.test.
+# Prefer recorded init_tool_python3 via init_files_verify_tool_path (lib/tool_path);
+# fall back to /usr/bin/python3 or PATH python3. Lock/atomic helpers live in bashrc
+# (lib/tool_version_cache) around rotate_bash_history, not in this file.
+
+# Soft thresholds: schedule background rotate when exceeded.
+INIT_FILES_HISTORY_SOFT_BYTES=$((16 * 1024 * 1024))
+INIT_FILES_HISTORY_SOFT_LINES=100000
+# Hard caps after rewrite (whichever binds first).
+INIT_FILES_HISTORY_HARD_UNIQUES=50000
+INIT_FILES_HISTORY_HARD_BYTES=$((8 * 1024 * 1024))
+# Session HISTFILE cleanup.
+INIT_FILES_HISTORY_SESSION_MAX_AGE_DAYS=14
+INIT_FILES_HISTORY_SESSION_MAX_COUNT=100
+
+_init_files_history_python()
+{
+    if [[ -n "${init_tool_python3:-}" ]] \
+        && declare -F init_files_verify_tool_path > /dev/null 2>&1 \
+        && init_files_verify_tool_path "$init_tool_python3"
+    then
+        printf '%s\n' "$init_tool_python3"
+        return 0
+    fi
+    if [[ -x /usr/bin/python3 ]]; then
+        printf '%s\n' /usr/bin/python3
+        return 0
+    fi
+    command -v python3 2>/dev/null || return 1
+}
+
+# True when path exceeds soft size or line thresholds (missing file → false).
+init_files_history_soft_oversize()
+{
+    local path="$1"
+    local size lines
+
+    [[ -n "$path" && -f "$path" ]] || return 1
+    size=$(wc -c < "$path" 2>/dev/null || echo 0)
+    [[ "$size" =~ ^[0-9]+$ ]] || return 1
+    if (( size > INIT_FILES_HISTORY_SOFT_BYTES )); then
+        return 0
+    fi
+    lines=$(wc -l < "$path" 2>/dev/null || echo 0)
+    [[ "$lines" =~ ^[0-9]+$ ]] || return 1
+    (( lines > INIT_FILES_HISTORY_SOFT_LINES ))
+}
+
+# Rewrite src → dest: last-occurrence dedupe of commands, keep paired #timestamps,
+# then keep a suffix that fits hard unique/byte caps. Returns 0 on success.
+init_files_history_rewrite_bounded()
+{
+    local src="$1"
+    local dest="$2"
+    local py
+
+    [[ -n "$src" && -f "$src" && -n "$dest" ]] || return 1
+    py="$(_init_files_history_python)" || return 1
+
+    "$py" - "$src" "$dest" \
+        "$INIT_FILES_HISTORY_HARD_UNIQUES" "$INIT_FILES_HISTORY_HARD_BYTES" <<'PY'
+import re
+import sys
+
+src, dest, hard_uniques_s, hard_bytes_s = sys.argv[1:5]
+hard_uniques = int(hard_uniques_s)
+hard_bytes = int(hard_bytes_s)
+
+# Bash HISTTIMEFORMAT lines are exactly "#<epoch>" (optional CR before NL).
+_ts_re = re.compile(r"^#[0-9]+\r?\n?\Z")
+
+# entries: list of (optional_ts_line_or_None, command_line)
+entries = []
+pending_ts = None
+with open(src, "r", encoding="utf-8", errors="replace") as f:
+    for line in f:
+        if _ts_re.match(line):
+            pending_ts = line
+            continue
+        entries.append((pending_ts, line))
+        pending_ts = None
+
+# Last occurrence wins: walk reverse, keep first time we see each command text.
+seen = set()
+kept_rev = []
+for ts, cmd in reversed(entries):
+    key = cmd
+    if key in seen:
+        continue
+    seen.add(key)
+    kept_rev.append((ts, cmd))
+
+kept = list(reversed(kept_rev))
+
+# Cap by unique count from the end (most recent).
+if len(kept) > hard_uniques:
+    kept = kept[-hard_uniques:]
+
+# Cap by byte size from the end.
+def entry_bytes(pair):
+    ts, cmd = pair
+    n = len(cmd.encode("utf-8", errors="replace"))
+    if ts is not None:
+        n += len(ts.encode("utf-8", errors="replace"))
+    return n
+
+total = sum(entry_bytes(p) for p in kept)
+while kept and total > hard_bytes:
+    total -= entry_bytes(kept[0])
+    kept.pop(0)
+
+with open(dest, "w", encoding="utf-8", errors="replace") as out:
+    for ts, cmd in kept:
+        if ts is not None:
+            out.write(ts)
+        out.write(cmd)
+PY
+}
+
+# Prune per-session HISTFILEs under dir (history.<host>.<pid>.*), not history.all.
+# Deletes files older than MAX_AGE_DAYS; if more than MAX_COUNT remain, drop oldest.
+init_files_history_prune_sessions()
+{
+    local dir="$1"
+    local max_age_days="${2:-$INIT_FILES_HISTORY_SESSION_MAX_AGE_DAYS}"
+    local max_count="${3:-$INIT_FILES_HISTORY_SESSION_MAX_COUNT}"
+    local f now mtime age_days
+    local -a sessions=()
+
+    [[ -n "$dir" && -d "$dir" ]] || return 0
+    now=$(date +%s 2>/dev/null || echo 0)
+    [[ "$now" =~ ^[0-9]+$ ]] || return 0
+
+    shopt -s nullglob
+    for f in "$dir"/history.*; do
+        [[ -f "$f" ]] || continue
+        case "$(basename -- "$f")" in
+            history.all|history.all.*|last-rotate|rotate.log) continue ;;
+            history.*) ;;
+            *) continue ;;
+        esac
+        # Skip lock dirs / non-session names like history.all
+        [[ "$(basename -- "$f")" == history.all ]] && continue
+        sessions+=("$f")
+    done
+    shopt -u nullglob
+
+    for f in "${sessions[@]+"${sessions[@]}"}"; do
+        mtime=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)
+        [[ "$mtime" =~ ^[0-9]+$ ]] || continue
+        age_days=$(( (now - mtime) / 86400 ))
+        if (( age_days > max_age_days )); then
+            rm -f -- "$f" 2>/dev/null || true
+        fi
+    done
+
+    sessions=()
+    shopt -s nullglob
+    for f in "$dir"/history.*; do
+        [[ -f "$f" ]] || continue
+        [[ "$(basename -- "$f")" == history.all ]] && continue
+        case "$(basename -- "$f")" in
+            history.all*|last-rotate|rotate.log) continue ;;
+            history.*) sessions+=("$f") ;;
+        esac
+    done
+    shopt -u nullglob
+
+    if ((${#sessions[@]} > max_count)); then
+        # Oldest first via mtime sort.
+        local sorted
+        # shellcheck disable=SC2207
+        sorted=($(
+            for f in "${sessions[@]}"; do
+                mtime=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)
+                printf '%s\t%s\n' "$mtime" "$f"
+            done | sort -n | cut -f2-
+        ))
+        local excess=$((${#sorted[@]} - max_count))
+        local i
+        for (( i = 0; i < excess; i++ )); do
+            rm -f -- "${sorted[i]}" 2>/dev/null || true
+        done
+    fi
+    return 0
+}

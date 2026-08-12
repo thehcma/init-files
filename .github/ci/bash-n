@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Local + CI bash -n entrypoint (same file set as .github/ci/shellcheck).
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$root"
+
+mapfile -t files < <(bash .github/ci/list-shell-files)
+if [[ ${#files[@]} -eq 0 ]]; then
+  exit 0
+fi
+printf 'bash -n: %s\n' "${files[@]}"
+bash -n "${files[@]}"

@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# Tests for lib/interactive_input (bt / cache_ssh validation helpers).
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+
+# shellcheck disable=SC1091
+source "${root}/lib/interactive_input"
+
+tmpdir=
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
+printf '\n=== bt program ok ===\n'
+printf '#!/bin/sh\necho ok\n' >"${tmpdir}/prog"
+chmod 755 "${tmpdir}/prog"
+mkdir -p "${tmpdir}/adir"
+rc=0
+init_files_bt_program_ok "${tmpdir}/prog" || rc=$?
+assert_exit_0 'executable file' "$rc"
+rc=0
+init_files_bt_program_ok "${tmpdir}/adir" || rc=$?
+assert_exit_nonzero 'directory rejected' "$rc"
+rc=0
+init_files_bt_program_ok "${tmpdir}/missing" || rc=$?
+assert_exit_nonzero 'missing rejected' "$rc"
+rc=0
+init_files_bt_program_ok '' || rc=$?
+assert_exit_nonzero 'empty rejected' "$rc"
+
+printf '\n=== ssh timeout ok ===\n'
+rc=0
+init_files_ssh_timeout_ok '4h' || rc=$?
+assert_exit_0 '4h' "$rc"
+rc=0
+init_files_ssh_timeout_ok '3600' || rc=$?
+assert_exit_0 '3600' "$rc"
+rc=0
+init_files_ssh_timeout_ok '30m' || rc=$?
+assert_exit_0 '30m' "$rc"
+rc=0
+init_files_ssh_timeout_ok '1d' || rc=$?
+assert_exit_0 '1d' "$rc"
+rc=0
+init_files_ssh_timeout_ok 'bad' || rc=$?
+assert_exit_nonzero 'non-numeric rejected' "$rc"
+rc=0
+init_files_ssh_timeout_ok '4hours' || rc=$?
+assert_exit_nonzero 'long unit rejected' "$rc"
+rc=0
+init_files_ssh_timeout_ok '' || rc=$?
+assert_exit_nonzero 'empty timeout rejected' "$rc"
+
+printf '\n=== ssh key usable ===\n'
+mkdir -p "${tmpdir}/.ssh"
+good_key="${tmpdir}/.ssh/id_test"
+printf 'fake-key\n' >"$good_key"
+chmod 600 "$good_key"
+# Point HOME at tmpdir so ~/.ssh checks work.
+old_home="${HOME}"
+HOME="$tmpdir"
+export HOME
+
+rc=0
+init_files_ssh_key_usable "$good_key" || rc=$?
+assert_exit_0 '600 key under .ssh' "$rc"
+
+chmod 644 "$good_key"
+rc=0
+init_files_ssh_key_usable "$good_key" || rc=$?
+assert_exit_nonzero '644 key refused' "$rc"
+
+chmod 600 "$good_key"
+outside="${tmpdir}/outside_key"
+printf 'fake\n' >"$outside"
+chmod 600 "$outside"
+rc=0
+init_files_ssh_key_usable "$outside" || rc=$?
+assert_exit_0 'absolute path outside .ssh allowed' "$rc"
+
+rel_bad="${tmpdir}/not_ssh_key"
+printf 'fake\n' >"$rel_bad"
+chmod 600 "$rel_bad"
+# Relative path not under .ssh — run from tmpdir
+rc=0
+( cd "$tmpdir" && init_files_ssh_key_usable './not_ssh_key' ) || rc=$?
+assert_exit_nonzero 'relative outside .ssh refused' "$rc"
+
+rc=0
+init_files_ssh_key_usable "${tmpdir}/.ssh" || rc=$?
+assert_exit_nonzero 'directory refused' "$rc"
+
+HOME="$old_home"
+export HOME
+
+printf '\n=== static ===\n'
+lib_text="$(<"${root}/lib/interactive_input")"
+assert_contains 'defines bt_program_ok' "$lib_text" 'init_files_bt_program_ok()'
+assert_contains 'defines ssh_timeout_ok' "$lib_text" 'init_files_ssh_timeout_ok()'
+assert_contains 'defines ssh_key_usable' "$lib_text" 'init_files_ssh_key_usable()'
+
+test_summary

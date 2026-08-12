@@ -1,0 +1,336 @@
+#!/usr/bin/env bash
+# Merge curated iTerm2 prefs from this repo onto the current Mac.
+set -euo pipefail
+
+repo_iterm2="$(cd "$(dirname "$0")" && pwd)"
+prefs_py="$repo_iterm2/_prefs.py"
+curated_plist="$repo_iterm2/com.googlecode.iterm2.plist"
+meta_json="$repo_iterm2/meta.json"
+domain="com.googlecode.iterm2"
+prefs_file="${HOME}/Library/Preferences/${domain}.plist"
+no_backup=0
+ensure_fonts_only=0
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --no-backup)
+            no_backup=1
+            shift
+            ;;
+        --ensure-fonts)
+            # Check/offer missing profile fonts only (no prefs merge).
+            ensure_fonts_only=1
+            shift
+            ;;
+        --meta)
+            meta_json="${2:?iterm2/install: --meta requires a path}"
+            shift 2
+            ;;
+        -h|--help)
+            cat <<'EOF'
+Usage: iterm2/install [--no-backup] [--ensure-fonts] [--meta META.json] [CURATED.plist]
+
+  Default: merge curated prefs into this Mac's iTerm2 domain, then check fonts.
+  --ensure-fonts: only check/offer missing fonts (used by refresh_iterm_settings).
+EOF
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -*)
+            printf 'iterm2/install: unknown option: %s\n' "$1" >&2
+            exit 1
+            ;;
+        *)
+            curated_plist="$1"
+            shift
+            break
+            ;;
+    esac
+done
+if [[ $# -gt 0 ]]; then
+    curated_plist="$1"
+fi
+
+_iterm2_darwin_major()
+{
+    local release
+    release="$(uname -r 2>/dev/null || true)"
+    printf '%s' "${release%%.*}"
+}
+
+# Match bashrc _init_is_modern_macos: Darwin release major >= 25.
+_iterm2_is_modern_macos()
+{
+    local major
+    major="$(_iterm2_darwin_major)"
+    [[ "$major" =~ ^[0-9]+$ ]] || return 1
+    (( major >= 25 ))
+}
+
+_iterm2_prompt_yn()
+{
+    local prompt="$1"
+    local reply
+
+    if [[ ! -t 0 || ! -t 2 ]]; then
+        return 1
+    fi
+    printf '%s ' "$prompt" >&2
+    read -r reply || reply=n
+    case "$reply" in
+        ''|y|Y|yes|YES) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+_iterm2_print_font_hint()
+{
+    local hint_key="$1" family="$2"
+    local helper="$repo_iterm2/install_meslo_nerd_font"
+
+    case "$hint_key" in
+        meslo-nerd)
+            # User-local zip → ~/Library/Fonts (works without sudo; avoids brew
+            # installing into another account's Fonts when brew is shared).
+            printf '    install: %s\n' "$helper"
+            printf '             (downloads Meslo.zip into ~/Library/Fonts; no sudo)\n'
+            ;;
+        meslo)
+            if _iterm2_is_modern_macos && _iterm2_is_macos_admin; then
+                printf '    install: brew install --cask font-meslo-lg\n'
+            else
+                printf '    install: install Meslo LG manually into ~/Library/Fonts\n'
+            fi
+            ;;
+        system)
+            printf '    note: expected Apple system font %s — check Font Book\n' "$family"
+            ;;
+        *)
+            printf '    install: install font %s into ~/Library/Fonts (or change the iTerm profile)\n' \
+                "$family"
+            ;;
+    esac
+}
+
+_iterm2_print_iterm_hint()
+{
+    if _iterm2_is_modern_macos; then
+        printf '    install: brew install --cask iterm2\n'
+    else
+        printf '    install: download iTerm2 from https://iterm2.com/downloads.html\n'
+        printf '             (do not use Homebrew on this macOS tier)\n'
+    fi
+}
+
+_iterm2_is_macos_admin()
+{
+    local user
+
+    [[ "$(id -u)" -eq 0 ]] && return 0
+    user="$(id -un 2>/dev/null || true)"
+    [[ -n "$user" ]] || return 1
+    if command -v dseditgroup >/dev/null 2>&1; then
+        dseditgroup -o checkmember -m "$user" admin >/dev/null 2>&1 && return 0
+        return 1
+    fi
+    id -Gn 2>/dev/null | grep -qw admin
+}
+
+# Offer user-local Meslo zip install when meslo-nerd fonts are missing (TTY).
+# Prints updated check-fonts report on stdout; returns check-fonts exit status.
+_iterm2_check_and_offer_fonts()
+{
+    local plist="$1"
+    local font_report font_status need_meslo_nerd=0
+    local status family spec hint_key helper
+
+    set +e
+    font_report="$("$python3_bin" "$prefs_py" check-fonts "$plist")"
+    font_status=$?
+    set -e
+
+    if [[ "$font_status" -ne 0 ]]; then
+        printf 'iterm2/install: warning: required profile font(s) missing:\n' >&2
+        while IFS=$'\t' read -r status family spec hint_key; do
+            [[ "$status" == "missing" ]] || continue
+            [[ -n "$family" ]] || continue
+            printf '  missing: %s (%s)\n' "$family" "$spec" >&2
+            _iterm2_print_font_hint "$hint_key" "$family" >&2
+            [[ "$hint_key" == "meslo-nerd" ]] && need_meslo_nerd=1
+        done <<< "$font_report"
+    fi
+
+    helper="$repo_iterm2/install_meslo_nerd_font"
+    if [[ $need_meslo_nerd -eq 1 && -x "$helper" ]]; then
+        if [[ -t 0 && -t 2 ]]; then
+            if _iterm2_prompt_yn \
+                "Install Meslo LGS Nerd Font into ~/Library/Fonts (no sudo)? [Y/n]"
+            then
+                if "$helper" --yes; then
+                    set +e
+                    font_report="$("$python3_bin" "$prefs_py" check-fonts "$plist")"
+                    font_status=$?
+                    set -e
+                else
+                    printf 'iterm2/install: WARNING: install_meslo_nerd_font failed\n' >&2
+                fi
+            fi
+        else
+            printf 'iterm2/install: run %s   # then re-run iterm2/install\n' \
+                "$helper" >&2
+        fi
+    fi
+
+    printf '%s' "$font_report"
+    # Do not `set -e` before this return: under errexit, `return 1` aborts the
+    # whole install script (merge already applied). Caller uses set +e / || true.
+    set +e
+    return "$font_status"
+}
+
+_iterm2_local_version()
+{
+    local ver app
+    ver="$(defaults read "$domain" "iTerm Version" 2>/dev/null || true)"
+    if [[ -z "$ver" ]]; then
+        for app in /Applications/iTerm.app /Applications/iTerm2.app; do
+            if [[ -f "$app/Contents/Info.plist" ]]; then
+                ver="$(
+                    /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+                        "$app/Contents/Info.plist" 2>/dev/null || true
+                )"
+                [[ -n "$ver" ]] && break
+            fi
+        done
+    fi
+    printf '%s' "$ver"
+}
+
+_iterm2_soft_version_note()
+{
+    local local_ver note_lines relation exported local_v host_line
+    local_ver="$(_iterm2_local_version)"
+    [[ -f "$meta_json" ]] || return 0
+
+    set +e
+    note_lines="$("$python3_bin" "$prefs_py" version-note "$meta_json" "$local_ver" 2>/dev/null)"
+    set -e
+    [[ -n "$note_lines" ]] || return 0
+
+    relation="$(printf '%s\n' "$note_lines" | awk -F'\t' '$5=="relation"{print $6; exit}')"
+    exported="$(printf '%s\n' "$note_lines" | awk -F'\t' '$1=="exported_from"{print $2; exit}')"
+    local_v="$(printf '%s\n' "$note_lines" | awk -F'\t' '$1=="exported_from"{print $4; exit}')"
+    host_line="$(printf '%s\n' "$note_lines" | awk -F'\t' '$1=="export_host"{print $2; exit}')"
+
+    [[ -n "$exported" ]] || return 0
+    if [[ "$relation" == "equal" ]]; then
+        return 0
+    fi
+
+    printf 'iterm2/install: note: curated prefs exported from iTerm %s' "$exported" >&2
+    [[ -n "$host_line" ]] && printf ' (@ %s)' "$host_line" >&2
+    printf '; this host has %s' "${local_v:-unknown}" >&2
+    case "$relation" in
+        older)
+            printf ' (older)\n' >&2
+            printf '  some keys may be ignored until you upgrade iTerm\n' >&2
+            ;;
+        newer)
+            printf ' (newer)\n' >&2
+            printf '  usually fine; re-export from this host if something looks off\n' >&2
+            ;;
+        *)
+            printf '\n' >&2
+            ;;
+    esac
+}
+
+if [[ "${OSTYPE:-}" != darwin* ]]; then
+    printf 'iterm2/install: macOS only\n' >&2
+    exit 1
+fi
+
+if [[ ! -f "$curated_plist" ]]; then
+    printf 'iterm2/install: missing %s (run iterm2/export on a tuned Mac first)\n' \
+        "$curated_plist" >&2
+    exit 1
+fi
+
+python3_bin="$(command -v python3 2>/dev/null || true)"
+if [[ -z "$python3_bin" ]]; then
+    printf 'iterm2/install: python3 required\n' >&2
+    exit 1
+fi
+
+# Font-only path (refresh_iterm_settings when prefs already match, or explicit).
+if [[ $ensure_fonts_only -eq 1 ]]; then
+    set +e
+    _iterm2_check_and_offer_fonts "$curated_plist" >/dev/null
+    font_status=$?
+    set -e
+    if [[ "$font_status" -eq 0 ]]; then
+        printf 'iterm2/install: required profile fonts present\n'
+    fi
+    exit 0
+fi
+
+if ! command -v defaults >/dev/null 2>&1; then
+    printf 'iterm2/install: defaults(1) not found\n' >&2
+    exit 1
+fi
+
+iterm_app=
+for candidate in /Applications/iTerm.app /Applications/iTerm2.app; do
+    if [[ -d "$candidate" ]]; then
+        iterm_app="$candidate"
+        break
+    fi
+done
+if [[ -z "$iterm_app" ]]; then
+    printf 'iterm2/install: warning: iTerm.app not found under /Applications\n' >&2
+    _iterm2_print_iterm_hint >&2
+fi
+
+_iterm2_soft_version_note
+
+if [[ $no_backup -eq 0 && -f "$prefs_file" ]]; then
+    backup="${prefs_file}.bak.$(date +%Y%m%d%H%M%S)"
+    cp -p "$prefs_file" "$backup"
+    printf 'Backed up existing prefs to %s\n' "$backup"
+fi
+
+tmp_existing="$(mktemp -t iterm2-existing.XXXXXX)"
+tmp_merged="$(mktemp -t iterm2-merged.XXXXXX)"
+cleanup() {
+    rm -f "$tmp_existing" "$tmp_merged"
+}
+trap cleanup EXIT
+
+if ! defaults export "$domain" "$tmp_existing" 2>/dev/null; then
+    # First launch never happened — start from empty and let curated keys win.
+    "$python3_bin" -c 'import plistlib,sys; plistlib.dump({}, open(sys.argv[1],"wb"), fmt=plistlib.FMT_XML)' \
+        "$tmp_existing"
+fi
+
+"$python3_bin" "$prefs_py" merge "$tmp_existing" "$curated_plist" "$tmp_merged"
+defaults import "$domain" "$tmp_merged"
+
+# Font availability: check, offer user-local Meslo zip when meslo-nerd missing.
+# Missing fonts are a warning — prefs are already merged; do not abort install.
+set +e
+_iterm2_check_and_offer_fonts "$curated_plist" >/dev/null
+set -e
+
+printf 'Merged curated prefs into %s\n' "$domain"
+
+# Global advanced badge size (defaults are 50%×20% — giant). Profile keys alone
+# are not enough on current iTerm builds.
+if [[ -f "$repo_iterm2/ensure_iterm_badge.py" ]]; then
+    "$python3_bin" "$repo_iterm2/ensure_iterm_badge.py" --curated "$curated_plist" || true
+fi
+
+printf 'Fully quit iTerm (Cmd-Q) and reopen for changes to apply.\n'
+[[ -n "$iterm_app" ]] && printf 'App: %s\n' "$iterm_app"

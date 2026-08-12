@@ -1,0 +1,189 @@
+" init-files canonical vimrc — Vim 9 + vim-plug (cross-platform)
+" Deployed as ~/.vimrc -> ~/.local/share/init-files/vim/vimrc
+" Plugins: ~/.vim/plugged (host-local). Run refresh_vimrc or install to sync.
+
+if &compatible
+  set nocompatible
+endif
+
+" ---------------------------------------------------------------------------
+" Core
+" ---------------------------------------------------------------------------
+set encoding=utf-8
+scriptencoding utf-8
+set fileencodings=utf-8,default,latin1
+
+syntax on
+filetype plugin indent on
+
+set number
+set relativenumber
+set ruler
+set showcmd
+set wildmenu
+set wildmode=longest:full,full
+set laststatus=2
+set signcolumn=yes
+set cursorline
+set hidden
+set mouse=a
+set backspace=indent,eol,start
+set scrolloff=3
+set sidescrolloff=5
+set splitbelow
+set splitright
+
+set ignorecase
+set smartcase
+set incsearch
+set hlsearch
+
+set expandtab
+set shiftwidth=2
+set softtabstop=2
+set tabstop=2
+set autoindent
+set smartindent
+
+set updatetime=300
+set timeoutlen=500
+
+" Persistent undo (host-local)
+if has('persistent_undo')
+  let s:undo_dir = expand('~/.vim/undo')
+  if !isdirectory(s:undo_dir)
+    call mkdir(s:undo_dir, 'p', 0700)
+  endif
+  let &undodir = s:undo_dir
+  set undofile
+endif
+
+" Truecolor when the terminal supports it; fall back cleanly otherwise.
+if has('termguicolors')
+  if $COLORTERM =~# 'truecolor' || $COLORTERM =~# '24bit' || $TERM_PROGRAM ==# 'iTerm.app'
+    set termguicolors
+  endif
+endif
+
+" Clipboard when available (macOS / Linux with +clipboard)
+if has('clipboard')
+  set clipboard^=unnamed,unnamedplus
+endif
+
+" ---------------------------------------------------------------------------
+" vim-plug
+" ---------------------------------------------------------------------------
+let s:plug_autoload = expand('~/.vim/autoload/plug.vim')
+if empty(glob(s:plug_autoload))
+  " install / refresh_vimrc bootstrap plug.vim; until then skip plugins.
+  finish
+endif
+
+call plug#begin(expand('~/.vim/plugged'))
+
+Plug 'vim-airline/vim-airline'
+Plug 'vim-airline/vim-airline-themes'
+Plug 'airblade/vim-gitgutter'
+Plug 'tpope/vim-fugitive'
+Plug 'tpope/vim-surround'
+Plug 'tpope/vim-commentary'
+Plug 'sainnhe/everforest'
+
+" Markdown: in-buffer conceal + browser live preview (MacVim / terminal).
+" Load at startup (not `for: markdown`) so :MarkdownPreview exists on first open.
+" Prefer node+yarn over the GitHub prebuild — unsigned macos-arm64 binaries are
+" SIGKILL'd by Gatekeeper on modern macOS.
+Plug 'preservim/vim-markdown'
+Plug 'iamcco/markdown-preview.nvim', { 'do': 'cd app && npx --yes yarn install' }
+
+" Fuzzy find — only when fzf binary exists (init-files often provides it).
+if executable('fzf')
+  Plug 'junegunn/fzf.vim'
+endif
+
+" Devicons last so airline / NERDTree pick up glyphs.
+Plug 'ryanoasis/vim-devicons'
+
+call plug#end()
+
+" ---------------------------------------------------------------------------
+" UI / airline / git
+" ---------------------------------------------------------------------------
+set background=dark
+let g:everforest_background = 'medium'
+let g:everforest_better_performance = 1
+silent! colorscheme everforest
+
+let g:airline_powerline_fonts = 1
+let g:airline_theme = 'everforest'
+let g:airline#extensions#tabline#enabled = 1
+let g:airline#extensions#branch#enabled = 1
+let g:airline#extensions#hunks#enabled = 1
+
+let g:gitgutter_sign_added = '+'
+let g:gitgutter_sign_modified = '~'
+let g:gitgutter_sign_removed = '-'
+
+" Markdown (preservim/vim-markdown + markdown-preview.nvim)
+let g:vim_markdown_folding_disabled = 1
+let g:vim_markdown_conceal_code_blocks = 0
+let g:vim_markdown_frontmatter = 1
+let g:vim_markdown_toc_autofit = 1
+let g:mkdp_auto_start = 0
+let g:mkdp_auto_close = 1
+let g:mkdp_theme = 'dark'
+" GUI MacVim often lacks nvm on PATH; ensure node is findable for the preview server.
+if !executable('node')
+  for s:nvm_node in reverse(sort(glob(expand('~/.nvm/versions/node') . '/*/bin/node', 0, 1)))
+    if executable(s:nvm_node)
+      let $PATH = fnamemodify(s:nvm_node, ':h') . ':' . $PATH
+      break
+    endif
+  endfor
+  unlet! s:nvm_node
+endif
+" Drop Gatekeeper-killed prebuild so the plugin uses node (see Plug `do` above).
+let s:mkdp_prebuild = expand('~/.vim/plugged/markdown-preview.nvim/app/bin')
+if isdirectory(s:mkdp_prebuild)
+  for s:mkdp_bin in glob(s:mkdp_prebuild . '/markdown-preview-*', 0, 1)
+    call delete(s:mkdp_bin)
+  endfor
+  unlet! s:mkdp_bin
+endif
+unlet! s:mkdp_prebuild
+augroup InitFilesMarkdown
+  autocmd!
+  autocmd FileType markdown setlocal conceallevel=2 concealcursor=n
+augroup END
+
+" GUI (MacVim / gvim): keep settings here — one file for terminal + GUI.
+" install/refresh_vimrc retires ~/.gvimrc (backed up) so it cannot override.
+" GUIEnter covers the case where a leftover ~/.gvimrc still exists.
+function! s:InitFilesGuiFont() abort
+  if has('gui_macvim')
+    set guifont=MesloLGS\ Nerd\ Font\ Mono:h16
+  elseif has('gui_running')
+    set guifont=MesloLGS\ Nerd\ Font\ Mono\ 14
+  endif
+endfunction
+augroup InitFilesGuiFont
+  autocmd!
+  autocmd GUIEnter * call s:InitFilesGuiFont()
+augroup END
+if has('gui_running')
+  call s:InitFilesGuiFont()
+endif
+
+" ---------------------------------------------------------------------------
+" Keys (minimal)
+" ---------------------------------------------------------------------------
+let mapleader = ' '
+nnoremap <leader>h :nohlsearch<CR>
+nnoremap <leader>g :Git<CR>
+" Call the autoload directly — <Plug> maps are buffer-local and easy to miss.
+nnoremap <silent> <leader>m :call mkdp#util#toggle_preview()<CR>
+if executable('fzf')
+  nnoremap <leader>f :Files<CR>
+  nnoremap <leader>b :Buffers<CR>
+  nnoremap <leader>/ :Rg<CR>
+endif

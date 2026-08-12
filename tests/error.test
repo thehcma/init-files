@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Tests for lib/error (script die/warn/log helpers).
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+
+# shellcheck disable=SC1091
+source "${root}/lib/error"
+
+printf '\n=== init_files_warn ===\n'
+warn_out=
+warn_out="$(init_files_warn 'hello warn' 2>&1 >/dev/null)" || true
+assert_contains 'warn prefix' "$warn_out" 'WARNING: hello warn'
+
+printf '\n=== init_files_log ===\n'
+init_files_log_quiet=0
+log_out="$(init_files_log 'hello log')"
+assert_contains 'log prints' "$log_out" 'hello log'
+init_files_log_quiet=1
+log_out="$(init_files_log 'secret')"
+if [[ -z "$log_out" ]]; then
+  pass_case 'log quiet suppresses'
+else
+  fail_case "log quiet suppresses (got $log_out)"
+fi
+init_files_log_quiet=0
+
+printf '\n=== init_files_die ===\n'
+die_out=
+die_rc=0
+die_out="$(init_files_die 'boom' 2>&1)" && die_rc=$? || die_rc=$?
+assert_exit_nonzero 'die exits non-zero' "$die_rc"
+assert_contains 'die ERROR prefix' "$die_out" 'ERROR: boom'
+
+die_rc=0
+die_out="$(init_files_die 7 'custom' 2>&1)" && die_rc=$? || die_rc=$?
+if [[ "$die_rc" -eq 7 ]]; then
+  pass_case 'die custom status'
+else
+  fail_case "die custom status (got $die_rc)"
+fi
+assert_contains 'die custom message' "$die_out" 'ERROR: custom'
+
+printf '\n=== static: wiring ===\n'
+lib_text="$(<"${root}/lib/error")"
+assert_contains 'defines init_files_die' "$lib_text" 'init_files_die()'
+assert_contains 'defines init_files_warn' "$lib_text" 'init_files_warn()'
+assert_contains 'defines init_files_log' "$lib_text" 'init_files_log()'
+
+prov_text="$(<"${root}/provision_init_files")"
+assert_contains 'provision sources lib/error' "$prov_text" 'lib/error'
+
+boot_text="$(<"${root}/bootstrap_host")"
+assert_contains 'bootstrap SYNC die' "$boot_text" 'SYNC: lib/error'
+
+node_text="$(<"${root}/install_node_toolchain")"
+assert_contains 'install_node sources lib/error' "$node_text" 'lib/error'
+
+test_summary

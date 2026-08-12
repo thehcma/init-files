@@ -1,0 +1,26 @@
+---
+description: Interactive helper input trust model (bt, cache_ssh) — validate paths/timeouts, no global sanitizer
+alwaysApply: true
+---
+
+# Interactive input
+
+This bashrc runs as the logged-in operator. Do **not** build a repo-wide argv sanitizer.
+
+## Trust model
+
+- Helpers that run user-chosen programs or private keys should validate **foot-guns** (missing/non-executable targets, loose key modes, bad timeouts).
+- Prefer `"$cmd" "$@"` / `--args` over string-building. Trusted `eval` of `ssh-agent -s` / fzf / fnm output is OK.
+- Do **not** source [`lib/error`](../../lib/error) from bashrc (`die` would kill the shell).
+
+## Required checks
+
+Shared helpers live in [`lib/interactive_input`](../../lib/interactive_input):
+
+| Helper | Used by |
+| --- | --- |
+| `init_files_bt_program_ok` | `bt` — regular executable file before gdb `--args` |
+| `init_files_ssh_timeout_ok` | `cache_ssh -t` |
+| `init_files_ssh_key_usable` | `cache_ssh` key path (file; mode without group/other bits; absolute or under `~/.ssh`) |
+
+`bt`: `bt [--] program [args…]` or `bt -p PID` (no mixing). `cache_ssh`: keep TTY + `SSH_ASKPASS_REQUIRE=never` fail-closed for passphrases.

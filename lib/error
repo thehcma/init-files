@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Shared error helpers for standalone init-files scripts (not for sourced bashrc).
+# shellcheck shell=bash
+# Sourced only — do not execute.
+#
+# Scripts: init_files_die / init_files_warn / init_files_log.
+# Sourced bashrc and lib predicates: return (never call init_files_die).
+
+# Fatal: print ERROR to stderr and exit.
+# Usage: init_files_die "message"
+#        init_files_die 2 "message"   # custom status
+init_files_die()
+{
+    local status=1
+
+    if [[ $# -ge 2 && "$1" =~ ^[0-9]+$ ]]; then
+        status="$1"
+        shift
+    fi
+    printf 'ERROR: %s\n' "$*" >&2
+    exit "$status"
+}
+
+# Non-fatal warning to stderr.
+init_files_warn()
+{
+    printf 'WARNING: %s\n' "$*" >&2
+}
+
+# Info line to stdout unless init_files_log_quiet=1.
+init_files_log()
+{
+    [[ "${init_files_log_quiet:-0}" -eq 1 ]] && return 0
+    printf '%s\n' "$*"
+}

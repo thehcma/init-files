@@ -1,0 +1,42 @@
+---
+description: Keep macOS and Linux (and their version tiers) isolated in init-files
+alwaysApply: true
+---
+
+# Platform isolation
+
+Treat **macOS** and **Linux** as separate runtimes. Do not let one platform’s install path, tool resolution, or hints leak into the other.
+
+For long-term management (layout, provision vs refresh, validation matrix, anti-patterns), see [AGENTS.md](../../AGENTS.md) at the repo root.
+
+## macOS tiers
+
+- **Modern macOS** (Darwin 25+ / macOS 26+): Homebrew is supported (`_init_is_modern_macos`). Prefer brew absolute paths from `provision_init_files`. On interactive `./provision_init_files` / `refresh_init_files` tool-offer paths, may prompt to install Homebrew and missing brew packages (required, then optional) **only when the account is a macOS admin**. Non-admin / MDM users get a forwardable admin handoff block — see [tool-path-consistency.mdc](tool-path-consistency.mdc).
+- **Older macOS** (Darwin 21.6+ up to pre-25): system/Xcode paths only — **no Homebrew** assumptions.
+  - Even when `brew` is on PATH, do **not** suggest `brew install` / `brew upgrade`. On these OS versions many formulae are unsupported or force huge from-source builds that can take forever.
+  - Prefer system/Xcode tools, GitHub release binaries under `~/.local`, or other non-brew installs.
+- **Node/npm/pnpm/gt**: prefer **nvm/fnm** (user-local under `$HOME`, no sudo) on all macOS tiers, including modern. If nvm or fnm is present, load it and prefer it over any Homebrew `node`/`npm` on PATH. Bootstrap via `install_node_toolchain` / nvm — do **not** suggest `brew install node` and do **not** run `npm -g` / corepack against Homebrew prefixes (EACCES when brew is owned by another account).
+
+## Linux distros
+
+- Support **Ubuntu** and **Rocky Linux** (through 8.10), including version-specific behavior.
+- **Rocky 8.1**: skip tool-version checks and omit git commit id in the prompt (`_init_is_rocky_8_1`).
+- Distro package upgrades (`apt`/`dnf`/`yum`) are not the same as upstream releases — if repos are already current, report **manual / upstream-only** and do **not** suggest a no-op `update_git`.
+- Prefer nvm/fnm (or `~/.local`) for Node/npm when not already provided by the intended toolchain; same nvm-first policy as macOS.
+
+## Cross-cutting rules
+
+- Gate with `_init_is_darwin`, `_init_is_modern_macos`, `_init_is_rocky_8_1` (or explicit `OSTYPE` / `/etc/os-release` checks) — never “detect brew and assume macOS-only logic is fine on Linux” or the reverse.
+- `provision_init_files` writes host-absolute paths to `~/.config/init-files/tools.<hostname>`; bashrc must use those, with OS-specific candidates only.
+- Aliases/functions that call Mac-only binaries (`osascript`, MacVim, `open`, …) must fail closed on Linux; Linux-only helpers must fail closed on macOS.
+
+## Validate locally before push
+
+After changing `bashrc` / `provision_init_files`:
+
+1. Commit and push to `main` when asked.
+2. On the current host run `refresh_init_files` (pulls + always provisions) or `./provision_init_files` then `source ~/.bashrc`.
+   - `~/.bashrc` is a **symlink** into `~/.local/share/init-files`.
+   - `provision_init_files` writes `~/.config/init-files/tools.<hostname>`.
+3. Confirm tool status / update hints match **this** OS tier (no foreign install commands).
+4. Call out when a change still needs a check on the other OS (modern macOS vs Linux, Rocky vs Ubuntu).

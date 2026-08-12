@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Tests for lib/host_paths (shared Homebrew / MacVim discovery).
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+
+# shellcheck disable=SC1091
+source "${root}/lib/host_paths"
+
+printf '\n=== brew bin candidates ===\n'
+mapfile -t brew_bins < <(init_files_brew_bin_candidates)
+if [[ ${#brew_bins[@]} -eq 3 ]]; then
+  pass_case 'three brew bin candidates'
+else
+  fail_case "three brew bin candidates (got ${#brew_bins[@]})"
+fi
+if [[ "${brew_bins[0]}" == '/opt/homebrew/bin/brew' ]]; then
+  pass_case 'Apple Silicon brew first'
+else
+  fail_case "Apple Silicon brew first (got ${brew_bins[0]})"
+fi
+if [[ "${brew_bins[1]}" == '/usr/local/bin/brew' ]]; then
+  pass_case 'Intel brew second'
+else
+  fail_case "Intel brew second (got ${brew_bins[1]})"
+fi
+assert_contains 'user brew third' "${brew_bins[2]}" "${HOME}/homebrew/bin/brew"
+
+printf '\n=== prefix_bin ===\n'
+got="$(init_files_prefix_bin /opt/homebrew git)"
+if [[ "$got" == '/opt/homebrew/bin/git' ]]; then
+  pass_case 'prefix_bin joins'
+else
+  fail_case "prefix_bin joins (got $got)"
+fi
+rc=0
+init_files_prefix_bin '' git || rc=$?
+assert_exit_nonzero 'prefix_bin empty prefix' "$rc"
+rc=0
+init_files_prefix_bin /opt/homebrew '' || rc=$?
+assert_exit_nonzero 'prefix_bin empty name' "$rc"
+
+printf '\n=== macvim candidates (no prefix) ===\n'
+mapfile -t mvim_cands < <(init_files_macvim_bin_candidates)
+joined="$(printf '%s\n' "${mvim_cands[@]}")"
+assert_contains 'app bin/mvim' "$joined" '/Applications/MacVim.app/Contents/bin/mvim'
+assert_contains 'app MacOS/Vim' "$joined" '/Applications/MacVim.app/Contents/MacOS/Vim'
+assert_not_contains 'no brew opt macvim without prefix' "$joined" '/opt/macvim/bin/mvim'
+
+printf '\n=== macvim candidates (with prefix) ===\n'
+mapfile -t mvim_cands < <(init_files_macvim_bin_candidates /opt/homebrew)
+joined="$(printf '%s\n' "${mvim_cands[@]}")"
+if [[ ${#mvim_cands[@]} -ge 4 ]]; then
+  pass_case 'at least four candidates with prefix'
+else
+  fail_case "at least four candidates with prefix (got ${#mvim_cands[@]})"
+fi
+assert_contains 'brew bin mvim' "$joined" '/opt/homebrew/bin/mvim'
+assert_contains 'brew opt mvim' "$joined" '/opt/homebrew/opt/macvim/bin/mvim'
+if [[ "${mvim_cands[0]}" == '/Applications/MacVim.app/Contents/bin/mvim' ]]; then
+  pass_case 'first is app bin'
+else
+  fail_case "first is app bin (got ${mvim_cands[0]})"
+fi
+if [[ "${mvim_cands[1]}" == '/opt/homebrew/bin/mvim' ]]; then
+  pass_case 'second is brew bin'
+else
+  fail_case "second is brew bin (got ${mvim_cands[1]})"
+fi
+
+printf '\n=== static: helpers live in lib/ ===\n'
+lib_text="$(<"${root}/lib/host_paths")"
+assert_contains 'defines init_files_homebrew_prefix' "$lib_text" 'init_files_homebrew_prefix()'
+assert_contains 'defines init_files_brew_bin_candidates' "$lib_text" 'init_files_brew_bin_candidates()'
+assert_contains 'defines init_files_macvim_bin_candidates' "$lib_text" 'init_files_macvim_bin_candidates()'
+assert_contains 'defines init_files_prefix_bin' "$lib_text" 'init_files_prefix_bin()'
+boot_text="$(<"${root}/bootstrap_host")"
+assert_contains 'bootstrap SYNC comment' "$boot_text" 'SYNC candidate order with lib/host_paths'
+
+test_summary

@@ -1,0 +1,72 @@
+# Fancy init-files Starship prompt (prompt_fancy).
+# Canonical-style Unicode (❯, ) plus classic essentials:
+# time, host label (ComputerName on macOS), cwd, branch, short SHA.
+# Non-allowlisted users get a loud username badge via custom.alt_user
+# (INIT_FILES_ALT_USER set by bashrc from INIT_FILES_DEFAULT_USERS).
+
+format = """
+$time\
+${custom.alt_user}\
+${env_var.INIT_FILES_HOST_LABEL}\
+$directory\
+$git_branch\
+${custom.git_sha}\
+$git_status\
+$line_break\
+$character"""
+
+# NFS / large trees (e.g. ~/work) can exceed the default 30ms scan.
+scan_timeout = 200
+command_timeout = 1000
+add_newline = true
+
+[time]
+disabled = false
+style = "bold green"
+format = "[$time]($style) "
+time_format = "%H:%M:%S"
+
+# Highlight when bashrc set INIT_FILES_ALT_USER ($USER not on
+# INIT_FILES_DEFAULT_USERS). Yellow-on-red so shared-host mistakes are obvious.
+[custom.alt_user]
+command = "printf '%s' \"${INIT_FILES_ALT_USER:-${USER:-unknown}}\""
+when = '[ -n "${INIT_FILES_ALT_USER:-}" ]'
+style = "bold yellow bg:red"
+format = "[$output]($style) "
+shell = ["bash", "--noprofile", "--norc"]
+ignore_timeout = true
+
+# Same host label as classic PS1 (_init_host_label / ComputerName on macOS).
+[env_var.INIT_FILES_HOST_LABEL]
+variable = "INIT_FILES_HOST_LABEL"
+default = "host"
+style = "bold green"
+format = "on [$env_value]($style) "
+
+[directory]
+style = "bold cyan"
+format = "in [$path]($style) "
+truncation_length = 0
+truncate_to_repo = false
+
+[git_branch]
+style = "bold purple"
+symbol = " "
+format = "on [$symbol$branch]($style) "
+
+# Short SHA inside any git work tree (regular checkout or linked worktree).
+[custom.git_sha]
+command = "git rev-parse --short HEAD"
+when = "git rev-parse --is-inside-work-tree >/dev/null 2>&1"
+style = "bold bright-black"
+format = "\\([$output]($style)\\) "
+shell = ["bash", "--noprofile", "--norc"]
+ignore_timeout = true
+
+[git_status]
+style = "bold red"
+format = "([$all_status$ahead_behind]($style) )"
+
+[character]
+success_symbol = "[❯](bold green)"
+error_symbol = "[❯](bold red)"

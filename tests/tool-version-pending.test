@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+# Tests for pending-updates sidecar / drift detection (issue #40).
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+bashrc="${root}/bashrc"
+
+printf '\n=== static: helpers + call sites ===\n'
+text="$(<"$bashrc")"
+assert_contains 'defines pending note helper' "$text" '_tool_version_note_pending()'
+assert_contains 'defines live version probe' "$text" 'tool_live_installed_version()'
+assert_contains 'defines drift check' "$text" 'tool_version_pending_drifted()'
+assert_contains 'defines update_tools' "$text" 'function update_tools'
+assert_contains 'writes pending-updates' "$text" 'pending-updates'
+# Needle is a literal bashrc snippet (includes "$pending_file").
+# shellcheck disable=SC2016
+assert_contains 'fast path checks drift' "$text" 'tool_version_pending_drifted "$pending_file"'
+
+printf '\n=== behavioral: drift detection ===\n'
+normalize_version()
+{
+    local version="$1"
+    if [[ "$version" =~ ([0-9]+([.][0-9]+)+) ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+        return
+    fi
+    printf '%s' "$version"
+}
+version_lt()
+{
+    local current_version latest_version
+    current_version="$(normalize_version "$1")"
+    latest_version="$(normalize_version "$2")"
+    [[ -n "$current_version" && -n "$latest_version" && "$current_version" != "$latest_version" ]] || return 1
+    [[ "$(printf '%s\n%s\n' "$current_version" "$latest_version" | sort -V | head -n 1)" == "$current_version" ]]
+}
+versions_equal()
+{
+    local current_version latest_version
+    current_version="$(normalize_version "$1")"
+    latest_version="$(normalize_version "$2")"
+    [[ -n "$current_version" && -n "$latest_version" && "$current_version" == "$latest_version" ]]
+}
+
+# shellcheck disable=SC1090
+eval "$(sed -n '/^_tool_version_note_pending()$/,/^}$/p; /^tool_version_pending_drifted()$/,/^}$/p' "$bashrc")"
+
+tool_live_installed_version()
+{
+    case "$1" in
+        git) printf '%s\n' "${TEST_LIVE_GIT-2.54.0}" ;;
+        bash)
+            if [[ -n "${TEST_LIVE_BASH+x}" ]]; then
+                printf '%s\n' "$TEST_LIVE_BASH"
+            else
+                printf '%s\n' '5.2.0'
+            fi
+            ;;
+        *) return 0 ;;
+    esac
+}
+
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+pending="${tmpdir}/pending-updates"
+cat >"$pending" <<'EOF'
+# tool	installed	path
+git	2.54.0	/usr/bin/git
+bash	5.2.0	/bin/bash
+EOF
+
+unset TEST_LIVE_BASH 2>/dev/null || true
+TEST_LIVE_GIT=2.54.0
+if tool_version_pending_drifted "$pending"; then
+    fail_case 'no drift when live matches recorded'
+else
+    pass_case 'no drift when live matches recorded'
+fi
+
+TEST_LIVE_GIT=2.55.0
+if tool_version_pending_drifted "$pending"; then
+    pass_case 'drift when git upgraded out-of-band'
+else
+    fail_case 'drift when git upgraded out-of-band'
+fi
+
+TEST_LIVE_GIT=2.54.0
+TEST_LIVE_BASH=
+if tool_version_pending_drifted "$pending"; then
+    pass_case 'drift when binary missing'
+else
+    fail_case 'drift when binary missing'
+fi
+
+if tool_version_pending_drifted "${tmpdir}/missing"; then
+    fail_case 'missing pending is not drift'
+else
+    pass_case 'missing pending is not drift'
+fi
+
+printf '\n=== behavioral: note pending dedupe ===\n'
+tool_pending_updates_tsv=
+_tool_version_note_pending git 2.54.0 2.55.0 /usr/bin/git
+_tool_version_note_pending git 2.54.0 2.55.0 /usr/bin/git
+_tool_version_note_pending bash 5.2.0 5.2.0 /bin/bash
+rows=$(printf '%s' "$tool_pending_updates_tsv" | grep -c . || true)
+expected=$'git\t2.54.0\t/usr/bin/git\n'
+if [[ "$rows" -eq 1 && "$tool_pending_updates_tsv" == "$expected" ]]; then
+    pass_case 'note pending dedupes and skips equal versions'
+else
+    fail_case "note pending dedupes (rows=$rows got=$(printf '%q' "$tool_pending_updates_tsv"))"
+fi
+
+printf '\n=== behavioral: update_tools control flow ===\n'
+# Extract update_tools; stub per-tool updaters + invalidate + tool_update_command.
+# Log to a file (not a shell var) because update_tools output capture is fine,
+# but updater side effects must survive outside any subshell.
+# shellcheck disable=SC1090
+eval "$(sed -n '/^function update_tools()$/,/^}$/p' "$bashrc")"
+
+update_log="${tmpdir}/updated.log"
+out_file="${tmpdir}/update_tools.out"
+# update_tools reads this global (same as interactive bashrc).
+# shellcheck disable=SC2034
+tool_version_state_dir="$tmpdir"
+invalidate_tool_version_cache() { :; }
+tool_update_command()
+{
+    case "$1" in
+        git) printf 'ask an admin: sudo apt install --only-upgrade git\n' ;;
+        bash) printf 'update_bash\n' ;;
+        *) return 1 ;;
+    esac
+}
+update_git()
+{
+    printf 'git\n' >>"$update_log"
+    return 1
+}
+update_bash()
+{
+    printf 'bash\n' >>"$update_log"
+    return 0
+}
+update_gh() { printf 'gh\n' >>"$update_log"; return 0; }
+update_gh_stack() { printf 'gh-stack\n' >>"$update_log"; return 0; }
+update_gt() { printf 'gt\n' >>"$update_log"; return 0; }
+update_npm() { printf 'npm\n' >>"$update_log"; return 0; }
+update_pipx() { printf 'pipx\n' >>"$update_log"; return 0; }
+update_pnpm() { printf 'pnpm\n' >>"$update_log"; return 0; }
+update_uv() { printf 'uv\n' >>"$update_log"; return 0; }
+
+cat >"$pending" <<'EOF'
+# tool	installed	path
+git	2.54.0	/usr/bin/git
+bash	5.2.0	/bin/bash
+EOF
+
+# Live still at recorded versions → both updaters run; git admin hint aggregated.
+unset TEST_LIVE_BASH 2>/dev/null || true
+TEST_LIVE_GIT=2.54.0
+: >"$update_log"
+update_tools >"$out_file" 2>&1 || true
+out="$(cat "$out_file")"
+ran_tools="$(tr '\n' ' ' <"$update_log")"
+if [[ "$ran_tools" == *'git '* && "$ran_tools" == *'bash '* ]]; then
+    pass_case 'update_tools invokes per-tool helpers'
+else
+    fail_case "update_tools invokes per-tool helpers (ran: ${ran_tools})"
+fi
+assert_contains 'update_tools aggregates admin handoff' "$out" 'ask an admin: sudo apt install --only-upgrade git'
+
+# Live git newer than recorded → skip git; still upgrade bash.
+TEST_LIVE_GIT=2.55.0
+: >"$update_log"
+update_tools >"$out_file" 2>&1 || true
+out="$(cat "$out_file")"
+ran_tools="$(tr '\n' ' ' <"$update_log")"
+if [[ "$ran_tools" != *'git '* && "$ran_tools" == *'bash '* && "$out" == *'git already 2.55.0'* ]]; then
+    pass_case 'update_tools skips only when live is newer'
+else
+    fail_case "update_tools skips only when live is newer (ran=${ran_tools} out=$(printf '%q' "$out"))"
+fi
+
+# Live git older than recorded (PATH switch / downgrade) → still try update_git.
+TEST_LIVE_GIT=2.50.0
+: >"$update_log"
+update_tools >"$out_file" 2>&1 || true
+ran_tools="$(tr '\n' ' ' <"$update_log")"
+if [[ "$ran_tools" == *'git '* ]]; then
+    pass_case 'update_tools upgrades on downgrade/PATH switch'
+else
+    fail_case "update_tools upgrades on downgrade/PATH switch (ran=${ran_tools})"
+fi
+
+test_summary

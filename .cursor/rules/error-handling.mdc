@@ -1,0 +1,24 @@
+---
+description: Script vs sourced error handling — return in bashrc, die in standalone scripts
+alwaysApply: true
+---
+
+# Error handling
+
+## Rules
+
+| Context | On failure |
+| --- | --- |
+| Sourced [`bashrc`](../../bashrc) / predicates in [`lib/*`](../../lib/) | `return` non-zero (optionally print to stderr). **Never `exit`** — that kills the interactive shell. |
+| Standalone scripts (`provision_init_files`, `install_node_toolchain`, `.github/ci/*`, …) | Fatal → [`init_files_die`](../../lib/error); warnings → `init_files_warn`; info → `init_files_log` (respect `init_files_log_quiet`). Top-level `exit` only for success/`--help` or via `die`. |
+
+- User-facing failures go to **stderr**.
+- Do not source `lib/error` from bashrc (avoids accidental `die` in interactive sessions).
+- [`bootstrap_host`](../../bootstrap_host) stays curl/scp-able alone: keep an inline `die` with `SYNC: lib/error` (same idea as brew-bin SYNC in `lib/host_paths`).
+
+## Anti-patterns
+
+- `exit` inside bashrc functions (except content written into a heredoc for a **separate** executable wrapper).
+- Duplicating `printf 'ERROR:'; exit 1` in scripts that already have `lib/error` available.
+- Building a heavier “logging framework” than die/warn/log.
+- Requiring every predicate `return 1` to also log.

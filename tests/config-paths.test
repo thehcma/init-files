@@ -1,0 +1,356 @@
+#!/usr/bin/env bash
+# Tests for lib/config_paths (private config overlay).
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+
+# shellcheck disable=SC1091
+source "${root}/lib/config_paths"
+
+printf '\n=== static: helpers live in lib/ ===\n'
+lib_text="$(<"${root}/lib/config_paths")"
+assert_contains 'defines private config dir' "$lib_text" 'init_files_private_config_dir()'
+assert_contains 'defines config ssh dir' "$lib_text" 'init_files_config_ssh_dir()'
+assert_contains 'defines default users env' "$lib_text" 'init_files_config_default_users_env()'
+assert_contains 'defines bashrc.local path' "$lib_text" 'init_files_config_bashrc_local()'
+assert_contains 'defines bashrc.local source' "$lib_text" 'init_files_source_bashrc_local()'
+assert_contains 'defines ensure clone helper' "$lib_text" 'init_files_ensure_private_config_repo()'
+assert_contains 'defines complete check' "$lib_text" 'init_files_private_config_complete()'
+assert_contains 'defines fix steps printer' "$lib_text" 'init_files_print_config_overlay_fix_steps()'
+assert_contains 'defines try clone' "$lib_text" 'init_files_try_clone_private_config()'
+assert_contains 'defines identity parser' "$lib_text" 'init_files_github_identity_files_from_template()'
+assert_contains 'defines missing ssh report' "$lib_text" 'init_files_report_missing_config_ssh()'
+assert_contains 'defines remember url' "$lib_text" 'init_files_remember_config_repo_url()'
+assert_contains 'defines preferred ssh keys' "$lib_text" 'init_files_preferred_ssh_keys()'
+assert_contains 'defines preferred ssh key' "$lib_text" 'init_files_preferred_ssh_key()'
+assert_contains 'defines generic ssh candidates' "$lib_text" 'init_files_generic_ssh_key_candidates()'
+assert_contains 'defines house key basename' "$lib_text" 'init_files_house_key_basename()'
+assert_contains 'defines rsa key helper' "$lib_text" 'init_files_ssh_key_is_rsa()'
+assert_contains 'defines basename ok helper' "$lib_text" 'init_files_ssh_key_basename_ok()'
+assert_contains 'defines url normalize' "$lib_text" 'init_files_normalize_git_repo_url()'
+assert_contains 'defines url drift check' "$lib_text" 'init_files_private_config_url_drifted()'
+assert_contains 'defines pull helper' "$lib_text" 'init_files_pull_private_config()'
+# Must not hardcode a private overlay remote in public init-files.
+if grep -Eq 'github\.com/.+/config\.git' "$root/lib/config_paths"; then
+    fail_case 'no hardcoded private config git URL'
+else
+    pass_case 'no hardcoded private config git URL'
+fi
+# Must not ship personal house RSA basename in public helpers.
+if grep -Eq 'id_rsa-sha2-256-hcma|hcma-at-hcma' "$root/lib/config_paths"; then
+    fail_case 'no personal house key basename in lib/config_paths'
+else
+    pass_case 'no personal house key basename in lib/config_paths'
+fi
+
+# Stub log for ensure/report paths under tests.
+log() { printf '%s\n' "$*" >&2; }
+
+printf '\n=== behavioral: config repo url preference ===\n'
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+export INIT_FILES_CONFIG_REPO_PREF="${tmpdir}/config-repo"
+unset INIT_FILES_CONFIG_REPO 2>/dev/null || true
+if init_files_config_repo_url >/dev/null 2>&1; then
+    fail_case 'empty when no env and no pref'
+else
+    pass_case 'empty when no env and no pref'
+fi
+init_files_remember_config_repo_url 'https://example.invalid/overlay.git'
+got="$(init_files_config_repo_url)"
+if [[ "$got" == 'https://example.invalid/overlay.git' ]]; then
+    pass_case 'reads remembered pref file'
+else
+    fail_case "reads remembered pref file (got $got)"
+fi
+export INIT_FILES_CONFIG_REPO='https://example.invalid/from-env.git'
+got="$(init_files_config_repo_url)"
+if [[ "$got" == 'https://example.invalid/from-env.git' ]]; then
+    pass_case 'env overrides pref file'
+else
+    fail_case "env overrides pref file (got $got)"
+fi
+unset INIT_FILES_CONFIG_REPO
+
+printf '\n=== behavioral: identity template parsing ===\n'
+# Absolute paths
+cat > "${tmpdir}/config.github" <<EOF
+Host github.com
+    IdentityFile ${tmpdir}/.ssh-id_ed25519
+    IdentityFile ${tmpdir}/.ssh-missing
+    IdentityFile ${tmpdir}/.ssh-house
+EOF
+touch "${tmpdir}/.ssh-id_ed25519" "${tmpdir}/.ssh-house"
+mapfile -t ids < <(init_files_github_identity_files_from_template "${tmpdir}/config.github")
+if [[ ${#ids[@]} -eq 2 ]]; then
+    pass_case 'keeps existing identity files only'
+else
+    fail_case "keeps existing identity files only (got ${#ids[@]})"
+fi
+
+# Tilde expansion
+mkdir -p "${HOME}/.ssh"
+tilde_key="${HOME}/.ssh/.init-files-test-id"
+touch "$tilde_key"
+trap 'rm -rf "$tmpdir"; rm -f "$tilde_key"' EXIT
+cat > "${tmpdir}/config.github.tilde" <<'EOF'
+Host github.com
+    IdentityFile ~/.ssh/.init-files-test-id
+    IdentityFile ~/.ssh/.init-files-missing-key
+EOF
+mapfile -t ids < <(init_files_github_identity_files_from_template "${tmpdir}/config.github.tilde")
+if [[ ${#ids[@]} -eq 1 && "${ids[0]}" == "$tilde_key" ]]; then
+    pass_case 'expands tilde IdentityFile paths'
+else
+    fail_case "expands tilde IdentityFile paths (got ${ids[*]})"
+fi
+
+printf '\n=== behavioral: missing ssh report ===\n'
+export INIT_FILES_PRIVATE_CONFIG_DIR="${tmpdir}/cfg"
+mkdir -p "${tmpdir}/cfg/.ssh"
+# Missing all expected files
+if init_files_report_missing_config_ssh >/dev/null 2>&1; then
+    fail_case 'report fails when materials missing'
+else
+    pass_case 'report fails when materials missing'
+fi
+if init_files_private_config_complete; then
+    fail_case 'complete false when materials missing'
+else
+    pass_case 'complete false when materials missing'
+fi
+touch "${tmpdir}/cfg/.ssh/authorized_keys.house" \
+    "${tmpdir}/cfg/.ssh/config.house" \
+    "${tmpdir}/cfg/.ssh/config.github"
+if init_files_report_missing_config_ssh >/dev/null 2>&1; then
+    pass_case 'report ok when materials present'
+else
+    fail_case 'report ok when materials present'
+fi
+if init_files_private_config_complete; then
+    pass_case 'complete true when materials present'
+else
+    fail_case 'complete true when materials present'
+fi
+
+printf '\n=== behavioral: ensure quiet path ===\n'
+export INIT_FILES_PRIVATE_CONFIG_DIR="${tmpdir}/cfg-missing"
+rm -rf "${tmpdir}/cfg-missing"
+out="$(init_files_ensure_private_config_repo 0 2>&1 || true)"
+if [[ "$out" == *"ERROR: private config overlay is missing or incomplete"* ]]; then
+    pass_case 'ensure quiet prints fix steps'
+else
+    fail_case 'ensure quiet prints fix steps'
+fi
+if init_files_ensure_private_config_repo 0 >/dev/null 2>&1; then
+    fail_case 'ensure quiet returns failure when missing'
+else
+    pass_case 'ensure quiet returns failure when missing'
+fi
+# Complete overlay succeeds without prompts
+export INIT_FILES_PRIVATE_CONFIG_DIR="${tmpdir}/cfg"
+if init_files_ensure_private_config_repo 0 >/dev/null 2>&1; then
+    pass_case 'ensure succeeds when complete'
+else
+    fail_case 'ensure succeeds when complete'
+fi
+
+printf '\n=== behavioral: bashrc.local overlay ===\n'
+export INIT_FILES_PRIVATE_CONFIG_DIR="${tmpdir}/cfg-bashrc-local"
+rm -rf "${tmpdir}/cfg-bashrc-local"
+mkdir -p "${tmpdir}/cfg-bashrc-local/init-files"
+got="$(init_files_config_bashrc_local)"
+if [[ "$got" == "${tmpdir}/cfg-bashrc-local/init-files/bashrc.local" ]]; then
+    pass_case 'bashrc.local path under private config'
+else
+    fail_case "bashrc.local path under private config (got $got)"
+fi
+if init_files_source_bashrc_local 2>/dev/null; then
+    fail_case 'source bashrc.local returns 1 when missing'
+else
+    pass_case 'source bashrc.local returns 1 when missing'
+fi
+cat > "${tmpdir}/cfg-bashrc-local/init-files/bashrc.local" <<'EOF'
+INIT_FILES_BASHRC_LOCAL_SOURCED=1
+EOF
+unset INIT_FILES_BASHRC_LOCAL_SOURCED 2>/dev/null || true
+if init_files_source_bashrc_local \
+    && [[ "${INIT_FILES_BASHRC_LOCAL_SOURCED:-}" == 1 ]]; then
+    pass_case 'source bashrc.local loads when present'
+else
+    fail_case 'source bashrc.local loads when present'
+fi
+unset INIT_FILES_BASHRC_LOCAL_SOURCED
+
+printf '\n=== behavioral: preferred SSH keys ===\n'
+export INIT_FILES_PRIVATE_CONFIG_DIR="${tmpdir}/cfg-keys"
+mkdir -p "${tmpdir}/cfg-keys/.ssh" "${tmpdir}/fake-home/.ssh"
+# Isolate HOME so generic candidates do not pick the operator's real keys.
+OLD_HOME="$HOME"
+export HOME="${tmpdir}/fake-home"
+unset SSH_CACHE_KEY INIT_FILES_HOUSE_KEY INIT_FILES_HOUSE_KEY_BASENAME 2>/dev/null || true
+export INIT_FILES_HOUSE_KEY_BASENAME_PREF="${tmpdir}/house-key-basename"
+rm -f "$INIT_FILES_HOUSE_KEY_BASENAME_PREF"
+
+# No overlay IdentityFiles and no keys on disk → empty preferred list
+mapfile -t keys < <(init_files_preferred_ssh_keys || true)
+if [[ ${#keys[@]} -eq 0 ]]; then
+    pass_case 'preferred keys empty when none exist'
+else
+    fail_case "preferred keys empty when none exist (got ${keys[*]})"
+fi
+if init_files_preferred_ssh_key >/dev/null 2>&1; then
+    fail_case 'preferred key fails when none exist'
+else
+    pass_case 'preferred key fails when none exist'
+fi
+
+# Generic candidate wins when present
+touch "${HOME}/.ssh/id_ed25519_github"
+mapfile -t keys < <(init_files_preferred_ssh_keys)
+if [[ ${#keys[@]} -eq 1 && "${keys[0]}" == "${HOME}/.ssh/id_ed25519_github" ]]; then
+    pass_case 'generic candidate when no overlay'
+else
+    fail_case "generic candidate when no overlay (got ${keys[*]})"
+fi
+
+# Overlay IdentityFiles take precedence over generic candidates
+mkdir -p "${tmpdir}/cfg-keys/.ssh"
+cat > "${tmpdir}/cfg-keys/.ssh/config.github" <<EOF
+Host github.com
+    IdentityFile ${tmpdir}/overlay-house
+    IdentityFile ${HOME}/.ssh/id_ed25519_github
+EOF
+touch "${tmpdir}/overlay-house"
+mapfile -t keys < <(init_files_preferred_ssh_keys)
+if [[ ${#keys[@]} -ge 1 && "${keys[0]}" == "${tmpdir}/overlay-house" ]]; then
+    pass_case 'overlay IdentityFile precedes generic'
+else
+    fail_case "overlay IdentityFile precedes generic (got ${keys[*]})"
+fi
+
+got="$(init_files_preferred_ssh_key)"
+if [[ "$got" == "${tmpdir}/overlay-house" ]]; then
+    pass_case 'preferred key returns first overlay key'
+else
+    fail_case "preferred key returns first overlay key (got $got)"
+fi
+
+export INIT_FILES_HOUSE_KEY="${HOME}/.ssh/id_ed25519_github"
+got="$(init_files_preferred_ssh_key)"
+if [[ "$got" == "${HOME}/.ssh/id_ed25519_github" ]]; then
+    pass_case 'INIT_FILES_HOUSE_KEY overrides preferred order'
+else
+    fail_case "INIT_FILES_HOUSE_KEY overrides preferred order (got $got)"
+fi
+unset INIT_FILES_HOUSE_KEY
+
+# House key basename defaults / remember
+got="$(init_files_house_key_basename)"
+if [[ "$got" == 'overlay-house' ]]; then
+    pass_case 'house basename from overlay IdentityFile'
+else
+    fail_case "house basename from overlay IdentityFile (got $got)"
+fi
+init_files_remember_house_key_basename 'id_ed25519_house'
+# Remembered pref wins over overlay when set
+got="$(init_files_house_key_basename)"
+if [[ "$got" == 'id_ed25519_house' ]]; then
+    pass_case 'house basename remembers pref'
+else
+    fail_case "house basename remembers pref (got $got)"
+fi
+rm -f "$INIT_FILES_HOUSE_KEY_BASENAME_PREF"
+# No overlay IdentityFile → generic default
+rm -f "${tmpdir}/cfg-keys/.ssh/config.github"
+got="$(init_files_house_key_basename)"
+if [[ "$got" == 'id_ed25519_house' ]]; then
+    pass_case 'house basename generic default'
+else
+    fail_case "house basename generic default (got $got)"
+fi
+
+# RSA detection by basename
+touch "${HOME}/.ssh/id_rsa"
+if init_files_ssh_key_is_rsa "${HOME}/.ssh/id_rsa"; then
+    pass_case 'id_rsa basename is RSA'
+else
+    fail_case 'id_rsa basename is RSA'
+fi
+if init_files_ssh_key_is_rsa "${HOME}/.ssh/id_ed25519_github"; then
+    fail_case 'ed25519 basename is not RSA'
+else
+    pass_case 'ed25519 basename is not RSA'
+fi
+
+# Basename safety
+if init_files_ssh_key_basename_ok 'id_ed25519_house'; then
+    pass_case 'safe basename accepted'
+else
+    fail_case 'safe basename accepted'
+fi
+if init_files_ssh_key_basename_ok '../evil' || init_files_ssh_key_basename_ok 'a b' \
+    || init_files_ssh_key_basename_ok 'a;rm' || init_files_ssh_key_basename_ok ''; then
+    fail_case 'unsafe basenames rejected'
+else
+    pass_case 'unsafe basenames rejected'
+fi
+if init_files_remember_house_key_basename '../evil' 2>/dev/null; then
+    fail_case 'remember rejects unsafe basename'
+else
+    pass_case 'remember rejects unsafe basename'
+fi
+export INIT_FILES_HOUSE_KEY_BASENAME='evil name'
+got="$(init_files_house_key_basename)"
+unset INIT_FILES_HOUSE_KEY_BASENAME
+if [[ "$got" == 'id_ed25519_house' ]]; then
+    pass_case 'house basename skips invalid env'
+else
+    fail_case "house basename skips invalid env (got $got)"
+fi
+
+printf '\n=== behavioral: config URL normalize / drift ===\n'
+got="$(init_files_normalize_git_repo_url 'git@github.com:OWNER/private-config.git')"
+if [[ "$got" == 'https://github.com/OWNER/private-config' ]]; then
+    pass_case 'normalize SSH github URL'
+else
+    fail_case "normalize SSH github URL (got $got)"
+fi
+got="$(init_files_normalize_git_repo_url 'https://github.com/OWNER/private-config.git')"
+if [[ "$got" == 'https://github.com/OWNER/private-config' ]]; then
+    pass_case 'normalize HTTPS github URL'
+else
+    fail_case "normalize HTTPS github URL (got $got)"
+fi
+
+# URL drift: remembered pref vs fake clone origin
+export INIT_FILES_PRIVATE_CONFIG_DIR="${tmpdir}/cfg-drift"
+rm -rf "${tmpdir}/cfg-drift"
+mkdir -p "${tmpdir}/cfg-drift"
+git -C "${tmpdir}/cfg-drift" init -q
+git -C "${tmpdir}/cfg-drift" remote add origin 'https://github.com/OWNER/old-config.git'
+export INIT_FILES_CONFIG_REPO='https://github.com/OWNER/new-config.git'
+if init_files_private_config_url_drifted; then
+    pass_case 'detects URL drift'
+else
+    fail_case 'detects URL drift'
+fi
+export INIT_FILES_CONFIG_REPO='git@github.com:OWNER/old-config.git'
+if init_files_private_config_url_drifted; then
+    fail_case 'HTTPS vs SSH same repo is not drift'
+else
+    pass_case 'HTTPS vs SSH same repo is not drift'
+fi
+unset INIT_FILES_CONFIG_REPO
+
+export HOME="$OLD_HOME"
+
+test_summary

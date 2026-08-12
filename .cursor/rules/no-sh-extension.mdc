@@ -1,0 +1,38 @@
+---
+description: Do not use .sh extensions on bash scripts in this repo
+alwaysApply: true
+---
+
+# No `.sh` file extensions
+
+Tracked bash entrypoints and sourced libraries in this repo **must not** use a `.sh` suffix.
+
+## Do
+
+- Name scripts like repository-helpers: `provision_init_files`, `bootstrap_host`, `lib/tool_path`, `cursor/statusline`, `tests/foo.test`
+- Keep a `#!/usr/bin/env bash` shebang on executables; for sourced libs use `# shellcheck shell=bash` (no shebang required)
+- Update all source paths, docs, CI globs, and Cursor rules when renaming
+
+## Do not
+
+- Add new `*.sh` files under this clone
+- Rename only some call sites and leave stale `lib/foo.sh` references
+
+## Exceptions (not our files)
+
+Leave upstream / host paths alone when they already use `.sh`:
+
+- Homebrew / distro `bash_completion.sh`, `nvm.sh`, vendor `install.sh` URLs
+- Legacy host state such as `~/.config/init-files/tools.sh` (still read for migration)
+
+## Examples
+
+```bash
+# ❌ BAD
+. "${clone}/lib/tool_path.sh"
+command="${clone}/cursor/statusline.sh"
+
+# ✅ GOOD
+. "${clone}/lib/tool_path"
+command="${clone}/cursor/statusline"
+```

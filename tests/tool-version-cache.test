@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# Tests for lib/tool_version_cache (atomic write + mkdir lock).
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+
+# shellcheck disable=SC1091
+source "${root}/lib/tool_version_cache"
+
+printf '\n=== atomic write ===\n'
+tmpdir=
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
+dest="${tmpdir}/report"
+printf 'hello\nworld\n' | init_files_atomic_write "$dest"
+printf 'hello\nworld\n' >"${tmpdir}/expected"
+assert_files_equal 'atomic write content' "$dest" "${tmpdir}/expected"
+
+printf '\n=== concurrent replace is not torn ===\n'
+printf 'AAAAAAAAAA\n' | init_files_atomic_write "$dest"
+(
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    printf 'BBBBBBBBBB\n' | init_files_atomic_write "$dest"
+  done
+) &
+writer=$!
+torn=0
+data=
+for _ in $(seq 1 80); do
+  data=$(cat "$dest" 2>/dev/null || true)
+  case "$data" in
+    AAAAAAAAAA | BBBBBBBBBB) ;;
+    *)
+      torn=1
+      break
+      ;;
+  esac
+done
+wait "$writer" 2>/dev/null || true
+if [[ $torn -eq 0 ]]; then
+  pass_case 'atomic replace not torn under concurrent write'
+else
+  fail_case "atomic replace not torn under concurrent write (saw: ${data:-empty})"
+fi
+
+printf '\n=== mkdir lock ===\n'
+lock="${tmpdir}/state.lock"
+if init_files_mkdir_lock "$lock"; then
+  pass_case 'acquire lock'
+else
+  fail_case 'acquire lock'
+fi
+if ! init_files_mkdir_lock "$lock"; then
+  pass_case 'second acquire fails while held'
+else
+  fail_case 'second acquire fails while held'
+  init_files_mkdir_unlock "$lock"
+fi
+
+printf '\n=== stale lock reclaim ===\n'
+printf '99999999\n' >"${lock}/pid"
+if ! kill -0 99999999 2>/dev/null; then
+  if init_files_mkdir_lock "$lock"; then
+    pass_case 'stale dead-pid lock reclaimed'
+    init_files_mkdir_unlock "$lock"
+  else
+    fail_case 'stale dead-pid lock reclaimed'
+  fi
+else
+  pass_case 'stale dead-pid lock reclaimed (skipped; pid exists)'
+fi
+
+init_files_mkdir_unlock "$lock"
+mkdir "$lock"
+if touch -t 202001010000 "$lock" 2>/dev/null \
+  || touch -d '2020-01-01 00:00:00' "$lock" 2>/dev/null; then
+  now=$(date +%s)
+  mtime=$(stat -c %Y "$lock" 2>/dev/null || stat -f %m "$lock" 2>/dev/null || echo 0)
+  if [[ "$mtime" =~ ^[0-9]+$ ]] && ((now - mtime >= 60)); then
+    if init_files_mkdir_lock "$lock" 60; then
+      pass_case 'stale aged lock reclaimed'
+      init_files_mkdir_unlock "$lock"
+    else
+      fail_case "stale aged lock reclaimed (mtime=$mtime now=$now)"
+    fi
+  else
+    pass_case 'stale aged lock reclaimed (mtime not old enough; skipped)'
+  fi
+else
+  pass_case 'stale aged lock reclaimed (touch unsupported; skipped)'
+fi
+
+printf '\n=== static: helpers live in lib/ ===\n'
+lib_text="$(<"${root}/lib/tool_version_cache")"
+assert_contains 'defines init_files_atomic_write' "$lib_text" 'init_files_atomic_write()'
+assert_contains 'defines init_files_mkdir_lock' "$lib_text" 'init_files_mkdir_lock()'
+assert_contains 'prefers GNU stat -c' "$lib_text" 'stat -c %Y'
+
+test_summary

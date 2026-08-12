@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Input checks for interactive bashrc helpers (bt, cache_ssh).
+# shellcheck shell=bash
+# Sourced only — do not execute.
+#
+# Trust model: the operator already has a shell as this user. These helpers
+# catch foot-guns (missing binaries, loose key modes, bad timeouts), not a
+# multi-tenant sanitizer.
+
+# True when $1 is an existing regular executable file (not a directory).
+init_files_bt_program_ok()
+{
+    local prog="${1-}"
+
+    [[ -n "$prog" ]] || return 1
+    [[ -f "$prog" && -x "$prog" ]] || return 1
+    return 0
+}
+
+# True when $1 looks like an ssh-add -t duration (e.g. 3600, 4h, 30m, 1d).
+init_files_ssh_timeout_ok()
+{
+    local t="${1-}"
+
+    [[ -n "$t" ]] || return 1
+    [[ "$t" =~ ^[0-9]+[smhd]?$ ]] || return 1
+    return 0
+}
+
+# True when $1 is a usable private key path for cache_ssh:
+# regular file; absolute or under $HOME/.ssh; not world-readable/writable.
+init_files_ssh_key_usable()
+{
+    local key="${1-}"
+    local mode home_ssh resolved
+
+    [[ -n "$key" && "$key" != "." && "$key" != ".." ]] || return 1
+    [[ -f "$key" ]] || return 1
+
+    home_ssh="${HOME}/.ssh"
+    case "$key" in
+        /*)
+            ;;
+        *)
+            # Relative paths only if they resolve under ~/.ssh.
+            if [[ -d "$home_ssh" ]]; then
+                resolved="$(cd "$(dirname -- "$key")" 2>/dev/null && pwd)/$(basename -- "$key")"
+                case "$resolved" in
+                    "${home_ssh}"/*) ;;
+                    *) return 1 ;;
+                esac
+            else
+                return 1
+            fi
+            ;;
+    esac
+
+    # Reject group/other read or write (typical private-key modes are 600/400).
+    if stat --version > /dev/null 2>&1; then
+        mode="$(stat -c '%a' -- "$key" 2>/dev/null || true)"
+    else
+        mode="$(stat -f '%OLp' -- "$key" 2>/dev/null || true)"
+    fi
+    [[ -n "$mode" ]] || return 1
+    # Last three octal digits (handles 600 or 100600).
+    if ((${#mode} > 3)); then
+        mode="${mode:$((${#mode} - 3))}"
+    fi
+    [[ "$mode" =~ ^[0-7]{3}$ ]] || return 1
+    local o g
+    o=$((8#${mode:2:1}))
+    g=$((8#${mode:1:1}))
+    (( o == 0 )) || return 1
+    (( g == 0 )) || return 1
+    return 0
+}

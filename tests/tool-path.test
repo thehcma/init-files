@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Tests for lib/tool_path (shared tool-path verifier).
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+
+# shellcheck disable=SC1091
+source "${root}/lib/tool_path"
+
+printf '\n=== path acceptance ===\n'
+tmpdir=
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
+printf '#!/bin/sh\necho ok\n' >"${tmpdir}/real_tool"
+chmod +x "${tmpdir}/real_tool"
+ln -s "${tmpdir}/real_tool" "${tmpdir}/good_link"
+ln -s "${tmpdir}/missing_target" "${tmpdir}/broken_link"
+mkdir -p "${tmpdir}/adir"
+chmod 755 "${tmpdir}/adir"
+ln -s "${tmpdir}/adir" "${tmpdir}/dir_link"
+ln -s "./real_tool" "${tmpdir}/rel_link"
+
+rc=0
+init_files_verify_tool_path "${tmpdir}/real_tool" || rc=$?
+assert_exit_0 'absolute executable' "$rc"
+
+rc=0
+init_files_verify_tool_path "${tmpdir}/good_link" || rc=$?
+assert_exit_0 'symlink to executable' "$rc"
+
+rc=0
+init_files_verify_tool_path "${tmpdir}/rel_link" || rc=$?
+assert_exit_0 'relative symlink to executable' "$rc"
+
+rc=0
+init_files_verify_tool_path "${tmpdir}/broken_link" || rc=$?
+assert_exit_nonzero 'broken symlink' "$rc"
+
+rc=0
+init_files_verify_tool_path "${tmpdir}/adir" || rc=$?
+assert_exit_nonzero 'directory' "$rc"
+
+rc=0
+init_files_verify_tool_path "${tmpdir}/dir_link" || rc=$?
+assert_exit_nonzero 'symlink to directory' "$rc"
+
+rc=0
+init_files_verify_tool_path 'relative/tool' || rc=$?
+assert_exit_nonzero 'relative path' "$rc"
+
+rc=0
+init_files_verify_tool_path '' || rc=$?
+assert_exit_nonzero 'empty path' "$rc"
+
+rc=0
+init_files_verify_tool_path "/nonexistent/init-files-tool-path-$$" || rc=$?
+assert_exit_nonzero 'missing path' "$rc"
+
+printf '\n=== resolve symlink ===\n'
+resolved=
+resolved="$(init_files_resolve_realpath "${tmpdir}/good_link")"
+expected=
+expected="$(init_files_resolve_realpath "${tmpdir}/real_tool")"
+if [[ "$resolved" == "$expected" ]]; then
+  pass_case 'resolve symlink to canonical path'
+else
+  fail_case "resolve symlink (got $resolved, want $expected)"
+fi
+
+printf '\n=== system binary (when present) ===\n'
+if [[ -x /usr/bin/true ]]; then
+  rc=0
+  init_files_verify_tool_path /usr/bin/true || rc=$?
+  assert_exit_0 'system binary /usr/bin/true' "$rc"
+else
+  pass_case 'system binary /usr/bin/true (skipped; missing)'
+fi
+
+printf '\n=== static: verifier lives in lib/ ===\n'
+lib_text="$(<"${root}/lib/tool_path")"
+assert_contains 'defines init_files_verify_tool_path' "$lib_text" 'init_files_verify_tool_path()'
+assert_contains 'always resolves realpath' "$lib_text" 'init_files_resolve_realpath'
+
+test_summary

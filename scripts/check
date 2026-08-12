@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Local pre-PR checks aligned with .github/workflows/ci.yml
+# (repository-helpers consumer pattern: prefer .github/ci/* wrappers).
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+echo "==> bash -n"
+bash .github/ci/bash-n
+
+echo "==> shellcheck -S info"
+bash .github/ci/shellcheck
+
+echo "==> tests"
+shopt -s nullglob
+tests=(tests/*.test)
+shopt -u nullglob
+if [[ ${#tests[@]} -eq 0 ]]; then
+  echo "no tests/*.test"
+else
+  for t in "${tests[@]}"; do
+    echo "--> $t"
+    bash "$t"
+  done
+fi
+
+echo "==> scripts/check passed"
