@@ -97,7 +97,7 @@ Private house SSH + user policy stay in a **private config overlay** (`~/.local/
 
 ```bash
 # 1) Download (preferred over curl|bash — clearer errors)
-curl -fsSL https://raw.githubusercontent.com/OWNER/init-files/main/bootstrap_host \
+curl -fsSL https://raw.githubusercontent.com/thehcma/init-files/main/bootstrap_host \
   -o /tmp/bootstrap_host
 chmod +x /tmp/bootstrap_host
 
@@ -163,7 +163,7 @@ source ~/.bashrc
 ```bash
 # modern macOS: brew install gh   # if needed
 gh auth login
-git clone https://github.com/OWNER/init-files.git ~/.local/share/init-files
+git clone https://github.com/thehcma/init-files.git ~/.local/share/init-files
 ~/.local/share/init-files/provision_init_files --github-https
 source ~/.bashrc
 ```
@@ -213,9 +213,9 @@ ssh -T git@github.com
 #### 1. Clone the repo
 
 ```bash
-git clone https://github.com/OWNER/init-files.git ~/.local/share/init-files
+git clone https://github.com/thehcma/init-files.git ~/.local/share/init-files
 # equivalent over SSH once insteadOf is set:
-# git clone git@github.com:OWNER/init-files.git ~/.local/share/init-files
+# git clone git@github.com:thehcma/init-files.git ~/.local/share/init-files
 ```
 
 Requires `git` and network access. For SSH mode, also the GitHub SSH key from step 0b. Prefer HTTPS + `gh auth` when available (step 0a / `bootstrap_host` chooser).
@@ -479,7 +479,7 @@ git config --global --get-regexp 'credential\.https://github.com'   # HTTPS: !gh
 3. `Host github.com` with `User git` + IdentityFiles from private overlay `config.github` (applied by `./provision_init_files` when the overlay is present).
 4. `cache_ssh` then `ssh -T git@github.com`.
 
-Then `git clone https://github.com/OWNER/init-files.git …` and `refresh_init_files` use SSH under the hood.
+Then `git clone https://github.com/thehcma/init-files.git …` and `refresh_init_files` use SSH under the hood.
 
 **Force HTTPS** (also happens automatically when gh is logged in, and is the interactive `bootstrap_host` default):
 

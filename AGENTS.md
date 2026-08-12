@@ -116,7 +116,7 @@ Plain `provision_init_files` / `refresh_init_files` with no mode flag **keep** w
 **Preferred:** public bootstrap (download → run → verify → source). See [README.md](README.md). Interactive `bootstrap_host` prefers **`gh auth login` (HTTPS)**; `--key-from HOST` fetches the house key for house hops without forcing GitHub SSH (HTTPS still wins when `gh` is logged in). GitHub SSH is for when HTTPS is unavailable; if it fails, bootstrap falls back to HTTPS when `gh` can authenticate.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/init-files/main/bootstrap_host \
+curl -fsSL https://raw.githubusercontent.com/thehcma/init-files/main/bootstrap_host \
  -o /tmp/bootstrap_host
 chmod +x /tmp/bootstrap_host
 /tmp/bootstrap_host
@@ -126,7 +126,7 @@ chmod +x /tmp/bootstrap_host
 source ~/.bashrc
 ```
 
-Mirror `bootstrap_host` to the public bootstrap URL when it changes. Manual fallback: `gh auth login` + clone + `provision_init_files --github-https`, or SSH key + `insteadOf` + `cache_ssh` + `ssh -T` + clone + `./provision_init_files`. Private keys are never in the repo.
+Manual fallback: `gh auth login` + clone + `provision_init_files --github-https`, or SSH key + `insteadOf` + `cache_ssh` + `ssh -T` + clone + `./provision_init_files`. Private keys are never in the repo.
 
 ### Migrate an existing host (copy-based → symlink model)
 
@@ -347,7 +347,7 @@ This host needs the symlink deploy model: ~/.bashrc → ~/.local/share/init-file
 Prereq: prefer gh auth login (HTTPS). For SSH-only hosts: passphrase house key on disk.
 
 If ~/.local/share/init-files is missing:
-  curl -fsSL https://raw.githubusercontent.com/OWNER/init-files/main/bootstrap_host -o /tmp/bootstrap_host
+  curl -fsSL https://raw.githubusercontent.com/thehcma/init-files/main/bootstrap_host -o /tmp/bootstrap_host
   chmod +x /tmp/bootstrap_host
   /tmp/bootstrap_host
   # House key only (GitHub HTTPS if gh logged in):

@@ -16,10 +16,9 @@
 # Without flags: prefer remembered github-https.<host>, else HTTPS when gh is
 # authenticated, else SSH (--github-https/--github-ssh to force).
 #
-# After clone exists, this script is idempotent. Keep thehcma/init-files in sync
-# when this file changes.
+# After clone exists, this script is idempotent.
 #
-# See: https://github.com/thehcma/init-files/issues/12
+# See: https://github.com/thehcma/init-files
 set -euo pipefail
 # bootstrap_host_rev=key-from-independent-2026-08-06
 
