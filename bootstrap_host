@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bootstrap_host — new-host path from gh HTTPS (preferred) or house SSH to working init-files.
+# bootstrap_host — new-host path from gh HTTPS (preferred) or SSH to working init-files.
 #
 # Preferred (public bootstrap — no prior clone required):
 #
@@ -10,8 +10,8 @@
 #   source ~/.bashrc
 #
 # Interactive default: offer gh auth login (HTTPS) first. --key-from copies the
-# house key for house hops and does NOT force GitHub SSH (HTTPS still preferred
-# when gh is authenticated). If GitHub SSH is selected and fails (house RSA
+# preferred SSH key for host hops and does NOT force GitHub SSH (HTTPS still preferred
+# when gh is authenticated). If GitHub SSH is selected and fails (RSA
 # declined / no ed25519), fall back to HTTPS when gh can auth.
 # Without flags: prefer remembered github-https.<host>, else HTTPS when gh is
 # authenticated, else SSH (--github-https/--github-ssh to force).
@@ -25,8 +25,8 @@ set -euo pipefail
 clone_dir="${INIT_FILES_DIR:-$HOME/.local/share/init-files}"
 repo_https="${INIT_FILES_REPO_HTTPS:-https://github.com/thehcma/init-files.git}"
 # Resolved by resolve_bootstrap_ssh_keys (overlay / env / generic candidates).
-house_key=""
-house_pub=""
+ssh_key=""
+ssh_pub=""
 github_ed25519_key=""
 # Selected GitHub identity after verify_github_ssh (absolute path).
 github_key=""
@@ -37,7 +37,7 @@ ssh_github_snippet="${ssh_config_d}/init-files-github.conf"
 github_insteadof_from='https://github.com/'
 github_insteadof_to='git@github.com:'
 ssh_cache_timeout="${SSH_CACHE_TIMEOUT:-4h}"
-# Optional: host (or user@host) to scp the house key from before SSH bootstrap.
+# Optional: host (or user@host) to scp the preferred SSH key from before SSH bootstrap.
 key_from_host="${INIT_FILES_KEY_HOST:-}"
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 
@@ -105,7 +105,7 @@ Usage: bootstrap_host [-f|--force] [-q|--quiet] [--no-dev|--dev]
   New-host bootstrap for init-files.
 
   Preferred: HTTPS via gh auth login (interactive chooser, or --github-https).
-  House key (--key-from) is independent of GitHub transport.
+  Preferred SSH key (--key-from) is independent of GitHub transport.
   GitHub SSH (--github-ssh / chooser) when HTTPS is unavailable or you opt in.
 
   Interactive (TTY, no transport flag / remembered preference):
@@ -120,16 +120,16 @@ Usage: bootstrap_host [-f|--force] [-q|--quiet] [--no-dev|--dev]
     ./provision_init_files --github-https → verify.
 
   SSH mode (--github-ssh / remembered github-ssh.<host> / chooser opt 2–3):
-    require house or GitHub ed25519 key → GitHub SSH snippet + insteadOf +
+    require preferred or GitHub ed25519 key → GitHub SSH snippet + insteadOf +
     known_hosts → cache key → ssh -T → clone (if needed) →
     ./provision_init_files → verify.
-    If GitHub SSH fails (house RSA declined, no ed25519) but gh can auth,
+    If GitHub SSH fails (RSA declined, no ed25519) but gh can auth,
     fall back to HTTPS automatically.
 
   --key-from HOST
-                copy the house key (+ .pub if present) from HOST in one SSH
+                copy the preferred SSH key (+ .pub if present) from HOST in one SSH
                 login. HOST may be a hostname or user@host. Does NOT force
-                GitHub SSH — house key is for house hops; GitHub transport
+                GitHub SSH — preferred key is for host hops; GitHub transport
                 still follows --github-https/--github-ssh, remembered prefs,
                 or gh auth (HTTPS preferred). Env: INIT_FILES_KEY_HOST.
 
@@ -184,7 +184,7 @@ while [[ $# -gt 0 ]]; do
                 die "--key-from requires a host (e.g. user@host or an SSH Host alias)"
             fi
             key_from_host="$2"
-            # House-key fetch only — do not force GitHub SSH. Transport still
+            # Preferred-key fetch only — do not force GitHub SSH. Transport still
             # follows --github-* flags, remembered prefs, or gh auth (HTTPS).
             shift 2
             ;;
@@ -300,28 +300,28 @@ bootstrap_source_config_paths()
     return 1
 }
 
-# Set house_key / github_ed25519_key from env, overlay, or generic candidates.
+# Set ssh_key / github_ed25519_key from env, overlay, or generic candidates.
 resolve_bootstrap_ssh_keys()
 {
     local base key
 
     bootstrap_source_config_paths || true
 
-    if [[ -n "${INIT_FILES_HOUSE_KEY:-}" ]]; then
-        house_key="$INIT_FILES_HOUSE_KEY"
-    elif declare -F init_files_house_key_basename > /dev/null 2>&1; then
-        base="$(init_files_house_key_basename)"
-        house_key="${HOME}/.ssh/${base}"
+    if [[ -n "${INIT_FILES_SSH_KEY:-}" ]]; then
+        ssh_key="$INIT_FILES_SSH_KEY"
+    elif declare -F init_files_ssh_key_basename > /dev/null 2>&1; then
+        base="$(init_files_ssh_key_basename)"
+        ssh_key="${HOME}/.ssh/${base}"
     else
-        house_key="${HOME}/.ssh/id_ed25519_house"
+        ssh_key="${HOME}/.ssh/id_ed25519"
     fi
-    house_pub="${house_key}.pub"
+    ssh_pub="${ssh_key}.pub"
 
     github_ed25519_key="${HOME}/.ssh/id_ed25519_github"
     if declare -F init_files_preferred_ssh_keys > /dev/null 2>&1; then
         while IFS= read -r key || [[ -n "$key" ]]; do
             [[ -n "$key" && -f "$key" ]] || continue
-            [[ "$key" == "$house_key" ]] && continue
+            [[ "$key" == "$ssh_key" ]] && continue
             github_ed25519_key="$key"
             break
         done < <(init_files_preferred_ssh_keys)
@@ -438,7 +438,7 @@ guided_setup_github_ssh()
 GitHub SSH setup
   • Prefer HTTPS (gh auth) when possible — SSH is optional
   • For SSH: a key listed in overlay config.github, or a key under ~/.ssh
-  • House hops: --key-from HOST (independent of GitHub transport)
+  • Host hops: --key-from HOST (independent of GitHub transport)
 
 EOF
 
@@ -448,28 +448,28 @@ EOF
     mkdir -p "$ssh_dir"
     chmod 700 "$ssh_dir" || true
 
-    if [[ ! -f "$house_key" && ! -f "$github_ed25519_key" ]]; then
+    if [[ ! -f "$ssh_key" && ! -f "$github_ed25519_key" ]]; then
         cat >&2 <<EOF
 
 No GitHub SSH key found on this host:
-  house candidate:  ${house_key}
+  SSH key candidate:  ${ssh_key}
   other candidate:  ${github_ed25519_key}
 
 Prefer: bootstrap_host --github-https
-Or fetch a house key for house hops: --key-from user@host
+Or fetch a preferred SSH key for host hops: --key-from user@host
 
 EOF
-        if [[ -z "$key_from_host" ]] && prompt_yn "Copy house key from another host (--key-from)? [Y/n]"; then
+        if [[ -z "$key_from_host" ]] && prompt_yn "Copy preferred SSH key from another host (--key-from)? [Y/n]"; then
             key_from_host="$(prompt_line 'Donor host (user@host or SSH Host alias):')"
             bootstrap_step_run \
-                "fetch house key from ${key_from_host}" \
-                "fetch_house_key_from_host \"${key_from_host}\"" \
-                "[[ -f \"${house_key}\" ]]" \
-                || die "could not fetch house key"
+                "fetch SSH key from ${key_from_host}" \
+                "fetch_ssh_key_from_host \"${key_from_host}\"" \
+                "[[ -f \"${ssh_key}\" ]]" \
+                || die "could not fetch SSH key"
         fi
     fi
 
-    if [[ ! -f "$house_key" && ! -f "$github_ed25519_key" ]]; then
+    if [[ ! -f "$ssh_key" && ! -f "$github_ed25519_key" ]]; then
         cat >&2 <<EOF
 
 Still no SSH key. Prefer HTTPS:
@@ -488,12 +488,12 @@ EOF
         "[[ -f \"\$ssh_github_snippet\" ]]" \
         || die "GitHub SSH configuration failed"
 
-    if [[ -f "$house_key" ]]; then
+    if [[ -f "$ssh_key" ]]; then
         bootstrap_step_run \
-            "cache house key in ssh-agent" \
-            cache_house_key \
+            "cache preferred SSH key in ssh-agent" \
+            cache_preferred_ssh_key \
             'ssh-add -l >/dev/null 2>&1' \
-            || log "WARN     house key not cached (run cache_ssh later)"
+            || log "WARN     SSH key not cached (run cache_ssh later)"
     elif [[ -f "$github_ed25519_key" ]]; then
         bootstrap_step_run \
             "cache GitHub SSH key in ssh-agent" \
@@ -744,11 +744,11 @@ write_github_ssh_snippet()
         done < <(init_files_preferred_ssh_keys)
     else
         [[ -f "$github_ed25519_key" ]] && ids+=("$github_ed25519_key")
-        [[ -f "$house_key" ]] && ids+=("$house_key")
+        [[ -f "$ssh_key" ]] && ids+=("$ssh_key")
     fi
 
     if ((${#ids[@]} == 0)); then
-        die "no GitHub SSH keys on disk (set INIT_FILES_HOUSE_KEY or place keys under ~/.ssh)"
+        die "no GitHub SSH keys on disk (set INIT_FILES_SSH_KEY or place keys under ~/.ssh)"
     fi
 
     for id in "${ids[@]}"; do
@@ -918,9 +918,9 @@ EOF
     log "OK       cached in ssh-agent: $label"
 }
 
-cache_house_key()
+cache_preferred_ssh_key()
 {
-    cache_ssh_key "$house_key" "$house_key"
+    cache_ssh_key "$ssh_key" "$ssh_key"
 }
 
 # Try ssh -T with one IdentityFile. Prints Hi-line on success. Sets github_key.
@@ -941,7 +941,7 @@ try_github_ssh_identity()
         -o "BatchMode=yes"
         -o "ConnectTimeout=15"
     )
-    if [[ "$key_path" == "$house_key" ]]; then
+    if [[ "$key_path" == "$ssh_key" ]]; then
         ssh_opts+=(-o "$(github_ssh_rsa_sha2_opt)")
     fi
 
@@ -962,13 +962,13 @@ verify_github_ssh()
 
     log "Checking  ssh -T git@github.com …"
 
-    # Prefer house key when present; else other preferred / generic key (FIPS / GitHub-only).
-    if [[ -f "$house_key" ]] && try_github_ssh_identity "$house_key"; then
+    # Prefer configured SSH key when present; else other preferred / generic key (FIPS / GitHub-only).
+    if [[ -f "$ssh_key" ]] && try_github_ssh_identity "$ssh_key"; then
         write_github_ssh_snippet
         return 0
     fi
-    if [[ -f "$house_key" ]]; then
-        log "WARN     house key declined by GitHub; trying ${github_ed25519_key/#$HOME/~} …"
+    if [[ -f "$ssh_key" ]]; then
+        log "WARN     preferred SSH key declined by GitHub; trying ${github_ed25519_key/#$HOME/~} …"
     fi
 
     if [[ -f "$github_ed25519_key" ]]; then
@@ -980,17 +980,17 @@ verify_github_ssh()
     fi
 
     fp=
-    [[ -f "$house_key" ]] && fp=$(ssh-keygen -lf "$house_key" 2>/dev/null | awk '{print $1" "$2}' || true)
+    [[ -f "$ssh_key" ]] && fp=$(ssh-keygen -lf "$ssh_key" 2>/dev/null | awk '{print $1" "$2}' || true)
     [[ -z "$fp" && -f "$github_ed25519_key" ]] \
         && fp=$(ssh-keygen -lf "$github_ed25519_key" 2>/dev/null | awk '{print $1" "$2}' || true)
     ssh_ver=$(ssh -V 2>&1 || true)
-    try_key="$house_key"
+    try_key="$ssh_key"
     [[ -f "$try_key" ]] || try_key="$github_ed25519_key"
     verbose_opts=(
         -v -o BatchMode=yes -o User=git -o IdentitiesOnly=yes
         -o "IdentityFile=${try_key}"
     )
-    if [[ -f "$house_key" && "$try_key" == "$house_key" ]]; then
+    if [[ -f "$ssh_key" && "$try_key" == "$ssh_key" ]]; then
         verbose_opts+=(-o "$(github_ssh_rsa_sha2_opt)")
     fi
     verbose_tail=$(ssh "${verbose_opts[@]}" -T git@github.com 2>&1 | tail -n 25 || true)
@@ -999,7 +999,7 @@ verify_github_ssh()
 
 ERROR: GitHub SSH auth failed.
 
-  house candidate: ${house_key} $([[ -f "$house_key" ]] && echo present || echo MISSING)
+  SSH key candidate: ${ssh_key} $([[ -f "$ssh_key" ]] && echo present || echo MISSING)
   key fp:          ${fp:-unknown}
   ssh:             ${ssh_ver:-unknown}
   other candidate: ${github_ed25519_key} $([[ -f "$github_ed25519_key" ]] && echo present || echo MISSING)
@@ -1041,7 +1041,7 @@ fallback_github_https_after_ssh_fail()
             cat >&2 <<EOF
 
 GitHub SSH failed. Prefer HTTPS for cloning init-files when the repo is public
-(or when gh can authenticate). House hops still use the house key when present.
+(or when gh can authenticate). Host hops still use the preferred SSH key when present.
 EOF
             if prompt_yn "Fall back to GitHub HTTPS via gh auth login? [Y/n]"; then
                 github_https=1
@@ -1070,51 +1070,51 @@ EOF
     return 0
 }
 
-# Copy house key (+ optional .pub) from a donor host in one SSH auth (one password).
-fetch_house_key_from_host()
+# Copy preferred SSH key (+ optional .pub) from a donor host in one SSH auth (one password).
+fetch_ssh_key_from_host()
 {
     local src_host="$1"
     local key_basename remote_script
 
-    [[ -n "$src_host" ]] || die "fetch_house_key_from_host: empty host"
+    [[ -n "$src_host" ]] || die "fetch_ssh_key_from_host: empty host"
     require_openssh_client
     resolve_bootstrap_ssh_keys
 
-    if declare -F init_files_house_key_basename > /dev/null 2>&1; then
-        key_basename="$(init_files_house_key_basename)"
+    if declare -F init_files_ssh_key_basename > /dev/null 2>&1; then
+        key_basename="$(init_files_ssh_key_basename)"
     else
-        key_basename="$(basename -- "${house_key:-id_ed25519_house}")"
+        key_basename="$(basename -- "${ssh_key:-id_ed25519}")"
     fi
     if [[ $quiet -eq 0 && -t 0 && -t 2 ]]; then
         if ! prompt_yn "Fetch ~/.ssh/${key_basename} from ${src_host}? [Y/n]"; then
-            key_basename="$(prompt_line "House key basename on ${src_host}:")"
+            key_basename="$(prompt_line "SSH key basename on ${src_host}:")"
         fi
     fi
-    [[ -n "$key_basename" ]] || key_basename="id_ed25519_house"
+    [[ -n "$key_basename" ]] || key_basename="id_ed25519"
     if declare -F init_files_ssh_key_basename_ok > /dev/null 2>&1; then
         if ! init_files_ssh_key_basename_ok "$key_basename"; then
-            die "unsafe house key basename: ${key_basename} (use a simple filename under ~/.ssh)"
+            die "unsafe SSH key basename: ${key_basename} (use a simple filename under ~/.ssh)"
         fi
     else
         case "$key_basename" in
-            */*|*" "*|*$'\n'*) die "unsafe house key basename: ${key_basename}" ;;
+            */*|*" "*|*$'\n'*) die "unsafe SSH key basename: ${key_basename}" ;;
         esac
     fi
-    house_key="${HOME}/.ssh/${key_basename}"
-    house_pub="${house_key}.pub"
-    if declare -F init_files_remember_house_key_basename > /dev/null 2>&1; then
-        init_files_remember_house_key_basename "$key_basename" || true
+    ssh_key="${HOME}/.ssh/${key_basename}"
+    ssh_pub="${ssh_key}.pub"
+    if declare -F init_files_remember_ssh_key_basename > /dev/null 2>&1; then
+        init_files_remember_ssh_key_basename "$key_basename" || true
     fi
 
     mkdir -p "$ssh_dir" || die "cannot create $ssh_dir"
     chmod 700 "$ssh_dir" || true
 
-    if [[ -f "$house_key" && $force -eq 0 ]]; then
-        log "OK       house key already present; skip fetch from ${src_host} (use -f to overwrite)"
+    if [[ -f "$ssh_key" && $force -eq 0 ]]; then
+        log "OK       SSH key already present; skip fetch from ${src_host} (use -f to overwrite)"
         return 0
     fi
 
-    log "Fetching house key from ${src_host} (single SSH login) …"
+    log "Fetching SSH key from ${src_host} (single SSH login) …"
     log "         remote path: ~/.ssh/${key_basename}"
 
     # One ssh connection: stream key (+ pub if present) as a tar to avoid two scp passwords.
@@ -1132,12 +1132,12 @@ EOF
 )
     # shellcheck disable=SC2029
     if ! ssh -o ControlMaster=no "$src_host" "$remote_script" | tar -C "$ssh_dir" -xf -; then
-        die "failed to fetch house key from ${src_host}. Check SSH access / basename, then retry."
+        die "failed to fetch SSH key from ${src_host}. Check SSH access / basename, then retry."
     fi
-    [[ -f "$house_key" ]] || die "fetch produced no $house_key"
-    chmod 600 "$house_key" || true
-    if [[ -f "$house_pub" ]]; then
-        chmod 644 "$house_pub" || true
+    [[ -f "$ssh_key" ]] || die "fetch produced no $ssh_key"
+    chmod 600 "$ssh_key" || true
+    if [[ -f "$ssh_pub" ]]; then
+        chmod 644 "$ssh_pub" || true
         log "OK       fetched key + pubkey from ${src_host}"
     else
         log "OK       fetched private key from ${src_host} (no pubkey on remote)"
@@ -1147,9 +1147,9 @@ EOF
 setup_ssh_mode()
 {
     resolve_bootstrap_ssh_keys
-    # House key may already have been fetched in main (--key-from).
-    if [[ -n "$key_from_host" && ! -f "$house_key" ]]; then
-        fetch_house_key_from_host "$key_from_host"
+    # Preferred SSH key may already have been fetched in main (--key-from).
+    if [[ -n "$key_from_host" && ! -f "$ssh_key" ]]; then
+        fetch_ssh_key_from_host "$key_from_host"
         resolve_bootstrap_ssh_keys
     fi
 
@@ -1162,28 +1162,28 @@ setup_ssh_mode()
     mkdir -p "$ssh_dir"
     chmod 700 "$ssh_dir" || true
 
-    if [[ -f "$house_key" ]]; then
-        chmod 600 "$house_key" || true
-        if [[ -f "$house_pub" ]]; then
-            chmod 644 "$house_pub" || true
+    if [[ -f "$ssh_key" ]]; then
+        chmod 600 "$ssh_key" || true
+        if [[ -f "$ssh_pub" ]]; then
+            chmod 644 "$ssh_pub" || true
         fi
-        log "OK       house key present (${house_key/#$HOME/~})"
+        log "OK       SSH key present (${ssh_key/#$HOME/~})"
     elif [[ -f "$github_ed25519_key" ]]; then
         chmod 600 "$github_ed25519_key" || true
-        log "OK       GitHub SSH key present (${github_ed25519_key/#$HOME/~}); no house key on this host"
+        log "OK       GitHub SSH key present (${github_ed25519_key/#$HOME/~}); no preferred SSH key on this host"
     else
         cat >&2 <<EOF
 ERROR: no GitHub SSH key on this host.
 
 Need a key at one of:
-  $house_key
+  $ssh_key
   $github_ed25519_key
 (or IdentityFiles from the private config overlay)
 
 Prefer HTTPS instead:
   bootstrap_host --github-https    # runs gh auth login if needed
 
-House key (for house hops; does not require GitHub SSH):
+Preferred SSH key (for host hops; does not require GitHub SSH):
   bootstrap_host --key-from user@host --github-https
 EOF
         exit 1
@@ -1195,8 +1195,8 @@ EOF
     write_github_ssh_snippet
     set_github_ssh_insteadof
     ensure_github_known_hosts
-    if [[ -f "$house_key" ]]; then
-        cache_house_key
+    if [[ -f "$ssh_key" ]]; then
+        cache_preferred_ssh_key
     elif [[ -f "$github_ed25519_key" ]]; then
         cache_ssh_key "$github_ed25519_key" "$github_ed25519_key"
     fi
@@ -1225,19 +1225,19 @@ setup_https_mode()
         install_args+=(--github-https)
     fi
 
-    # House key is optional in HTTPS mode but useful for cssh / house hops.
-    if [[ -f "$house_key" ]]; then
-        chmod 600 "$house_key" || true
+    # Preferred SSH key is optional in HTTPS mode but useful for cssh / host hops.
+    if [[ -f "$ssh_key" ]]; then
+        chmod 600 "$ssh_key" || true
         ensure_ssh_config_include
         if [[ $quiet -eq 0 ]]; then
-            log "OK       house key present for house hops (${house_key/#$HOME/~})"
+            log "OK       SSH key present for host hops (${ssh_key/#$HOME/~})"
         fi
         # Cache when interactive so cssh works immediately after bootstrap.
         if [[ -t 0 && -t 2 ]]; then
-            cache_house_key || true
+            cache_preferred_ssh_key || true
         fi
     elif [[ -n "$key_from_host" ]]; then
-        log "WARN     --key-from was set but house key missing after fetch"
+        log "WARN     --key-from was set but SSH key missing after fetch"
     fi
 }
 
@@ -1258,8 +1258,8 @@ clone_repo_if_needed()
     # Force the same GitHub SSH identity as verify (do not rely on Include alone).
     if [[ $github_https -eq 0 ]]; then
         local id="${github_key:-$github_ed25519_key}"
-        [[ -f "$id" ]] || id="$house_key"
-        if [[ "$id" == "$house_key" ]]; then
+        [[ -f "$id" ]] || id="$ssh_key"
+        if [[ "$id" == "$ssh_key" ]]; then
             GIT_SSH_COMMAND="ssh -o User=git -o IdentitiesOnly=yes -o IdentityFile=${id} -o $(github_ssh_rsa_sha2_opt)" \
                 git clone "$repo_https" "$clone_dir" || die "git clone failed"
         else
@@ -1398,9 +1398,9 @@ printf 'bootstrap_host (%s) starting on %s…\n' \
 
 resolve_bootstrap_ssh_keys
 
-# House key fetch is independent of GitHub transport (HTTPS vs SSH).
+# Preferred SSH key fetch is independent of GitHub transport (HTTPS vs SSH).
 if [[ -n "$key_from_host" ]]; then
-    fetch_house_key_from_host "$key_from_host"
+    fetch_ssh_key_from_host "$key_from_host"
     resolve_bootstrap_ssh_keys
 fi
 

@@ -178,7 +178,7 @@ Usage: provision_init_files [-f|--force] [-q|--quiet] [--no-dev|--dev]
 
   Checks for tools the bashrc uses, writes absolute paths to
   ~/.config/init-files/tools.<hostname>, symlinks ~/.bashrc to this repo's
-  bashrc, and installs house + GitHub SSH materials from the private
+  bashrc, and installs shared + GitHub SSH materials from the private
   config overlay (~/.local/share/config/.ssh/) when present (authorized_keys
   merge, config.d snippets, git insteadOf rewrite unless this host prefers
   HTTPS).
@@ -1815,18 +1815,19 @@ _init_files_migrate_pipx_layout
 _init_files_rewrite_stale_pipx_wrapper
 
 # ---------------------------------------------------------------------------
-# SSH: house hosts + GitHub (SSH remotes without HTTPS credentials).
+# SSH: shared hosts + GitHub (SSH remotes without HTTPS credentials).
 # Materials live in the private config overlay clone (.ssh/).
 # ---------------------------------------------------------------------------
 ssh_dir="${HOME}/.ssh"
-config_ssh_dir="$(init_files_config_ssh_dir)"
-ssh_auth_src="${config_ssh_dir}/authorized_keys.house"
-ssh_house_config_src="${config_ssh_dir}/config.house"
-ssh_github_config_src="${config_ssh_dir}/config.github"
+# New-first, legacy-fallback (authorized_keys.house / config.house).
+ssh_auth_src="$(init_files_config_ssh_authorized_keys_path 2>/dev/null || true)"
+ssh_hosts_config_src="$(init_files_config_ssh_hosts_config_path 2>/dev/null || true)"
+ssh_github_config_src="$(init_files_config_ssh_github_config_path 2>/dev/null || true)"
 # GitHub Host block is generated from config.github IdentityFile lines so
 # missing IdentityFiles are omitted — see install_github_ssh_snippet.
 ssh_config_d="${ssh_dir}/config.d"
-ssh_house_snippet="${ssh_config_d}/init-files-house.conf"
+ssh_hosts_snippet="${ssh_config_d}/init-files-hosts.conf"
+ssh_hosts_snippet_legacy="${ssh_config_d}/init-files-house.conf"
 ssh_github_snippet="${ssh_config_d}/init-files-github.conf"
 ssh_config_file="${ssh_dir}/config"
 ssh_auth_file="${ssh_dir}/authorized_keys"
@@ -1834,7 +1835,7 @@ ssh_auth_file="${ssh_dir}/authorized_keys"
 github_insteadof_from='https://github.com/'
 github_insteadof_to='git@github.com:'
 
-# OpenSSH option so house RSA can auth to GitHub (needed on some 8.x / FIPS hosts).
+# OpenSSH option so RSA keys can auth to GitHub (needed on some 8.x / FIPS hosts).
 github_ssh_rsa_sha2_line()
 {
     local ver major=0 minor=0
@@ -1916,13 +1917,13 @@ install_github_ssh_snippet()
     log "Installed ${ssh_github_snippet/#$HOME/~}"
 }
 
-install_house_authorized_keys()
+install_shared_authorized_keys()
 {
     local line keyblob tmp existing
     local added=0
 
-    [[ -f "$ssh_auth_src" ]] || {
-        log "SKIP     house authorized_keys (missing $ssh_auth_src)"
+    [[ -n "$ssh_auth_src" && -f "$ssh_auth_src" ]] || {
+        log "SKIP     shared authorized_keys (missing overlay authorized_keys.shared)"
         return 0
     }
 
@@ -1953,9 +1954,9 @@ install_house_authorized_keys()
             return 1
         }
         chmod 600 "$ssh_auth_file" || true
-        log "Updated  ~/.ssh/authorized_keys (+$added house key(s))"
+        log "Updated  ~/.ssh/authorized_keys (+$added shared key(s))"
     else
-        log "OK       ~/.ssh/authorized_keys (house keys already present)"
+        log "OK       ~/.ssh/authorized_keys (shared keys already present)"
     fi
     rm -f "$tmp"
 }
@@ -2000,7 +2001,7 @@ ensure_ssh_config_include()
         return 0
     fi
 
-    # Prepend Include so house/GitHub Host blocks are seen before a catch-all Host *.
+    # Prepend Include so shared/GitHub Host blocks are seen before a catch-all Host *.
     tmp=$(mktemp) || return 1
     {
         printf '%s\n\n' "$include_line"
@@ -2177,12 +2178,16 @@ if [[ $quiet -eq 0 ]] && declare -F init_files_private_config_url_drifted > /dev
     log "WARN     private config remembered URL differs from clone origin"
     log "         check INIT_FILES_CONFIG_REPO / ~/.config/init-files/config-repo"
 fi
-config_ssh_dir="$(init_files_config_ssh_dir)"
-ssh_auth_src="${config_ssh_dir}/authorized_keys.house"
-ssh_house_config_src="${config_ssh_dir}/config.house"
-ssh_github_config_src="${config_ssh_dir}/config.github"
-install_house_authorized_keys
-install_ssh_config_snippet "$ssh_house_config_src" "$ssh_house_snippet" "house ssh config"
+ssh_auth_src="$(init_files_config_ssh_authorized_keys_path 2>/dev/null || true)"
+ssh_hosts_config_src="$(init_files_config_ssh_hosts_config_path 2>/dev/null || true)"
+ssh_github_config_src="$(init_files_config_ssh_github_config_path 2>/dev/null || true)"
+install_shared_authorized_keys
+install_ssh_config_snippet "$ssh_hosts_config_src" "$ssh_hosts_snippet" "shared hosts ssh config"
+# Drop legacy snippet so Host blocks are not duplicated after rename.
+if [[ -f "$ssh_hosts_snippet" && -f "$ssh_hosts_snippet_legacy" ]]; then
+    rm -f "$ssh_hosts_snippet_legacy" || true
+    log "Removed  legacy ${ssh_hosts_snippet_legacy/#$HOME/~}"
+fi
 install_github_ssh_snippet
 ensure_github_known_hosts
 ensure_github_git_transport

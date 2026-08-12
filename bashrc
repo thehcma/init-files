@@ -2061,7 +2061,7 @@ function _init_bind_cssh_cmsh_completion()
     fi
 }
 
-# Eternal Terminal with automatic house-key re-cache when the agent lifetime expired.
+# Eternal Terminal with automatic preferred-key re-cache when the agent lifetime expired.
 # Does not shadow the et binary — use cesh explicitly for interactive hops.
 function cesh()
 {
@@ -2073,7 +2073,7 @@ function cesh()
             cat <<'EOF'
 Usage: cesh [et-args...]
 
-Like et (Eternal Terminal), but ensures the house passphrase key is loaded
+Like et (Eternal Terminal), but ensures the preferred passphrase SSH key is loaded
 in ssh-agent first. If the key is missing or its cache_ssh lifetime expired,
 runs cache_ssh (prompts on a TTY), then invokes et with the same arguments.
 
@@ -2130,7 +2130,7 @@ EOF
     "$et_bin" "${args[@]}"
 }
 
-# mosh with automatic house-key re-cache when the agent lifetime has expired.
+# mosh with automatic preferred-key re-cache when the agent lifetime has expired.
 # Does not shadow the mosh binary — use cmsh explicitly for interactive hops.
 function cmsh()
 {
@@ -2142,14 +2142,14 @@ function cmsh()
             cat <<'EOF'
 Usage: cmsh [mosh-args...]
 
-Like mosh, but ensures the house passphrase key is loaded in ssh-agent first.
+Like mosh, but ensures the preferred passphrase SSH key is loaded in ssh-agent first.
 If the key is missing or its cache_ssh lifetime expired, runs cache_ssh
 (prompts on a TTY), then invokes mosh with the same arguments.
 
 With no arguments on a TTY, fuzzy-picks a host from ~/.ssh/config
 (config.d) and cleartext ~/.ssh/known_hosts via fzf, then connects.
 
-Mosh still bootstraps over ssh, so the same house key / agent flow as cssh
+Mosh still bootstraps over ssh, so the same preferred key / agent flow as cssh
 applies. Survives laptop sleep and IP changes better than plain ssh.
 Requires mosh-server on the remote host.
 
@@ -2243,7 +2243,7 @@ EOF
     gpg_symmetric --decrypt -- "${target}.crypt"
 }
 
-# ssh with automatic house-key re-cache when the agent lifetime has expired.
+# ssh with automatic preferred-key re-cache when the agent lifetime has expired.
 # Does not shadow the ssh binary — use cssh explicitly for interactive hops.
 function cssh()
 {
@@ -2255,7 +2255,7 @@ function cssh()
             cat <<'EOF'
 Usage: cssh [ssh-args...]
 
-Like ssh, but ensures the house passphrase key is loaded in ssh-agent first.
+Like ssh, but ensures the preferred passphrase SSH key is loaded in ssh-agent first.
 If the key is missing or its cache_ssh lifetime expired, runs cache_ssh
 (prompts on a TTY), then invokes ssh with the same arguments.
 
@@ -4487,7 +4487,7 @@ EOF
 function init_files_doctor()
 {
     local fail=0 warn=0
-    local link_target head_sha remote_sha tools_file house_key
+    local link_target head_sha remote_sha tools_file preferred_key
     local clone_dir="${init_files_dir:-${XDG_DATA_HOME:-$HOME/.local/share}/init-files}"
     local cfg="${init_files_config_dir:-${XDG_CONFIG_HOME:-$HOME/.config}/init-files}"
     local git_bin="${init_tool_git:-$(command -v git 2>/dev/null || true)}"
@@ -4524,7 +4524,7 @@ function init_files_doctor()
         _doc_fail "missing clone at $clone_dir"
     fi
 
-    # 3) private config overlay (house SSH)
+    # 3) private config overlay (shared SSH)
     if declare -F init_files_private_config_complete > /dev/null 2>&1; then
         if init_files_private_config_complete; then
             _doc_ok "private config overlay ready ($(init_files_private_config_dir))"
@@ -4548,16 +4548,19 @@ function init_files_doctor()
         _doc_warn "private config helpers missing (lib/config_paths); run refresh_init_files"
     fi
 
-    # 4) house / GitHub keys + agent (paths from overlay when available)
-    house_key=
-    if declare -F init_files_github_identity_files_from_template > /dev/null 2>&1 \
-        && declare -F init_files_config_ssh_dir > /dev/null 2>&1; then
-        house_key="$(init_files_github_identity_files_from_template "$(init_files_config_ssh_dir)/config.github" | head -1 || true)"
+    # 4) preferred / GitHub keys + agent (paths from overlay when available)
+    preferred_key=
+    if declare -F init_files_github_identity_files_from_template > /dev/null 2>&1; then
+        if declare -F init_files_config_ssh_github_config_path > /dev/null 2>&1; then
+            preferred_key="$(init_files_github_identity_files_from_template "$(init_files_config_ssh_github_config_path 2>/dev/null || true)" | head -1 || true)"
+        elif declare -F init_files_config_ssh_dir > /dev/null 2>&1; then
+            preferred_key="$(init_files_github_identity_files_from_template "$(init_files_config_ssh_dir)/config.github" | head -1 || true)"
+        fi
     fi
-    if [[ -n "$house_key" && -f "$house_key" ]]; then
-        _doc_ok "GitHub/house SSH key present (${house_key/#$HOME/~})"
-    elif [[ -n "$house_key" ]]; then
-        _doc_warn "preferred SSH key missing ($house_key)"
+    if [[ -n "$preferred_key" && -f "$preferred_key" ]]; then
+        _doc_ok "preferred SSH key present (${preferred_key/#$HOME/~})"
+    elif [[ -n "$preferred_key" ]]; then
+        _doc_warn "preferred SSH key missing ($preferred_key)"
     else
         _doc_warn "no overlay config.github IdentityFiles on disk (optional for HTTPS-only hosts)"
     fi

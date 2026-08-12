@@ -1,6 +1,6 @@
 # AGENTS.md — init-files
 
-Guidance for agents maintaining this repo. Generic shell tooling here is prepared for a **public** repo; user-specific material (house SSH, pubkeys, primary-user allowlist) lives in a **private config overlay** (`~/.local/share/config`, URL prompted / `INIT_FILES_CONFIG_REPO`).
+Guidance for agents maintaining this repo. Generic shell tooling here is prepared for a **public** repo; user-specific material (shared SSH, pubkeys, primary-user allowlist) lives in a **private config overlay** (`~/.local/share/config`, URL prompted / `INIT_FILES_CONFIG_REPO`).
 
 Human-oriented install/refresh steps live in [README.md](README.md). Platform isolation details also live in [.cursor/rules/platform-isolation.mdc](.cursor/rules/platform-isolation.mdc) (`alwaysApply`). Tool-path contract: [.cursor/rules/tool-path-consistency.mdc](.cursor/rules/tool-path-consistency.mdc) (`alwaysApply`) + shared [`lib/tool_path`](lib/tool_path) / [`lib/host_paths`](lib/host_paths). Error handling: [.cursor/rules/error-handling.mdc](.cursor/rules/error-handling.mdc) (`alwaysApply`) + [`lib/error`](lib/error) for standalone scripts. Interactive input: [.cursor/rules/interactive-input.mdc](.cursor/rules/interactive-input.mdc) (`alwaysApply`) + [`lib/interactive_input`](lib/interactive_input) for `bt` / `cache_ssh`. That tool-path rule also covers **admin vs non-admin** modern-macOS installs (MDM handoff via `print_brew_admin_copy_paste`). Prefer updating **both** this file and those rules when isolation or tool-path policy changes. Bash scripts in this repo do **not** use a `.sh` suffix — see [.cursor/rules/no-sh-extension.mdc](.cursor/rules/no-sh-extension.mdc).
 
@@ -59,7 +59,7 @@ Tracked content is shared. Host-specific absolute tool paths are **generated on 
 
 Do **not** commit user-specific material in this repo — use a **private config overlay**:
 
-- `config/.ssh/` (house hosts, authorized_keys, GitHub IdentityFile template)
+- `config/.ssh/` (shared host aliases, authorized_keys, GitHub IdentityFile template)
 - `config/init-files/default-users.env` (`INIT_FILES_DEFAULT_USERS`)
 - `config/init-files/bashrc.local` (optional personal aliases / helpers)
 - Never hardcode a private overlay git URL in init-files (prompt / env / remembered pref)
@@ -113,14 +113,14 @@ Plain `provision_init_files` / `refresh_init_files` with no mode flag **keep** w
 
 ### First-time setup on a host
 
-**Preferred:** public bootstrap (download → run → verify → source). See [README.md](README.md). Interactive `bootstrap_host` prefers **`gh auth login` (HTTPS)**; `--key-from HOST` fetches the house key for house hops without forcing GitHub SSH (HTTPS still wins when `gh` is logged in). GitHub SSH is for when HTTPS is unavailable; if it fails, bootstrap falls back to HTTPS when `gh` can authenticate.
+**Preferred:** public bootstrap (download → run → verify → source). See [README.md](README.md). Interactive `bootstrap_host` prefers **`gh auth login` (HTTPS)**; `--key-from HOST` fetches the preferred SSH key for host hops without forcing GitHub SSH (HTTPS still wins when `gh` is logged in). GitHub SSH is for when HTTPS is unavailable; if it fails, bootstrap falls back to HTTPS when `gh` can authenticate.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/thehcma/init-files/main/bootstrap_host \
  -o /tmp/bootstrap_host
 chmod +x /tmp/bootstrap_host
 /tmp/bootstrap_host
-# House key (GitHub stays HTTPS if gh logged in):
+# Preferred SSH key (GitHub stays HTTPS if gh logged in):
 # /tmp/bootstrap_host --key-from HOST   # e.g. user@other-host
 # Wait for "bootstrap_host verify" with bashrc OK, then:
 source ~/.bashrc
@@ -148,7 +148,7 @@ Agent checklist (read this file + [README.md](README.md); then execute on the **
      `git -C ~/.local/share/init-files fetch origin main && git -C ~/.local/share/init-files reset --hard origin/main`  
      (or `refresh_init_files` once a new enough bashrc is already sourced — if the running shell is still the *old* copy-based bashrc, prefer the explicit `git` commands above, then run `provision_init_files`).
    - If missing: clone as in first-time setup.
-3. **Run install** (tools + symlink + house SSH materials):
+3. **Run install** (tools + symlink + shared SSH materials):
    ```bash
    ~/.local/share/init-files/provision_init_files
    # minimal host without a dev toolchain:
@@ -165,12 +165,12 @@ Agent checklist (read this file + [README.md](README.md); then execute on the **
    type refresh_init_files
    check_tool_versions   # interactive shell; hints must match this OS tier
    ```
-5. **House + GitHub SSH**
+5. **Shared + GitHub SSH**
    - Private config overlay at `~/.local/share/config` (or skipped for generic install)
-   - `~/.ssh/config.d/init-files-house.conf` and `init-files-github.conf` when overlay materials exist
-   - House / GitHub keys present as listed in overlay `config.github`
+   - `~/.ssh/config.d/init-files-hosts.conf` and `init-files-github.conf` when overlay materials exist
+   - Preferred / GitHub keys present as listed in overlay `config.github`
    - `cache_ssh` then `ssh -T git@github.com` succeeds when using SSH transport
-   - House `authorized_keys` contains only passphrase house pubkeys (no nopassphrase keys)
+   - Shared `authorized_keys` merge uses passphrase pubkeys only (no nopassphrase keys)
 6. **Report back** to the user: hostname, `HEAD` sha, symlink OK/fail, GitHub SSH OK/fail, tool-hint sanity for this tier, any blockers.
 
 Do **not** invent a second clone path. Do **not** copy `bashrc` over `~/.bashrc`. Do **not** push unless asked.
@@ -262,7 +262,7 @@ Conventions:
 - Path acceptance is shared via `lib/tool_path` (`init_files_verify_tool_path`); never use bare `[[ -x ]]` as the only gate for recorded tools.
 - Prefer short **why** comments on non-obvious control flow (locks, OS-tier forks, PATH bookkeeping); operator UX belongs in [docs/shell-ux.md](docs/shell-ux.md), not a narrated bashrc.
 - Quiet-prompt usernames: allowlist via `INIT_FILES_DEFAULT_USERS` from private config `init-files/default-users.env` (or env); legacy `INIT_FILES_DEFAULT_USER` merges in. Empty allowlist → no alt-user badge. Non-members get `INIT_FILES_ALT_USER` + yellow-on-red badge. Details: [docs/shell-ux.md](docs/shell-ux.md).
-- Personal / house aliases belong in private overlay `init-files/bashrc.local` (sourced after the public alias block), not in this repo’s `bashrc`.
+- Personal aliases belong in private overlay `init-files/bashrc.local` (sourced after the public alias block), not in this repo’s `bashrc`.
 - New `update_*` / `detect_*_strategy` brew branches must be gated with `_init_is_modern_macos`.
 - Node/npm/pnpm/gt: nvm/fnm first on all tiers — never add a modern-macOS `brew install node` branch.
 - Older macOS `update_gh` (and similar) should use GitHub release → `~/.local`, not brew.
@@ -278,7 +278,7 @@ Conventions:
 4. On **modern macOS** (TTY, not `-q`/`--force`): if missing tools have brew hints, offer Homebrew bootstrap (when needed), then **required** packages, then **optional** packages (two Y/n prompts); rediscover after installs.
 5. Write `~/.config/init-files/tools.<hostname>` (includes `init_files_tools_revision` + `init_files_tools_names`).
 6. Symlink `~/.bashrc` → clone `bashrc` (backup regular files once).
-7. Merge house SSH materials from private config overlay (`~/.local/share/config/.ssh/`) when present.
+7. Merge shared SSH materials from private config overlay (`~/.local/share/config/.ssh/`) when present.
 8. Ensure `~/.profile` or `~/.bash_profile` sources `~/.bashrc` (needed for Debian/Ubuntu SSH login shells).
 9. On Darwin (not `-q`): merge curated iTerm2 prefs via `iterm2/install` when the plist is present (warn-only on failure).
 10. On modern macOS (not `-q`): if preferred Homebrew bash is present and UserShell is not that Cellar binary, print `/etc/shells` + `chsh` setup steps.
@@ -344,13 +344,13 @@ Cursor chats do not sync across hosts. To continue work elsewhere:
 Read and follow AGENTS.md (and README.md).
 This host needs the symlink deploy model: ~/.bashrc → ~/.local/share/init-files/bashrc.
 
-Prereq: prefer gh auth login (HTTPS). For SSH-only hosts: passphrase house key on disk.
+Prereq: prefer gh auth login (HTTPS). For SSH-only hosts: passphrase SSH key on disk.
 
 If ~/.local/share/init-files is missing:
   curl -fsSL https://raw.githubusercontent.com/thehcma/init-files/main/bootstrap_host -o /tmp/bootstrap_host
   chmod +x /tmp/bootstrap_host
   /tmp/bootstrap_host
-  # House key only (GitHub HTTPS if gh logged in):
+  # Preferred SSH key only (GitHub HTTPS if gh logged in):
   # /tmp/bootstrap_host --key-from HOST   # e.g. user@other-host
   # Force GitHub SSH: --github-ssh
   # Wait for verify (bashrc OK), then:
@@ -361,7 +361,7 @@ If the clone already exists:
 2. Run ~/.local/share/init-files/provision_init_files && source ~/.bashrc
    (or ~/.local/share/init-files/bootstrap_host for a full re-check)
 3. Verify symlink, init_tool_*, refresh_init_files, insteadOf, github.com SSH config, and check_tool_versions for THIS OS tier.
-4. Optional: private config overlay (prompted URL) for house SSH; passphrase keys only.
+4. Optional: private config overlay (prompted URL) for shared SSH; passphrase keys only.
 5. Report hostname, HEAD, verify results, and any blockers.
 
 Do not push unless I ask. Do not copy bashrc over ~/.bashrc. Prefer gh auth / HTTPS; use SSH when required.
@@ -386,28 +386,28 @@ Copying transcript UUID dirs is optional secondary context, not a substitute for
 - Building a repo-wide argv sanitizer for interactive helpers (validate `bt` / `cache_ssh` entry points only).
 - Committing host `tools` files or secrets.
 - Committing `__pycache__` / `*.pyc` (use `.gitignore`).
-- Putting private key material or house pubkeys in init-files (use a private config overlay `.ssh/`).
+- Putting private key material or shared pubkeys in init-files (use a private config overlay `.ssh/`).
 - Hardcoding a private overlay git URL in init-files (prompt / `INIT_FILES_CONFIG_REPO` / remembered pref only).
 
 ---
 
-## House + GitHub SSH
+## Shared + GitHub SSH
 
 Canonical materials under a **private config overlay** → `~/.local/share/config/.ssh/`:
 
 | File | Role |
 | --- | --- |
-| `authorized_keys.house` | Passphrase house pubkeys every host must accept |
-| `config.house` | Host aliases for house machines |
+| `authorized_keys.shared` | Passphrase pubkeys every host should accept (merged into `~/.ssh/authorized_keys`) |
+| `config.hosts` | Host aliases / IdentityFiles for your machines |
 | `config.github` | `Host github.com` IdentityFile order (existing keys only) |
 
-`provision_init_files` / `bootstrap_host` prompt for the overlay git URL when interactive (remembered in `~/.config/init-files/config-repo`), clone it, and verify the three files exist. See [README — House SSH](README.md#house-ssh).
+Legacy: `authorized_keys.house` / `config.house` still accepted; installed snippet is `init-files-hosts.conf` (stale `init-files-house.conf` removed after install).
 
-**Policy:** house access uses passphrase-protected keys only. GitHub SSH IdentityFiles come from overlay `config.github` (typically personal ed25519 then house RSA; OpenSSH 8 / FIPS hosts may decline RSA). Never nopassphrase keys. Use `cache_ssh` before BatchMode / `refresh_init_files` fetches on SSH hosts.
+`provision_init_files` / `bootstrap_host` prompt for the overlay git URL when interactive (remembered in `~/.config/init-files/config-repo`), clone it, and verify the three files exist. See [README — Private config overlay (SSH)](README.md#private-config-overlay-ssh).
 
-**New hosts:** prefer `gh auth login` (HTTPS). Interactive `bootstrap_host` offers that first. `--key-from HOST` copies the house key for house hops and does **not** force GitHub SSH. GitHub SSH (`--github-ssh` / chooser) when HTTPS is unavailable; if SSH verify fails, bootstrap falls back to HTTPS when `gh` can authenticate. When `gh auth status` succeeds, prefer HTTPS automatically (remembered; `gh auth git-credential`). Opt out with `provision_init_files --github-ssh` / `refresh_init_files --github-ssh` (`github-ssh.<hostname>`). Force HTTPS with `--github-https`. Details: [README — Where the flags are available](README.md#where-the-flags-are-available).
+**Policy:** prefer passphrase-protected keys. Private keys live only under `~/.ssh/` on each host. GitHub SSH IdentityFiles come from overlay `config.github` (typically personal ed25519 then other keys; OpenSSH 8 / FIPS hosts may decline RSA). Never nopassphrase keys for shared access. Use `cache_ssh` before BatchMode / `refresh_init_files` fetches on SSH hosts.
 
----
+**New hosts:** prefer `gh auth login` (HTTPS). Interactive `bootstrap_host` offers that first. `--key-from HOST` copies the preferred SSH key for host hops and does **not** force GitHub SSH. GitHub SSH (`--github-ssh` / chooser) when HTTPS is unavailable; if SSH verify fails, bootstrap falls back to HTTPS when `gh` can authenticate. When `gh auth status` succeeds, prefer HTTPS automatically (remembered; `gh auth git-credential`). Opt out with `provision_init_files --github-ssh` / `refresh_init_files --github-ssh` (`github-ssh.<hostname>`). Force HTTPS with `--github-https`. Details: [README — Where the flags are available](README.md#where-the-flags-are-available).
 
 ## Quick commands for agents
 

@@ -32,7 +32,10 @@ assert_contains 'defines remember url' "$lib_text" 'init_files_remember_config_r
 assert_contains 'defines preferred ssh keys' "$lib_text" 'init_files_preferred_ssh_keys()'
 assert_contains 'defines preferred ssh key' "$lib_text" 'init_files_preferred_ssh_key()'
 assert_contains 'defines generic ssh candidates' "$lib_text" 'init_files_generic_ssh_key_candidates()'
-assert_contains 'defines house key basename' "$lib_text" 'init_files_house_key_basename()'
+assert_contains 'defines ssh key basename' "$lib_text" 'init_files_ssh_key_basename()'
+assert_contains 'defines remember ssh key basename' "$lib_text" 'init_files_remember_ssh_key_basename()'
+assert_contains 'defines auth keys path helper' "$lib_text" 'init_files_config_ssh_authorized_keys_path()'
+assert_contains 'defines hosts config path helper' "$lib_text" 'init_files_config_ssh_hosts_config_path()'
 assert_contains 'defines rsa key helper' "$lib_text" 'init_files_ssh_key_is_rsa()'
 assert_contains 'defines basename ok helper' "$lib_text" 'init_files_ssh_key_basename_ok()'
 assert_contains 'defines url normalize' "$lib_text" 'init_files_normalize_git_repo_url()'
@@ -44,11 +47,11 @@ if grep -Eq 'github\.com/.+/config\.git' "$root/lib/config_paths"; then
 else
     pass_case 'no hardcoded private config git URL'
 fi
-# Must not ship personal house RSA basename in public helpers.
+# Must not ship personal key basenames in public helpers.
 if grep -Eq 'id_rsa-sha2-256-hcma|hcma-at-hcma' "$root/lib/config_paths"; then
-    fail_case 'no personal house key basename in lib/config_paths'
+    fail_case 'no personal key basename in lib/config_paths'
 else
-    pass_case 'no personal house key basename in lib/config_paths'
+    pass_case 'no personal key basename in lib/config_paths'
 fi
 
 # Stub log for ensure/report paths under tests.
@@ -86,9 +89,9 @@ cat > "${tmpdir}/config.github" <<EOF
 Host github.com
     IdentityFile ${tmpdir}/.ssh-id_ed25519
     IdentityFile ${tmpdir}/.ssh-missing
-    IdentityFile ${tmpdir}/.ssh-house
+    IdentityFile ${tmpdir}/.ssh-shared
 EOF
-touch "${tmpdir}/.ssh-id_ed25519" "${tmpdir}/.ssh-house"
+touch "${tmpdir}/.ssh-id_ed25519" "${tmpdir}/.ssh-shared"
 mapfile -t ids < <(init_files_github_identity_files_from_template "${tmpdir}/config.github")
 if [[ ${#ids[@]} -eq 2 ]]; then
     pass_case 'keeps existing identity files only'
@@ -127,18 +130,46 @@ if init_files_private_config_complete; then
 else
     pass_case 'complete false when materials missing'
 fi
+# Legacy overlay filenames still satisfy complete check
 touch "${tmpdir}/cfg/.ssh/authorized_keys.house" \
     "${tmpdir}/cfg/.ssh/config.house" \
     "${tmpdir}/cfg/.ssh/config.github"
 if init_files_report_missing_config_ssh >/dev/null 2>&1; then
-    pass_case 'report ok when materials present'
+    pass_case 'report ok when legacy materials present'
 else
-    fail_case 'report ok when materials present'
+    fail_case 'report ok when legacy materials present'
 fi
 if init_files_private_config_complete; then
-    pass_case 'complete true when materials present'
+    pass_case 'complete true when legacy materials present'
 else
-    fail_case 'complete true when materials present'
+    fail_case 'complete true when legacy materials present'
+fi
+# Canonical overlay filenames
+rm -f "${tmpdir}/cfg/.ssh/authorized_keys.house" "${tmpdir}/cfg/.ssh/config.house"
+touch "${tmpdir}/cfg/.ssh/authorized_keys.shared" \
+    "${tmpdir}/cfg/.ssh/config.hosts" \
+    "${tmpdir}/cfg/.ssh/config.github"
+if init_files_report_missing_config_ssh >/dev/null 2>&1; then
+    pass_case 'report ok when canonical materials present'
+else
+    fail_case 'report ok when canonical materials present'
+fi
+if init_files_private_config_complete; then
+    pass_case 'complete true when canonical materials present'
+else
+    fail_case 'complete true when canonical materials present'
+fi
+got="$(init_files_config_ssh_authorized_keys_path)"
+if [[ "$got" == "${tmpdir}/cfg/.ssh/authorized_keys.shared" ]]; then
+    pass_case 'auth keys path prefers canonical'
+else
+    fail_case "auth keys path prefers canonical (got $got)"
+fi
+got="$(init_files_config_ssh_hosts_config_path)"
+if [[ "$got" == "${tmpdir}/cfg/.ssh/config.hosts" ]]; then
+    pass_case 'hosts config path prefers canonical'
+else
+    fail_case "hosts config path prefers canonical (got $got)"
 fi
 
 printf '\n=== behavioral: ensure quiet path ===\n'
@@ -196,9 +227,11 @@ mkdir -p "${tmpdir}/cfg-keys/.ssh" "${tmpdir}/fake-home/.ssh"
 # Isolate HOME so generic candidates do not pick the operator's real keys.
 OLD_HOME="$HOME"
 export HOME="${tmpdir}/fake-home"
-unset SSH_CACHE_KEY INIT_FILES_HOUSE_KEY INIT_FILES_HOUSE_KEY_BASENAME 2>/dev/null || true
-export INIT_FILES_HOUSE_KEY_BASENAME_PREF="${tmpdir}/house-key-basename"
-rm -f "$INIT_FILES_HOUSE_KEY_BASENAME_PREF"
+unset SSH_CACHE_KEY INIT_FILES_SSH_KEY INIT_FILES_HOUSE_KEY \
+    INIT_FILES_SSH_KEY_BASENAME INIT_FILES_HOUSE_KEY_BASENAME 2>/dev/null || true
+export INIT_FILES_SSH_KEY_BASENAME_PREF="${tmpdir}/ssh-key-basename"
+rm -f "$INIT_FILES_SSH_KEY_BASENAME_PREF" \
+    "${XDG_CONFIG_HOME:-$HOME/.config}/init-files/house-key-basename" 2>/dev/null || true
 
 # No overlay IdentityFiles and no keys on disk → empty preferred list
 mapfile -t keys < <(init_files_preferred_ssh_keys || true)
@@ -226,56 +259,65 @@ fi
 mkdir -p "${tmpdir}/cfg-keys/.ssh"
 cat > "${tmpdir}/cfg-keys/.ssh/config.github" <<EOF
 Host github.com
-    IdentityFile ${tmpdir}/overlay-house
+    IdentityFile ${tmpdir}/overlay-shared
     IdentityFile ${HOME}/.ssh/id_ed25519_github
 EOF
-touch "${tmpdir}/overlay-house"
+touch "${tmpdir}/overlay-shared"
 mapfile -t keys < <(init_files_preferred_ssh_keys)
-if [[ ${#keys[@]} -ge 1 && "${keys[0]}" == "${tmpdir}/overlay-house" ]]; then
+if [[ ${#keys[@]} -ge 1 && "${keys[0]}" == "${tmpdir}/overlay-shared" ]]; then
     pass_case 'overlay IdentityFile precedes generic'
 else
     fail_case "overlay IdentityFile precedes generic (got ${keys[*]})"
 fi
 
 got="$(init_files_preferred_ssh_key)"
-if [[ "$got" == "${tmpdir}/overlay-house" ]]; then
+if [[ "$got" == "${tmpdir}/overlay-shared" ]]; then
     pass_case 'preferred key returns first overlay key'
 else
     fail_case "preferred key returns first overlay key (got $got)"
 fi
 
-export INIT_FILES_HOUSE_KEY="${HOME}/.ssh/id_ed25519_github"
+export INIT_FILES_SSH_KEY="${HOME}/.ssh/id_ed25519_github"
 got="$(init_files_preferred_ssh_key)"
 if [[ "$got" == "${HOME}/.ssh/id_ed25519_github" ]]; then
-    pass_case 'INIT_FILES_HOUSE_KEY overrides preferred order'
+    pass_case 'INIT_FILES_SSH_KEY overrides preferred order'
 else
-    fail_case "INIT_FILES_HOUSE_KEY overrides preferred order (got $got)"
+    fail_case "INIT_FILES_SSH_KEY overrides preferred order (got $got)"
 fi
-unset INIT_FILES_HOUSE_KEY
+unset INIT_FILES_SSH_KEY
 
-# House key basename defaults / remember
-got="$(init_files_house_key_basename)"
-if [[ "$got" == 'overlay-house' ]]; then
-    pass_case 'house basename from overlay IdentityFile'
+# SSH key basename defaults / remember
+got="$(init_files_ssh_key_basename)"
+if [[ "$got" == 'overlay-shared' ]]; then
+    pass_case 'ssh basename from overlay IdentityFile'
 else
-    fail_case "house basename from overlay IdentityFile (got $got)"
+    fail_case "ssh basename from overlay IdentityFile (got $got)"
 fi
-init_files_remember_house_key_basename 'id_ed25519_house'
+init_files_remember_ssh_key_basename 'id_ed25519_shared'
 # Remembered pref wins over overlay when set
-got="$(init_files_house_key_basename)"
-if [[ "$got" == 'id_ed25519_house' ]]; then
-    pass_case 'house basename remembers pref'
+got="$(init_files_ssh_key_basename)"
+if [[ "$got" == 'id_ed25519_shared' ]]; then
+    pass_case 'ssh basename remembers pref'
 else
-    fail_case "house basename remembers pref (got $got)"
+    fail_case "ssh basename remembers pref (got $got)"
 fi
-rm -f "$INIT_FILES_HOUSE_KEY_BASENAME_PREF"
+rm -f "$INIT_FILES_SSH_KEY_BASENAME_PREF"
 # No overlay IdentityFile → generic default
 rm -f "${tmpdir}/cfg-keys/.ssh/config.github"
-got="$(init_files_house_key_basename)"
-if [[ "$got" == 'id_ed25519_house' ]]; then
-    pass_case 'house basename generic default'
+got="$(init_files_ssh_key_basename)"
+if [[ "$got" == 'id_ed25519' ]]; then
+    pass_case 'ssh basename generic default'
 else
-    fail_case "house basename generic default (got $got)"
+    fail_case "ssh basename generic default (got $got)"
+fi
+# Legacy env alias still honored
+export INIT_FILES_HOUSE_KEY_BASENAME='legacy-from-env'
+got="$(init_files_ssh_key_basename)"
+unset INIT_FILES_HOUSE_KEY_BASENAME
+if [[ "$got" == 'legacy-from-env' ]]; then
+    pass_case 'legacy INIT_FILES_HOUSE_KEY_BASENAME still works'
+else
+    fail_case "legacy INIT_FILES_HOUSE_KEY_BASENAME still works (got $got)"
 fi
 
 # RSA detection by basename
@@ -292,7 +334,7 @@ else
 fi
 
 # Basename safety
-if init_files_ssh_key_basename_ok 'id_ed25519_house'; then
+if init_files_ssh_key_basename_ok 'id_ed25519_shared'; then
     pass_case 'safe basename accepted'
 else
     fail_case 'safe basename accepted'
@@ -303,18 +345,18 @@ if init_files_ssh_key_basename_ok '../evil' || init_files_ssh_key_basename_ok 'a
 else
     pass_case 'unsafe basenames rejected'
 fi
-if init_files_remember_house_key_basename '../evil' 2>/dev/null; then
+if init_files_remember_ssh_key_basename '../evil' 2>/dev/null; then
     fail_case 'remember rejects unsafe basename'
 else
     pass_case 'remember rejects unsafe basename'
 fi
-export INIT_FILES_HOUSE_KEY_BASENAME='evil name'
-got="$(init_files_house_key_basename)"
-unset INIT_FILES_HOUSE_KEY_BASENAME
-if [[ "$got" == 'id_ed25519_house' ]]; then
-    pass_case 'house basename skips invalid env'
+export INIT_FILES_SSH_KEY_BASENAME='evil name'
+got="$(init_files_ssh_key_basename)"
+unset INIT_FILES_SSH_KEY_BASENAME
+if [[ "$got" == 'id_ed25519' ]]; then
+    pass_case 'ssh basename skips invalid env'
 else
-    fail_case "house basename skips invalid env (got $got)"
+    fail_case "ssh basename skips invalid env (got $got)"
 fi
 
 printf '\n=== behavioral: config URL normalize / drift ===\n'

@@ -9,7 +9,7 @@ Canonical interactive **bash** init for macOS (Darwin 21.6+) and Linux (Ubuntu, 
 | iTerm2 font / colors / keys (macOS) | **[iterm2/README.md](iterm2/README.md)** (`export_iterm_settings` / `upload_iterm_settings` / `test_iterm_settings` / `refresh_iterm_settings`) |
 | Vim 9 + plugins (cross-platform) | **[vim/README.md](vim/README.md)** (`refresh_vimrc`) |
 | Agent / platform-isolation rules | [AGENTS.md](AGENTS.md) |
-| Private overlay SSH (house + GitHub) | [House SSH](#house-ssh) |
+| Private config overlay (SSH + user policy) | [Private config overlay (SSH)](#private-config-overlay-ssh) |
 
 ## Contents
 
@@ -20,7 +20,7 @@ Canonical interactive **bash** init for macOS (Darwin 21.6+) and Linux (Ubuntu, 
 - [When to re-run `provision_init_files` vs `refresh_init_files`](#when-to-re-run-provision_init_files-vs-refresh_init_files)
 - [Process: migrate an existing host](#process-migrate-an-existing-host-old-copy--symlink)
 - [Platform notes](#platform-notes)
-- [House SSH](#house-ssh)
+- [Private config overlay (SSH)](#private-config-overlay-ssh)
 
 ---
 
@@ -87,11 +87,11 @@ Optional shell UX: **modern macOS** Homebrew **bash** + **bash-completion@2** ar
 
 ## Process: first-time installation
 
-Do this once per host (or after wiping the clone / tools file). Prefer **`gh auth login` (HTTPS)**; use `--key-from` for the house key (house hops) without forcing GitHub SSH; use `--github-ssh` only when HTTPS is unavailable.
+Do this once per host (or after wiping the clone / tools file). Prefer **`gh auth login` (HTTPS)**; use `--key-from` to copy a preferred SSH key for host hops without forcing GitHub SSH; use `--github-ssh` only when HTTPS is unavailable.
 
 ### Preferred: public `bootstrap_host` (download, then run)
 
-Private house SSH + user policy stay in a **private config overlay** (`~/.local/share/config`; git URL prompted / `INIT_FILES_CONFIG_REPO`, remembered in `~/.config/init-files/config-repo`). Generic init-files is prepared for a **public** repo so bootstrap works via curl without auth for the dotfiles themselves.
+Shared SSH materials + user policy stay in a **private config overlay** (`~/.local/share/config`; git URL prompted / `INIT_FILES_CONFIG_REPO`, remembered in `~/.config/init-files/config-repo`). Generic init-files is prepared for a **public** repo so bootstrap works via curl without auth for the dotfiles themselves.
 
 **Exact steps on the new host:**
 
@@ -104,19 +104,19 @@ chmod +x /tmp/bootstrap_host
 # 2) Run — interactive chooser defaults to gh auth (HTTPS)
 /tmp/bootstrap_host
 # minimal:  /tmp/bootstrap_host --no-dev
-# house key only (GitHub stays HTTPS if gh logged in):  /tmp/bootstrap_host --key-from HOST
+# preferred SSH key only (GitHub stays HTTPS if gh logged in):  /tmp/bootstrap_host --key-from HOST
 # force GitHub SSH:  /tmp/bootstrap_host --github-ssh
 ```
 
 Interactive prompts (when no transport flag / remembered preference):
 
 1. **gh auth login (HTTPS)** — recommended; may offer `brew install gh` on modern macOS, then runs `gh auth login`
-2. **SSH — copy house key** from a donor host (prompts for `HOST`, e.g. `user@other-host`) — also selects GitHub SSH; if GitHub rejects house RSA and a personal ed25519 GitHub key is missing, bootstrap falls back to HTTPS when `gh` can authenticate
+2. **SSH — copy preferred key** from a donor host (prompts for `HOST`, e.g. `user@other-host`) — also selects GitHub SSH; if GitHub rejects RSA and a personal ed25519 GitHub key is missing, bootstrap falls back to HTTPS when `gh` can authenticate
 3. **SSH — key already on this machine**
 
-`--key-from HOST` alone only fetches the house key; GitHub transport still follows `gh` auth / flags / remembered prefs (HTTPS preferred).
+`--key-from HOST` alone only fetches the preferred SSH key; GitHub transport still follows `gh` auth / flags / remembered prefs (HTTPS preferred).
 
-When house SSH materials are desired, bootstrap/provision may also prompt for your **private config overlay** git URL (remembered; never hardcoded in this repo).
+When shared SSH materials are desired, bootstrap/provision may also prompt for your **private config overlay** git URL (remembered; never hardcoded in this repo).
 
 **3) Only after** the `=== bootstrap_host verify ===` block shows `bashrc: … OK`:
 
@@ -134,7 +134,7 @@ git -C ~/.local/share/init-files rev-parse --short HEAD
 type refresh_init_files
 ```
 
-If a previous attempt already left the house key on this host and you want SSH:
+If a previous attempt already left an SSH key on this host and you want GitHub SSH:
 
 ```bash
 /tmp/bootstrap_host --github-ssh      # or choose option 3
@@ -172,7 +172,7 @@ source ~/.bashrc
 
 ```bash
 # On an already-working host (example):
-# scp ~/.ssh/<house-or-github-key>{,.pub} newhost:~/.ssh/
+# scp ~/.ssh/<preferred-or-github-key>{,.pub} newhost:~/.ssh/
 # On the new host:
 chmod 700 ~/.ssh
 chmod 600 ~/.ssh/<private-key>
@@ -194,7 +194,7 @@ Host github.com
     HostName github.com
     User git
     IdentityFile ~/.ssh/id_ed25519_github
-    IdentityFile ~/.ssh/<house-key>
+    IdentityFile ~/.ssh/<preferred-key>
     IdentitiesOnly yes
 ```
 
@@ -205,7 +205,7 @@ Unlock the key and verify:
 ```bash
 # Prefer the IdentityFile that works on this host (ed25519 often needed on OpenSSH 8 / FIPS):
 ssh-add -t 4h ~/.ssh/id_ed25519_github 2>/dev/null \
-  || ssh-add -t 4h ~/.ssh/<house-key>
+  || ssh-add -t 4h ~/.ssh/<preferred-key>
 ssh -T git@github.com
 # success looks like: Hi <user>! You've successfully authenticated...
 ```
@@ -252,7 +252,7 @@ What `provision_init_files` does, in order:
 6. Symlinks `~/.bashrc` → `~/.local/share/init-files/bashrc`.
    - If `~/.bashrc` was a regular file, it is backed up once as `~/.bashrc.bak.<timestamp>`.
    - If it already points at the clone, install is a no-op for the link.
-7. Merges house SSH materials from private config (`~/.local/share/config/.ssh/`).
+7. Merges shared SSH materials from private config (`~/.local/share/config/.ssh/`).
 8. Installs GitHub SSH snippet from config `.ssh/config.github`, ensures `github.com` known_hosts, and applies this host’s GitHub transport: SSH hosts get  
    `git config --global url."git@github.com:".insteadOf "https://github.com/"`; HTTPS hosts clear that rewrite (warns if the private key is missing only in SSH mode).
 9. Persists or clears `no-dev.<hostname>`, `github-https.<hostname>`, and `github-ssh.<hostname>` according to flags / saved preference / gh auth.
@@ -443,11 +443,82 @@ See [.cursor/rules/platform-isolation.mdc](.cursor/rules/platform-isolation.mdc)
 
 ---
 
-## House SSH
+## Private config overlay (SSH)
 
-House keys are **passphrase-protected** and live on each host under `~/.ssh/` (never in this repo). Identity paths and host aliases come from the private config overlay (`.ssh/config.house`, `.ssh/config.github`). Load with `cache_ssh` before scripted hops. For interactive logins after the agent lifetime expires, use **`cssh`** (`ssh`), **`cmsh`** (`mosh` — sleep/IP roaming; needs `mosh-server`), or **`cesh`** (`et` / Eternal Terminal — reconnectable like mosh but a normal pty so CSI-u / Shift+Enter work; needs `etserver` on the remote). With no arguments, all three fuzzy-pick from SSH config + cleartext **known_hosts** via **fzf** when available. None replace the underlying binaries. Nopassphrase keys are **not** used for house access.
+User-specific SSH materials and policy live in a **private config overlay** (not in this public repo):
+
+| Path | Role |
+| --- | --- |
+| `~/.local/share/config` | Git clone of your private overlay (`INIT_FILES_CONFIG_REPO` / remembered URL) |
+| `~/.local/share/config/.ssh/` | Templates provision installs into `~/.ssh` |
+| `~/.ssh/` | Live OpenSSH home: **private keys**, `authorized_keys`, `config`, `known_hosts` |
+
+### Overlay files (canonical)
+
+| Overlay file | Installed to / effect |
+| --- | --- |
+| `authorized_keys.shared` | Merged into `~/.ssh/authorized_keys` (adds lines; does not remove others) |
+| `config.hosts` | `~/.ssh/config.d/init-files-hosts.conf` |
+| `config.github` | Parsed for `IdentityFile` order → `~/.ssh/config.d/init-files-github.conf` (**only keys that exist on this host**) |
+
+Legacy names `authorized_keys.house` / `config.house` / `init-files-house.conf` are still read for one release; prefer the canonical names above.
+
+Provision also ensures `Include ~/.ssh/config.d/*.conf` at the top of `~/.ssh/config`.
+
+### What lives where
+
+- **Private keys** stay on each host under `~/.ssh/` (never commit them to init-files or the overlay).
+- **Public keys** you want every host to accept go in overlay `authorized_keys.shared`.
+- **Host aliases** / per-host `IdentityFile` paths go in overlay `config.hosts`.
+- **GitHub SSH** IdentityFile preference order goes in overlay `config.github`.
+
+Prefer **passphrase-protected** keys. Load with `cache_ssh` before scripted / BatchMode hops. For interactive logins after the agent lifetime expires, use **`cssh`** (`ssh`), **`cmsh`** (`mosh` — sleep/IP roaming; needs `mosh-server`), or **`cesh`** (`et` / Eternal Terminal — reconnectable like mosh but a normal pty so CSI-u / Shift+Enter work; needs `etserver` on the remote). With no arguments, all three fuzzy-pick from SSH config + cleartext **known_hosts** via **fzf** when available. None replace the underlying binaries.
+
+### Adding a new key
+
+1. On each host that should use it, place the key under `~/.ssh/`:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/<name> -C 'you@example'
+chmod 600 ~/.ssh/<name>
+chmod 644 ~/.ssh/<name>.pub
+```
+
+   Or copy an existing key pair onto the host (`scp`, or `bootstrap_host --key-from HOST`).
+
+2. Optional — if other hosts should **accept** this key for login, append the **public** line to the overlay:
+
+```bash
+# edit in the private overlay repo:
+# ~/.local/share/config/.ssh/authorized_keys.shared
+```
+
+3. Optional — for host aliases, add a `Host` block in overlay `config.hosts` with `IdentityFile ~/.ssh/<name>` (and `IdentitiesOnly yes` when you want only that key).
+
+4. For GitHub SSH, add an `IdentityFile` line to overlay `config.github` (order = preference). Missing files are omitted when provision writes `init-files-github.conf`.
+
+5. Never commit private key material to the overlay repo.
+
+6. Push the overlay; on each host:
+
+```bash
+git -C ~/.local/share/config pull --ff-only
+refresh_init_files    # or: ./provision_init_files
+```
+
+Overrides: `INIT_FILES_SSH_KEY` (absolute path), `INIT_FILES_SSH_KEY_BASENAME` (for `--key-from`), remembered `~/.config/init-files/ssh-key-basename`. Legacy `INIT_FILES_HOUSE_KEY*` still work.
+
+### When the overlay is applied
+
+| Trigger | Behavior |
+| --- | --- |
+| `./provision_init_files` | Always merges/installs overlay SSH materials when present |
+| `refresh_init_files` (full) | Always re-runs `provision_init_files` after pull |
+| `refresh_init_files -q` (daily) | May offer to pull the private overlay when `main` moved, then provision |
+| `bootstrap_host` | May prompt for overlay git URL, clone it, then provision |
 
 ### GitHub transport (HTTPS when gh is logged in, else SSH)
+
 
 #### Where the flags are available
 
@@ -455,7 +526,7 @@ House keys are **passphrase-protected** and live on each host under `~/.ssh/` (n
 | --- | --- |
 | On disk (NFS-safe, per host) | `~/.config/init-files/github-https.<hostname>` — HTTPS preferred |
 | | `~/.config/init-files/github-ssh.<hostname>` — SSH opt-out (wins over gh auto-HTTPS) |
-| `bootstrap_host` | Interactive chooser (default: `gh auth login`); `--github-https` / `--github-ssh`; `--key-from HOST` fetches house key only (does not force GitHub SSH) |
+| `bootstrap_host` | Interactive chooser (default: `gh auth login`); `--github-https` / `--github-ssh`; `--key-from HOST` fetches preferred SSH key only (does not force GitHub SSH) |
 | `./provision_init_files` | `--github-https` / `--github-ssh` (see [install flags](#process-first-time-installation)) |
 | `refresh_init_files` | `--github-https` / `--github-ssh` (same persistence; re-runs `provision_init_files` with the flag) |
 | Auto (no flag file yet) | If `gh auth status` succeeds and `github-ssh.<hostname>` is absent → write `github-https.<hostname>` and use HTTPS |
@@ -472,7 +543,7 @@ git config --global --get-regexp 'credential\.https://github.com'   # HTTPS: !gh
 
 **Auto HTTPS:** if `gh auth status` succeeds and this host has no `github-ssh.<hostname>` opt-out, install/refresh prefer HTTPS (clear `insteadOf`, point `credential.https://github.com.helper` at `gh auth git-credential`) and remember `github-https.<hostname>`.
 
-**SSH (when gh is not logged in, or with `--github-ssh`):** same house key registered on GitHub + `insteadOf` so documented `https://github.com/…` remotes speak SSH. Prefer `gh auth login` / HTTPS when possible. New hosts without gh:
+**SSH (when gh is not logged in, or with `--github-ssh`):** a key registered on GitHub + `insteadOf` so documented `https://github.com/…` remotes speak SSH. Prefer `gh auth login` / HTTPS when possible. New hosts without gh:
 
 1. Copy the private key onto the host (never commit it).
 2. `git config --global url."git@github.com:".insteadOf "https://github.com/"`
@@ -520,10 +591,10 @@ init_files_cleanup_orphans --apply
 
 `./provision_init_files` also:
 
-1. **Merges** overlay `authorized_keys.house` into `~/.ssh/authorized_keys` (does not remove other keys).
-2. Installs overlay `config.house` → `~/.ssh/config.d/init-files-house.conf`.
+1. **Merges** overlay `authorized_keys.shared` into `~/.ssh/authorized_keys` (does not remove other keys).
+2. Installs overlay `config.hosts` → `~/.ssh/config.d/init-files-hosts.conf`.
 3. Installs GitHub snippet from overlay `config.github` → `~/.ssh/config.d/init-files-github.conf`.
 4. Ensures `Include ~/.ssh/config.d/*.conf` is at the top of `~/.ssh/config`.
 5. Sets or clears the GitHub `insteadOf` rewrite according to this host’s preference.
 
-After changing house/GitHub SSH materials in the private overlay: pull the overlay, then on each host `refresh_init_files` / `./provision_init_files`.
+After changing shared/GitHub SSH materials in the private overlay: pull the overlay, then on each host `refresh_init_files` / `./provision_init_files`.
