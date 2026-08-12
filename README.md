@@ -9,7 +9,7 @@ Canonical interactive **bash** init for macOS (Darwin 21.6+) and Linux (Ubuntu, 
 | iTerm2 font / colors / keys (macOS) | **[iterm2/README.md](iterm2/README.md)** (`export_iterm_settings` / `upload_iterm_settings` / `test_iterm_settings` / `refresh_iterm_settings`) |
 | Vim 9 + plugins (cross-platform) | **[vim/README.md](vim/README.md)** (`refresh_vimrc`) |
 | Agent / platform-isolation rules | [AGENTS.md](AGENTS.md) |
-| House + GitHub SSH materials | [ssh/README.md](ssh/README.md) |
+| Private overlay SSH (house + GitHub) | [House SSH](#house-ssh) |
 
 ## Contents
 
@@ -526,4 +526,4 @@ init_files_cleanup_orphans --apply
 4. Ensures `Include ~/.ssh/config.d/*.conf` is at the top of `~/.ssh/config`.
 5. Sets or clears the GitHub `insteadOf` rewrite according to this host’s preference.
 
-See [`ssh/README.md`](ssh/README.md). After changing house/GitHub SSH materials in the private overlay: pull the overlay, then on each host `refresh_init_files` / `./provision_init_files`.
+After changing house/GitHub SSH materials in the private overlay: pull the overlay, then on each host `refresh_init_files` / `./provision_init_files`.

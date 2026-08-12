@@ -26,9 +26,9 @@ shell_file_eligible() {
       ;;
   esac
 
-  # Path exclusions (SSH materials, Vim runtime config — not bash).
+  # Path exclusions (Vim runtime config — not bash).
   case "$path" in
-    ssh/*|vim/*)
+    vim/*)
       return 1
       ;;
   esac

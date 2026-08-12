@@ -54,7 +54,6 @@ Tracked content is shared. Host-specific absolute tool paths are **generated on 
 | `.cursor/rules/interactive-input.mdc` | Always-on: `bt` / `cache_ssh` validation; no global argv sanitizer. |
 | `.gitignore` | Ignores `__pycache__` / `*.pyc` and editor junk. |
 | `lib/config_paths` | Private config overlay paths + interactive clone (`INIT_FILES_CONFIG_REPO` / remembered URL → `.ssh/`, `init-files/default-users.env`, optional `init-files/bashrc.local`). |
-| `ssh/README.md` | Pointer to config repo `.ssh/` materials (nothing user-specific tracked here). |
 
 | `.github/CODEOWNERS` | Ownership (`@thehcma`). |
 
@@ -342,7 +341,7 @@ Cursor chats do not sync across hosts. To continue work elsewhere:
 ### Pasteable handoff prompt
 
 ```text
-Read and follow AGENTS.md (and README.md / ssh/README.md).
+Read and follow AGENTS.md (and README.md).
 This host needs the symlink deploy model: ~/.bashrc → ~/.local/share/init-files/bashrc.
 
 Prereq: prefer gh auth login (HTTPS). For SSH-only hosts: passphrase house key on disk.
@@ -402,7 +401,7 @@ Canonical materials under a **private config overlay** → `~/.local/share/confi
 | `config.house` | Host aliases for house machines |
 | `config.github` | `Host github.com` IdentityFile order (existing keys only) |
 
-`provision_init_files` / `bootstrap_host` prompt for the overlay git URL when interactive (remembered in `~/.config/init-files/config-repo`), clone it, and verify the three files exist. See [ssh/README.md](ssh/README.md).
+`provision_init_files` / `bootstrap_host` prompt for the overlay git URL when interactive (remembered in `~/.config/init-files/config-repo`), clone it, and verify the three files exist. See [README — House SSH](README.md#house-ssh).
 
 **Policy:** house access uses passphrase-protected keys only. GitHub SSH IdentityFiles come from overlay `config.github` (typically personal ed25519 then house RSA; OpenSSH 8 / FIPS hosts may decline RSA). Never nopassphrase keys. Use `cache_ssh` before BatchMode / `refresh_init_files` fetches on SSH hosts.
 
