@@ -14,9 +14,9 @@ Many panes are **SSH into other boxes**. The corner iTerm badge is easy to mis-a
 
 ## How we disambiguate
 
-1. **While alive** — iTerm **tab title** (OSC) and the **left side of the pane status bar** (`user.agentsession`) show the short id (`2e376153`, or `2e376153:name` if named). No corner badge (stale badges are cleared). Both are left after `agent` exits so you can still read the id. (When the status bar is embedded in the pane title, iTerm hides the title label — the status-bar slot is required.)
+1. **While alive** — iTerm **tab title** (OSC) and the **left side of the pane status bar** (`user.agentsession`) show the short id (`2e376153`, or `2e376153:name` if named). No corner badge (stale badges are cleared). When `agent` exits, both are cleared so the pane returns to host-only chrome (`user.hostlabel`). (When the status bar is embedded in the pane title, iTerm hides the title label — the status-bar slot is required while the agent runs.)
 2. **Name them** — `name_agent_session jerico-dns` or start with `agent --name jerico-dns` (name appears in the title and resume lists).
-3. **After death** — `agent_sessions` / `resume_agent_session`.
+3. **After death** — `agent_sessions` / `resume_agent_session` (ids stay in the on-disk session list even after the pane chrome is cleared).
 
 Default model is **Auto**, and vim keybindings are **on**. Before every chat launch, `agent` runs `cursor/ensure_model_auto.py`, which resets `~/.cursor/cli-config.json` if an in-chat `/model` switch drifted it away from Auto, re-enables `editor.vimMode` if it was turned off, **ensures `statusLine` points at `cursor/statusline`**, then passes `--model auto` (unless you already passed `--model …`).
 

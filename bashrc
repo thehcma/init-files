@@ -4445,14 +4445,16 @@ function host_tag()
     printf '%s' "$host_tag"
 }
 
-# List (or --apply remove) NFS leftover prefs / pipx trees not for this host.
-# Keeps current init_files_host plus hosts listed in ~/.config/init-files/nfs-hosts
-# (one hostname per line) or passed via --keep HOST.
+# List (or --apply remove) leftover prefs / pipx trees.
+# Keep set = current host + MAC registry (~/.config/init-files/host-mac/*) +
+# optional nfs-hosts / --keep. Default listing only includes MAC-retired
+# hostnames (rename leftovers) and legacy unscoped tools — other NFS clients
+# are never treated as stale just for having a different hostname.
 function init_files_cleanup_orphans()
 {
-    local apply=0 cfg_dir pipx_root entry host
+    local apply=0 include_unreg=0 cfg_dir pipx_root entry
     local -a keep_extra=() orphans=()
-    local nfs_hosts_file keep_label
+    local nfs_hosts_file keep_label saved_unreg
 
     cfg_dir="${init_files_config_dir:-${XDG_CONFIG_HOME:-$HOME/.config}/init-files}"
     pipx_root="${HOME}/.local/opt/pipx"
@@ -4461,6 +4463,7 @@ function init_files_cleanup_orphans()
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --apply) apply=1; shift ;;
+            --include-unregistered) include_unreg=1; shift ;;
             --keep)
                 [[ -n "${2:-}" ]] || { printf 'init_files_cleanup_orphans: --keep needs HOST\n' >&2; return 1; }
                 keep_extra+=("$2")
@@ -4468,16 +4471,22 @@ function init_files_cleanup_orphans()
                 ;;
             -h|--help)
                 cat <<'EOF'
-Usage: init_files_cleanup_orphans [--apply] [--keep HOST]...
+Usage: init_files_cleanup_orphans [--apply] [--include-unregistered] [--keep HOST]...
 
-List preference files and pipx trees whose host key is not the current
-init_files_host (and not listed in ~/.config/init-files/nfs-hosts or --keep).
+List preference files and pipx trees that are safe leftovers:
+  - hostnames this machine's MAC used to claim (ComputerName rename)
+  - legacy unscoped ~/.config/init-files/tools once tools.<host> exists
 
-  --apply   remove listed orphans (prefs files and entire pipx/<host> dirs)
-  --keep H  treat H as a live host (repeatable)
+Live NFS peers stay kept via ~/.config/init-files/host-mac/<mac> (written on
+interactive shell start). Optional ~/.config/init-files/nfs-hosts and --keep
+still force-keep names.
+
+  --apply                 remove listed orphans
+  --include-unregistered  also list host keys with no MAC registration yet
+  --keep H                treat H as a live host (repeatable)
 
 Does nothing destructive without --apply. Interactive shells may offer this
-about weekly when leftovers are detected (see last-orphan-cleanup-offer).
+about weekly when retired leftovers are detected (last-orphan-cleanup-offer).
 EOF
                 return 0
                 ;;
@@ -4493,16 +4502,27 @@ EOF
         return 1
     fi
 
+    # Refresh this host's MAC → hostname claim before listing.
+    if declare -F init_files_register_host_mac > /dev/null 2>&1 \
+        && [[ -n "${init_files_host:-}" ]]; then
+        init_files_register_host_mac "$cfg_dir" "$init_files_host"
+    fi
+
+    saved_unreg="${init_files_orphan_include_unregistered:-0}"
+    init_files_orphan_include_unregistered="$include_unreg"
     while IFS= read -r entry || [[ -n "$entry" ]]; do
         [[ -n "$entry" ]] || continue
         orphans+=("$entry")
     done < <(init_files_orphan_list "$cfg_dir" "$pipx_root" "${init_files_host:-}" "${keep_extra[@]}")
+    init_files_orphan_include_unregistered="$saved_unreg"
 
     keep_label="${init_files_host:-}"
     [[ ${#keep_extra[@]} -gt 0 ]] && keep_label+=" ${keep_extra[*]}"
+    [[ -d "${cfg_dir}/host-mac" ]] && keep_label+=" (+host-mac)"
     if [[ -r "$nfs_hosts_file" ]]; then
         keep_label+=" (+nfs-hosts)"
     fi
+    [[ $include_unreg -eq 1 ]] && keep_label+=" [include-unregistered]"
 
     if [[ ${#orphans[@]} -eq 0 ]]; then
         printf 'init_files_cleanup_orphans: no orphans (kept: %s)\n' "$keep_label"
@@ -4528,7 +4548,7 @@ EOF
     done
 }
 
-# Interactive: about weekly, if host-scoped leftovers exist, offer --apply.
+# Interactive: about weekly, if MAC-retired leftovers exist, offer --apply.
 function _init_maybe_offer_orphan_cleanup()
 {
     local state_dir stamp now age cfg_dir pipx_root entry reply
@@ -4558,6 +4578,11 @@ function _init_maybe_offer_orphan_cleanup()
 
     cfg_dir="${init_files_config_dir:-${XDG_CONFIG_HOME:-$HOME/.config}/init-files}"
     pipx_root="${HOME}/.local/opt/pipx"
+    if declare -F init_files_register_host_mac > /dev/null 2>&1; then
+        init_files_register_host_mac "$cfg_dir" "$init_files_host"
+    fi
+    # Default list: retired MAC renames + legacy unscoped tools only.
+    init_files_orphan_include_unregistered=0
     while IFS= read -r entry || [[ -n "$entry" ]]; do
         [[ -n "$entry" ]] || continue
         orphans+=("$entry")
@@ -4568,7 +4593,7 @@ function _init_maybe_offer_orphan_cleanup()
         return 0
     fi
 
-    printf 'init-files: leftover host-scoped prefs/pipx (not %s):\n' "$init_files_host" >&2
+    printf 'init-files: leftover prefs/pipx after host rename (or legacy tools):\n' >&2
     for entry in "${orphans[@]}"; do
         printf '  %s\n' "$entry" >&2
     done
@@ -4580,7 +4605,6 @@ function _init_maybe_offer_orphan_cleanup()
             ;;
         *)
             printf 'Skipped. Review: init_files_cleanup_orphans\n' >&2
-            printf 'Keep live NFS hosts in ~/.config/init-files/nfs-hosts\n' >&2
             ;;
     esac
     date +%s > "$stamp" 2>/dev/null || true
@@ -7493,6 +7517,21 @@ function _init_files_consume_agent_pending_name()
     fi
 }
 
+# Run Cursor agent CLI then always clear pane agent chrome (normal exit, signals).
+# Local and remote (ssh/et/mosh) panes both rely on OSC to this tty.
+function _init_files_run_agent_with_chrome_cleanup()
+{
+    local rc=0
+    # EXIT covers normal return; also clear explicitly after so a nested trap
+    # reset cannot skip cleanup. INT/TERM: agent usually exits itself first.
+    trap 'clear_agent_iterm_badge' EXIT
+    "$@"
+    rc=$?
+    trap - EXIT
+    clear_agent_iterm_badge
+    return "$rc"
+}
+
 function agent()
 {
     local bin a has_model=0 is_chat=1
@@ -7549,7 +7588,7 @@ function agent()
             # shellcheck disable=SC2119
             _init_files_ensure_agent_model_auto
             [[ -n "$pending_name" ]] && _init_files_set_agent_pending_name "$pending_name"
-            "$bin" "$@"
+            _init_files_run_agent_with_chrome_cleanup "$bin" "$@"
             return
             ;;
         resume)
@@ -7557,7 +7596,7 @@ function agent()
             # shellcheck disable=SC2119
             _init_files_ensure_agent_model_auto
             [[ -n "$pending_name" ]] && _init_files_set_agent_pending_name "$pending_name"
-            "$bin" --model auto "$@"
+            _init_files_run_agent_with_chrome_cleanup "$bin" --model auto "$@"
             return
             ;;
         agent)
@@ -7580,18 +7619,15 @@ function agent()
         _init_files_ensure_agent_model_auto
         [[ -n "$pending_name" ]] && _init_files_set_agent_pending_name "$pending_name"
     fi
-    local rc=0
     if [[ $is_chat -eq 1 && $has_model -eq 0 ]]; then
-        "$bin" --model auto "$@"
-        rc=$?
-    else
-        "$bin" "$@"
-        rc=$?
+        _init_files_run_agent_with_chrome_cleanup "$bin" --model auto "$@"
+        return
     fi
-    if [[ $is_chat -eq 1 ]] && type clear_agent_iterm_badge > /dev/null 2>&1; then
-        clear_agent_iterm_badge
+    if [[ $is_chat -eq 1 ]]; then
+        _init_files_run_agent_with_chrome_cleanup "$bin" "$@"
+        return
     fi
-    return "$rc"
+    "$bin" "$@"
 }
 
 function _init_files_agent_sessions_py()
@@ -7633,16 +7669,34 @@ function _init_files_find_iterm_tty()
 
 function clear_agent_iterm_badge()
 {
-    # Clear any leftover corner badge (we no longer set one). Leave tab title.
-    local ttydev b64
+    # After agent exits (local or remote pane): drop left-pane agentsession +
+    # OSC titles so chrome returns to regular mode (hostlabel only). Also clear
+    # any legacy corner badge. Prefer /dev/tty so ssh/et/mosh still reach iTerm.
+    local ttydev b64 label
     command -v base64 >/dev/null 2>&1 || return 0
-    ttydev="$(tty 2>/dev/null || true)"
-    if [[ -z "$ttydev" || "$ttydev" == "not a tty" ]]; then
-        ttydev="$(_init_files_find_iterm_tty 2>/dev/null || true)"
+    if [[ -c /dev/tty && -w /dev/tty ]]; then
+        ttydev=/dev/tty
+    else
+        ttydev="$(tty 2>/dev/null || true)"
+        if [[ -z "$ttydev" || "$ttydev" == "not a tty" ]]; then
+            ttydev="$(_init_files_find_iterm_tty 2>/dev/null || true)"
+        fi
     fi
     [[ -n "$ttydev" && -w "$ttydev" ]] || return 0
-    b64="$(printf '' | base64 | tr -d '\n')"
+    # Empty base64 payload clears the user var / badge format in iTerm2.
+    b64="$(printf '' | base64 2>/dev/null | tr -d '\n')"
+    printf '\033]1337;SetUserVar=%s=%s\007' agentsession "$b64" >"$ttydev" 2>/dev/null || true
     printf '\033]1337;SetBadgeFormat=%s\007' "$b64" >"$ttydev" 2>/dev/null || true
+    # Empty icon/window title — iTerm falls back to profile/job title components.
+    printf '\033]0;\007' >"$ttydev" 2>/dev/null || true
+    printf '\033]1;\007' >"$ttydev" 2>/dev/null || true
+    printf '\033]2;\007' >"$ttydev" 2>/dev/null || true
+    # Re-assert hostlabel so the embedded status bar visibly returns to normal.
+    if declare -F init_files_iterm_session_host_label > /dev/null 2>&1 \
+        && declare -F init_files_iterm_emit_host_label > /dev/null 2>&1; then
+        label="$(init_files_iterm_session_host_label 2>/dev/null || true)"
+        [[ -n "$label" ]] && init_files_iterm_emit_host_label "$label"
+    fi
 }
 
 function set_agent_iterm_badge()
@@ -9945,7 +9999,15 @@ if [[ $- == *i* ]]; then
     if [[ -z "${_init_files_in_refresh_reload:-}" && -z "${INIT_FILES_SKIP_DAILY_REFRESH:-}" ]]; then
         refresh_init_files -q || true
     fi
-    # Weekly: leftover host-scoped prefs/pipx after ComputerName / NFS churn.
+    # Register this host's primary MAC → hostname (NFS-safe orphan keep set).
+    if [[ -z "${_init_files_in_refresh_reload:-}" ]] \
+        && declare -F init_files_register_host_mac > /dev/null 2>&1 \
+        && [[ -n "${init_files_host:-}" ]]; then
+        init_files_register_host_mac \
+            "${init_files_config_dir:-${XDG_CONFIG_HOME:-$HOME/.config}/init-files}" \
+            "$init_files_host" || true
+    fi
+    # Weekly: leftover prefs/pipx after ComputerName rename (MAC-retired only).
     if [[ -z "${_init_files_in_refresh_reload:-}" ]] \
         && declare -F _init_maybe_offer_orphan_cleanup > /dev/null 2>&1; then
         _init_maybe_offer_orphan_cleanup || true

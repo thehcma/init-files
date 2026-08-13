@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for lib/orphan_cleanup (host-scoped leftover prefs / pipx).
+# Tests for lib/orphan_cleanup (MAC-gated leftover prefs / pipx).
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,14 +20,28 @@ trap 'rm -rf "$tmp"' EXIT
 
 cfg="$tmp/config"
 pipx="$tmp/pipx"
-mkdir -p "$cfg" "$pipx/current-host" "$pipx/legacy-host"
+mkdir -p "$cfg" "$pipx/current-host" "$pipx/legacy-host" "$pipx/nfs-peer"
 touch "$cfg/tools.current-host" "$cfg/tools.legacy-host" \
     "$cfg/github-https.legacy-host" "$cfg/fancy-prompt.other" \
-    "$cfg/tools"
+    "$cfg/tools.nfs-peer" "$cfg/tools"
 
-printf '\n=== keep hosts ===\n'
+printf '\n=== normalize mac ===\n'
+assert_eq 'normalize colons' "$(init_files_normalize_mac 'C0:C7:DB:27:0F:CA')" 'c0c7db270fca'
+assert_eq 'normalize hyphen' "$(init_files_normalize_mac 'aa-bb-cc-dd-ee-ff')" 'aabbccddeeff'
+if init_files_normalize_mac '00:00:00:00:00:00' >/dev/null 2>&1; then
+    assert_eq 'reject zero mac' 'accepted' 'rejected'
+fi
+if init_files_normalize_mac 'bad' >/dev/null 2>&1; then
+    assert_eq 'reject bad mac' 'accepted' 'rejected'
+fi
+
+printf '\n=== keep hosts (MAC registry) ===\n'
+mkdir -p "$cfg/host-mac"
+printf 'current-host\n' >"$cfg/host-mac/aabbccddeeff"
+printf 'nfs-peer\n' >"$cfg/host-mac/112233445566"
 keep="$(init_files_orphan_keep_hosts "$cfg" 'current-host')"
 assert_contains 'keeps current' "$keep" 'current-host'
+assert_contains 'keeps MAC-registered peer' "$keep" 'nfs-peer'
 
 printf 'legacy-nfs\n# comment\n\nother-live\n' >"$cfg/nfs-hosts"
 keep="$(init_files_orphan_keep_hosts "$cfg" 'current-host' 'extra-keep')"
@@ -36,24 +50,64 @@ assert_contains 'nfs-hosts other' "$keep" 'other-live'
 assert_contains 'extra --keep' "$keep" 'extra-keep'
 assert_not_contains 'skips comment line' "$keep" 'comment'
 
-printf '\n=== orphan list ===\n'
+printf '\n=== default orphan list ignores unregistered NFS peers ===\n'
+# legacy-host / fancy other have no MAC registration and are not retired → not listed
 list="$(init_files_orphan_list "$cfg" "$pipx" 'current-host')"
-assert_contains 'legacy tools' "$list" "$cfg/tools.legacy-host"
-assert_contains 'legacy github-https' "$list" "$cfg/github-https.legacy-host"
-assert_contains 'fancy other' "$list" "$cfg/fancy-prompt.other"
-assert_contains 'unscoped tools' "$list" "$cfg/tools"
-assert_contains 'legacy pipx' "$list" "$pipx/legacy-host"
+assert_not_contains 'skips unregistered legacy tools' "$list" "$cfg/tools.legacy-host"
+assert_not_contains 'skips unregistered fancy' "$list" "$cfg/fancy-prompt.other"
+assert_not_contains 'skips unregistered pipx' "$list" "$pipx/legacy-host"
+assert_not_contains 'keeps MAC peer tools' "$list" "$cfg/tools.nfs-peer"
 assert_not_contains 'keeps current tools' "$list" "$cfg/tools.current-host"
 assert_not_contains 'keeps current pipx' "$list" "$pipx/current-host"
+assert_contains 'unscoped tools still orphan' "$list" "$cfg/tools"
 
-list_kept="$(init_files_orphan_list "$cfg" "$pipx" 'current-host' 'legacy-host')"
-assert_not_contains '--keep legacy tools' "$list_kept" "$cfg/tools.legacy-host"
-assert_not_contains '--keep legacy pipx' "$list_kept" "$pipx/legacy-host"
-assert_contains 'still orphans fancy' "$list_kept" "$cfg/fancy-prompt.other"
+printf '\n=== include-unregistered lists foreign hosts ===\n'
+init_files_orphan_include_unregistered=1
+list_u="$(init_files_orphan_list "$cfg" "$pipx" 'current-host')"
+init_files_orphan_include_unregistered=0
+assert_contains 'unreg legacy tools' "$list_u" "$cfg/tools.legacy-host"
+assert_contains 'unreg github-https' "$list_u" "$cfg/github-https.legacy-host"
+assert_contains 'unreg fancy' "$list_u" "$cfg/fancy-prompt.other"
+assert_contains 'unreg pipx' "$list_u" "$pipx/legacy-host"
+assert_not_contains 'unreg keeps MAC peer' "$list_u" "$cfg/tools.nfs-peer"
+assert_not_contains 'unreg keeps current' "$list_u" "$cfg/tools.current-host"
 
-printf 'legacy-host\n' >"$cfg/nfs-hosts"
-list_nfs="$(init_files_orphan_list "$cfg" "$pipx" 'current-host')"
-assert_not_contains 'nfs-hosts keeps legacy tools' "$list_nfs" "$cfg/tools.legacy-host"
-assert_not_contains 'nfs-hosts keeps legacy pipx' "$list_nfs" "$pipx/legacy-host"
+printf '\n=== MAC rename retires old hostname ===\n'
+# Simulate: this MAC used to be called old-name, now current-host.
+printf 'old-name\n' >"$cfg/host-mac/aabbccddeeff"
+touch "$cfg/tools.old-name" "$cfg/no-dev.old-name"
+mkdir -p "$pipx/old-name"
+# Bypass real NIC: call register guts by writing rename manually like register would.
+printf 'old-name\n' >"$cfg/host-mac-retired"
+printf 'current-host\n' >"$cfg/host-mac/aabbccddeeff"
+
+retired="$(init_files_orphan_retired_hosts "$cfg")"
+assert_contains 'retired old-name' "$retired" 'old-name'
+assert_not_contains 'retired not current' "$retired" 'current-host'
+
+list_r="$(init_files_orphan_list "$cfg" "$pipx" 'current-host')"
+assert_contains 'retired tools listed' "$list_r" "$cfg/tools.old-name"
+assert_contains 'retired no-dev listed' "$list_r" "$cfg/no-dev.old-name"
+assert_contains 'retired pipx listed' "$list_r" "$pipx/old-name"
+assert_not_contains 'still skips unregistered legacy' "$list_r" "$cfg/tools.legacy-host"
+assert_not_contains 'still keeps nfs peer' "$list_r" "$cfg/tools.nfs-peer"
+
+# Once another MAC still claims old-name, it is no longer retired-orphan.
+printf 'old-name\n' >"$cfg/host-mac/998877665544"
+list_claimed="$(init_files_orphan_list "$cfg" "$pipx" 'current-host')"
+assert_not_contains 'claimed old-name not orphan' "$list_claimed" "$cfg/tools.old-name"
+
+printf '\n=== register helper retires previous claim ===\n'
+cfg2="$tmp/config2"
+mkdir -p "$cfg2"
+# Stub primary MAC for register test via a wrapper file we control is hard
+# without mocking; instead verify normalize + retired path already covered.
+# Directly exercise register by overriding init_files_primary_mac in this shell.
+init_files_primary_mac() { printf 'abcdef012345\n'; }
+init_files_register_host_mac "$cfg2" 'host-a'
+assert_eq 'register writes host-a' "$(cat "$cfg2/host-mac/abcdef012345")" 'host-a'
+init_files_register_host_mac "$cfg2" 'host-b'
+assert_eq 'register updates host-b' "$(cat "$cfg2/host-mac/abcdef012345")" 'host-b'
+assert_contains 'register retired host-a' "$(cat "$cfg2/host-mac-retired")" 'host-a'
 
 test_summary

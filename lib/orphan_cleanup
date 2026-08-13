@@ -2,8 +2,151 @@
 # shellcheck shell=bash
 # Sourced by bashrc; used by tests/orphan-cleanup.test.
 # Predicates return; never exit (this is sourced).
+#
+# NFS-safe keep model:
+#   Each live host registers primary MAC → hostname under
+#   ~/.config/init-files/host-mac/<mac>. Keep set = current host + every
+#   hostname still claimed by a MAC registration (+ optional nfs-hosts / --keep).
+#   Hostnames this MAC used to claim are recorded in host-mac-retired and are
+#   the only "foreign" prefs the weekly offer will suggest deleting — so other
+#   NFS clients are never treated as stale merely for having a different name.
 
-# Print keep-set host keys (current + nfs-hosts + extras), one per line.
+# Normalize a MAC (colons/hyphens/dots OK) to 12 lowercase hex chars, or fail.
+init_files_normalize_mac()
+{
+    local raw="${1-}" hex
+    hex="$(printf '%s' "$raw" | tr -d '[:space:]:.-' | tr 'A-F' 'a-f')"
+    [[ "$hex" =~ ^[0-9a-f]{12}$ ]] || return 1
+    # Ignore null / locally-administered all-zero style placeholders.
+    [[ "$hex" != "000000000000" ]] || return 1
+    printf '%s\n' "$hex"
+}
+
+# Print this host's primary MAC as 12 hex chars (no separators), or fail.
+# Prefers Wi-Fi / Ethernet hardware ports; skips bridge/thunderbolt/virtual.
+init_files_primary_mac()
+{
+    local line port mac hex candidate
+    local -a wifi=() ethernet=() rest=()
+
+    if [[ "${OSTYPE:-}" == darwin* ]] && command -v networksetup > /dev/null 2>&1; then
+        port=""
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            case "$line" in
+                "Hardware Port: "*)
+                    port="${line#Hardware Port: }"
+                    ;;
+                "Ethernet Address: "*)
+                    mac="${line#Ethernet Address: }"
+                    if init_files_normalize_mac "$mac" > /dev/null 2>&1; then
+                        case "$port" in
+                            Wi-Fi|WiFi)
+                                wifi+=("$mac")
+                                ;;
+                            Ethernet|USB*\ LAN)
+                                ethernet+=("$mac")
+                                ;;
+                            Thunderbolt*|Bridge*|VLAN*|Bluetooth*)
+                                ;;
+                            *)
+                                rest+=("$mac")
+                                ;;
+                        esac
+                    fi
+                    port=""
+                    ;;
+            esac
+        done < <(networksetup -listallhardwareports 2>/dev/null || true)
+
+        for candidate in "${wifi[@]}" "${ethernet[@]}" "${rest[@]}"; do
+            hex="$(init_files_normalize_mac "$candidate" 2>/dev/null || true)"
+            if [[ -n "$hex" ]]; then
+                printf '%s\n' "$hex"
+                return 0
+            fi
+        done
+    fi
+
+    if [[ -d /sys/class/net ]]; then
+        local iface addr
+        for iface in /sys/class/net/*; do
+            [[ -d "$iface" ]] || continue
+            candidate="${iface##*/}"
+            case "$candidate" in
+                lo|docker*|veth*|br-*|virbr*|cni*|flannel*|tun*|tap*|wg*|tailscale*|utun*)
+                    continue
+                    ;;
+            esac
+            [[ -r "$iface/address" ]] || continue
+            addr="$(tr -d '[:space:]' < "$iface/address" 2>/dev/null || true)"
+            hex="$(init_files_normalize_mac "$addr" 2>/dev/null || true)"
+            if [[ -n "$hex" ]]; then
+                printf '%s\n' "$hex"
+                return 0
+            fi
+        done
+    fi
+
+    return 1
+}
+
+# Register CURRENT_HOST under this machine's primary MAC.
+# If this MAC previously claimed a different hostname, append that name to
+# host-mac-retired (deduped) so rename leftovers can be cleaned safely.
+# Usage: init_files_register_host_mac CFG_DIR CURRENT_HOST
+init_files_register_host_mac()
+{
+    local cfg_dir="${1-}" current="${2-}" mac dir file prev retired tmp
+    [[ -n "$cfg_dir" && -n "$current" ]] || return 0
+    mac="$(init_files_primary_mac 2>/dev/null || true)"
+    [[ -n "$mac" ]] || return 0
+
+    dir="${cfg_dir}/host-mac"
+    mkdir -p "$dir" 2>/dev/null || return 0
+    file="${dir}/${mac}"
+    if [[ -r "$file" ]]; then
+        prev="$(tr -d '[:space:]' < "$file" 2>/dev/null || true)"
+        if [[ -n "$prev" && "$prev" != "$current" ]]; then
+            retired="${cfg_dir}/host-mac-retired"
+            tmp="${retired}.$$.$RANDOM"
+            {
+                [[ -r "$retired" ]] && cat "$retired"
+                printf '%s\n' "$prev"
+            } 2>/dev/null | awk 'NF && !seen[$0]++' > "$tmp" 2>/dev/null \
+                && mv -f "$tmp" "$retired" 2>/dev/null \
+                || rm -f "$tmp" 2>/dev/null || true
+        fi
+    fi
+    printf '%s\n' "$current" > "$file" 2>/dev/null || true
+}
+
+# Hostnames still claimed by any registered MAC (one per line).
+init_files_orphan_registered_hosts()
+{
+    local cfg_dir="${1-}" entry host
+    [[ -n "$cfg_dir" && -d "${cfg_dir}/host-mac" ]] || return 0
+    for entry in "${cfg_dir}/host-mac"/*; do
+        [[ -f "$entry" ]] || continue
+        host="$(tr -d '[:space:]' < "$entry" 2>/dev/null || true)"
+        [[ -n "$host" ]] && printf '%s\n' "$host"
+    done
+}
+
+# Hostnames retired by a MAC rename and not claimed by any live registration.
+init_files_orphan_retired_hosts()
+{
+    local cfg_dir="${1-}" retired keep_text host
+    retired="${cfg_dir}/host-mac-retired"
+    [[ -n "$cfg_dir" && -r "$retired" ]] || return 0
+    keep_text="$(init_files_orphan_registered_hosts "$cfg_dir")"
+    while IFS= read -r host || [[ -n "$host" ]]; do
+        [[ -n "$host" && "$host" != \#* ]] || continue
+        init_files_orphan_is_kept "$host" "$keep_text" && continue
+        printf '%s\n' "$host"
+    done < "$retired"
+}
+
+# Print keep-set host keys (current + MAC registry + nfs-hosts + extras), one per line.
 # Usage: init_files_orphan_keep_hosts CFG_DIR CURRENT_HOST [EXTRA_HOST...]
 init_files_orphan_keep_hosts()
 {
@@ -17,6 +160,8 @@ init_files_orphan_keep_hosts()
     for host in "${extras[@]}"; do
         [[ -n "$host" ]] && printf '%s\n' "$host"
     done
+
+    init_files_orphan_registered_hosts "$cfg_dir"
 
     nfs_hosts_file="${cfg_dir}/nfs-hosts"
     if [[ -n "$cfg_dir" && -r "$nfs_hosts_file" ]]; then
@@ -39,16 +184,24 @@ init_files_orphan_is_kept()
 }
 
 # Print orphan paths (prefs + optional pipx trees), one per line.
+# Default: only retired MAC rename leftovers + legacy unscoped tools.
+# With INCLUDE_UNREGISTERED=1 in the environment (or 4th-mode via
+# init_files_orphan_list ... --include-unregistered handled by caller):
+# also list host-scoped prefs/pipx for hostnames with no MAC registration.
+#
 # Usage: init_files_orphan_list CFG_DIR PIPX_ROOT CURRENT_HOST [EXTRA_KEEP_HOST...]
+# Set init_files_orphan_include_unregistered=1 to also list never-registered hosts.
 init_files_orphan_list()
 {
     local cfg_dir="${1-}" pipx_root="${2-}" current="${3-}"
-    local keep_text entry base host prefix
+    local keep_text entry base host prefix retired_text include_unreg=0
     local -a extras=()
 
     shift 3 2>/dev/null || true
     extras=("$@")
     keep_text="$(init_files_orphan_keep_hosts "$cfg_dir" "$current" "${extras[@]}")"
+    retired_text="$(init_files_orphan_retired_hosts "$cfg_dir")"
+    [[ "${init_files_orphan_include_unregistered:-0}" == "1" ]] && include_unreg=1
 
     [[ -n "$cfg_dir" && -d "$cfg_dir" ]] || return 0
 
@@ -59,7 +212,13 @@ init_files_orphan_list()
             host="${base#"${prefix}."}"
             [[ -n "$host" && "$host" != "$base" ]] || continue
             init_files_orphan_is_kept "$host" "$keep_text" && continue
-            printf '%s\n' "$entry"
+            if init_files_orphan_is_kept "$host" "$retired_text"; then
+                printf '%s\n' "$entry"
+                continue
+            fi
+            if [[ $include_unreg -eq 1 ]]; then
+                printf '%s\n' "$entry"
+            fi
         done
     done
 
@@ -73,7 +232,13 @@ init_files_orphan_list()
             [[ -d "$entry" ]] || continue
             host="$(basename "$entry")"
             init_files_orphan_is_kept "$host" "$keep_text" && continue
-            printf '%s\n' "$entry"
+            if init_files_orphan_is_kept "$host" "$retired_text"; then
+                printf '%s\n' "$entry"
+                continue
+            fi
+            if [[ $include_unreg -eq 1 ]]; then
+                printf '%s\n' "$entry"
+            fi
         done
     fi
 }

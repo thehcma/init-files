@@ -17,6 +17,22 @@ fail_case() {
   fail=$((fail + 1))
 }
 
+assert_eq() {
+  local label="$1"
+  local got="$2"
+  local want="$3"
+  if [[ "$got" == "$want" ]]; then
+    pass_case "$label"
+  else
+    printf '%s\n' "---- got ----" >&2
+    printf '%s\n' "$got" >&2
+    printf '%s\n' "---- want ----" >&2
+    printf '%s\n' "$want" >&2
+    printf '%s\n' '--------------' >&2
+    fail_case "$label"
+  fi
+}
+
 assert_contains() {
   local label="$1"
   local haystack="$2"

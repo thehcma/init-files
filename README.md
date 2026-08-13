@@ -50,7 +50,9 @@ Do not put the clone under `~/.config/` — that tree is for host-local config (
 ~/.config/init-files/no-dev.<hostname>                      (optional; remembered per host)
 ~/.config/init-files/github-https.<hostname>                (optional; HTTPS GitHub on this host)
 ~/.config/init-files/github-ssh.<hostname>                  (optional; force SSH despite gh auth)
-~/.config/init-files/nfs-hosts                              (optional; live host list for cleanup)
+~/.config/init-files/nfs-hosts                              (optional; extra keep names for cleanup)
+~/.config/init-files/host-mac/<mac>                         (auto; MAC→hostname live registry)
+~/.config/init-files/host-mac-retired                       (auto; names this MAC used to claim)
 ~/.local/opt/pipx/<hostname>/                               (per-host pipx; same scope key)
 ~/.local/state/bash/history.all                             (shared command history archive)
 ```
@@ -574,21 +576,24 @@ Note: preference flags are NFS-safe per hostname; the `insteadOf` setting lives 
 
 ### NFS home hygiene
 
-Shared homes correctly keep **per-host** `tools.*` / `no-dev.*` / `github-*.*` / `pipx/<host>/`. Over time, retired names leave leftovers (Bonjour conflict suffixes, legacy unscoped `tools`).
+Shared homes correctly keep **per-host** `tools.*` / `no-dev.*` / `github-*.*` / `pipx/<host>/`. Over time, retired names leave leftovers (ComputerName renames, legacy unscoped `tools`).
+
+Each interactive shell registers this machine’s **primary MAC → hostname** under `~/.config/init-files/host-mac/<mac>`. That registry is the keep set for NFS peers — other live hosts are never treated as stale just because their hostname differs. When a MAC’s hostname changes, the previous name is appended to `host-mac-retired` and becomes eligible for cleanup (unless another MAC still claims it).
 
 | Keep | Safe to prune (after confirming) |
 | --- | --- |
-| `*.<current-init_files_host>` for every **live** host | Prefs / pipx dirs for hosts you no longer use |
-| `~/.config/init-files/nfs-hosts` (optional allowlist, one host per line) | Legacy unscoped `tools` once `tools.<host>` exists |
+| `*.<hostname>` for every MAC still registered under `host-mac/` | Prefs / pipx for names in `host-mac-retired` with no live MAC claim |
+| `~/.config/init-files/nfs-hosts` / `--keep` (optional extras) | Legacy unscoped `tools` once `tools.<host>` exists |
 
 ```bash
 init_files_doctor                 # deploy sanity (symlink, tools, pipx wrapper, …)
-init_files_cleanup_orphans        # list orphans (dry run)
-# Edit ~/.config/init-files/nfs-hosts with live hostnames, then:
+init_files_cleanup_orphans        # list MAC-retired leftovers + legacy tools (dry run)
 init_files_cleanup_orphans --apply
+# Rare: also list host keys that never registered a MAC (not offered weekly):
+init_files_cleanup_orphans --include-unregistered
 ```
 
-Interactive shells **offer** `init_files_cleanup_orphans --apply` about once a week when leftovers are present (stamp: `~/.local/state/init-files/last-orphan-cleanup-offer`). Decline is fine; add live NFS hostnames to `nfs-hosts` so they are not treated as orphans. Emergency skip: `INIT_FILES_SKIP_ORPHAN_CLEANUP_OFFER=1`.
+Interactive shells **offer** `init_files_cleanup_orphans --apply` about once a week when **retired** leftovers are present (stamp: `~/.local/state/init-files/last-orphan-cleanup-offer`). Emergency skip: `INIT_FILES_SKIP_ORPHAN_CLEANUP_OFFER=1`.
 
 `provision_init_files` / interactive bashrc **migrate** legacy pipx dir names and Bonjour-scoped prefs onto the canonical host key; they never delete foreign hosts’ state. Cleanup is always explicit (`--apply`) or confirmed at the weekly prompt.
 
