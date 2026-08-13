@@ -218,6 +218,8 @@
 			<integer>4</integer>
 			<key>Close Sessions On End</key>
 			<true/>
+			<key>Columns</key>
+			<integer>300</integer>
 			<key>Cursor Color</key>
 			<dict>
 				<key>Blue Component</key>
@@ -324,13 +326,15 @@
 			<key>Non-ASCII Anti Aliased</key>
 			<true/>
 			<key>Normal Font</key>
-			<string>MesloLGSNFM-Regular 14</string>
+			<string>MesloLGSNFM-Regular 15</string>
 			<key>Option Key Sends</key>
 			<integer>2</integer>
 			<key>Prompt Before Closing 2</key>
 			<false/>
 			<key>Right Option Key Sends</key>
 			<integer>0</integer>
+			<key>Rows</key>
+			<integer>80</integer>
 			<key>Screen</key>
 			<integer>-1</integer>
 			<key>Scrollback Lines</key>

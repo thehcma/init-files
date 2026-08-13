@@ -34,8 +34,6 @@ TOP_LEVEL_KEEP = frozenset(
 # or launch command — not fonts/colors/keys/mouse.
 PROFILE_DROP = frozenset(
     {
-        "Rows",
-        "Columns",
         "Command",
         "Custom Command",
         "Custom Directory",
