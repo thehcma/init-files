@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# agent_sessions.py label / fzf display (pane-style titles).
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+py="${root}/cursor/agent_sessions.py"
+readonly py
+
+_assert_str_eq()
+{
+    local label="$1" got="$2" want="$3"
+    if [[ "$got" == "$want" ]]; then
+        pass_case "$label"
+    else
+        fail_case "$label (got '$got' want '$want')"
+    fi
+}
+
+printf '\n=== pane-style label prefers user name, else title ===\n'
+got="$(
+    python3 - <<'PY' "$py"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("asess", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+row = {"id": "4c4432a2-3091-4b76-9e29-7410c3ae7d83", "name": "", "title": "ITerm Host Display"}
+assert m.session_label(row) == "ITerm Host Display"
+assert m.pane_style_label(row) == "4c4432a2:ITerm Host Display"
+row["name"] = "mine"
+assert m.session_label(row) == "mine"
+assert m.pane_style_label(row) == "4c4432a2:mine"
+row = {"id": "abcd1234-xxxx", "name": "", "title": ""}
+assert m.pane_style_label(row) == "abcd1234"
+print("ok")
+PY
+)"
+_assert_str_eq 'label helpers' "$got" 'ok'
+
+printf '\n=== fzf display uses title when unnamed ===\n'
+got="$(
+    python3 - <<'PY' "$py"
+import importlib.util, sys
+from unittest import mock
+spec = importlib.util.spec_from_file_location("asess", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+fake = [
+    {
+        "id": "4c4432a2-3091-4b76-9e29-7410c3ae7d83",
+        "updated_ms": 0,
+        "name": "",
+        "title": "ITerm Host Display",
+        "cwd": "/tmp",
+        "latest": "hello",
+    }
+]
+with mock.patch.object(m, "iter_sessions", return_value=fake):
+    # Capture stdout
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = m.cmd_fzf([])
+    assert rc == 0
+    line = buf.getvalue().strip()
+    assert "\t" in line
+    _id, display = line.split("\t", 1)
+    assert _id.startswith("4c4432a2")
+    assert display.startswith("4c4432a2:ITerm Host Display"), display
+    assert "(unnamed)" not in display
+print("ok")
+PY
+)"
+_assert_str_eq 'fzf shows pane-style title' "$got" 'ok'
+
+test_summary

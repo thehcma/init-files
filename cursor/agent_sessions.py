@@ -51,6 +51,27 @@ def clip(text: str, n: int = 72) -> str:
     return text[: n - 1] + "…"
 
 
+def session_label(row: dict) -> str:
+    """Friendly name: user label, else Cursor auto title (pane / statusline)."""
+    user = (row.get("name") or "").strip()
+    if user:
+        return user
+    title = (row.get("title") or "").strip()
+    if title:
+        return title
+    return ""
+
+
+def pane_style_label(row: dict) -> str:
+    """Match iTerm agentsession / tab chrome: short id, or short:name."""
+    sid = row.get("id") or ""
+    short = sid[:8] if sid else "?"
+    label = session_label(row)
+    if label:
+        return f"{short}:{label}"
+    return short
+
+
 def load_prompts(session_dir: Path) -> list[str]:
     hist = session_dir / "prompt_history.json"
     if not hist.is_file():
@@ -96,6 +117,13 @@ def iter_sessions() -> list[dict]:
                 "host": name_meta.get("host") or "",
             }
         )
+    # Same chat UUID can appear under multiple project hashes; keep newest.
+    by_id: dict[str, dict] = {}
+    for row in rows:
+        prev = by_id.get(row["id"])
+        if prev is None or int(row["updated_ms"]) >= int(prev["updated_ms"]):
+            by_id[row["id"]] = row
+    rows = list(by_id.values())
     rows.sort(key=lambda r: r["updated_ms"], reverse=True)
     return rows
 
@@ -152,12 +180,12 @@ def cmd_list(argv: list[str]) -> int:
     )
     print()
     for idx, r in enumerate(rows, 1):
-        name = r["name"] or "-"
+        label = session_label(r) or "-"
         print(
-            f"{idx:3d}  {fmt_time(r['updated_ms'])}  {r['id']}\n"
-            f"     name: {name}\n"
+            f"{idx:3d}  {fmt_time(r['updated_ms'])}  {pane_style_label(r)}\n"
+            f"     id:   {r['id']}\n"
+            f"     name: {label}\n"
             f"     cwd:  {r['cwd'] or '-'}\n"
-            f"     title:{clip(r['title'], 60) or '-'}\n"
             f"     last: {clip(r['latest'], 88) or '-'}"
         )
         extra = []
@@ -174,19 +202,20 @@ def cmd_list(argv: list[str]) -> int:
 
 
 def cmd_fzf(argv: list[str]) -> int:
-    """Emit TSV lines for fzf: id<TAB>display (name-first)."""
+    """Emit TSV lines for fzf: id<TAB>display (pane-style label first)."""
     named_only = "--named" in argv
     rows = iter_sessions()
     if named_only:
+        # User-assigned names only (--name / name_agent_session), not auto titles.
         rows = [r for r in rows if (r.get("name") or "").strip()]
     # Named sessions first, then by recency (already sorted by updated).
     rows.sort(
         key=lambda r: (0 if (r.get("name") or "").strip() else 1, -int(r.get("updated_ms") or 0))
     )
     for r in rows:
-        name = (r.get("name") or "").strip() or "(unnamed)"
+        label = pane_style_label(r)
         display = (
-            f"{name}  ·  {fmt_time(r['updated_ms'])}  ·  "
+            f"{label}  ·  {fmt_time(r['updated_ms'])}  ·  "
             f"{clip(r.get('cwd') or '-', 36)}  ·  {clip(r.get('latest') or '-', 48)}"
         )
         # Keep tabs out of the display field.
@@ -216,10 +245,18 @@ def resolve(target: str) -> str | None:
     named = [r for r in rows if (r["name"] or "").lower() == target.lower()]
     if len(named) == 1:
         return named[0]["id"]
+    # Unique Cursor title (pane label without user --name)
+    titled = [r for r in rows if (r.get("title") or "").lower() == target.lower()]
+    if len(titled) == 1:
+        return titled[0]["id"]
     # Unique name substring
     named = [r for r in rows if target.lower() in (r["name"] or "").lower()]
     if len(named) == 1:
         return named[0]["id"]
+    # Unique title substring
+    titled = [r for r in rows if target.lower() in (r.get("title") or "").lower()]
+    if len(titled) == 1:
+        return titled[0]["id"]
     return None
 
 

@@ -7522,10 +7522,48 @@ function _init_files_consume_agent_pending_name()
 # iTerm "Close Sessions On End" that kills the tab/window.
 function _init_files_drain_tty_typeahead()
 {
-    local _chunk
+    local py
     [[ -r /dev/tty ]] || return 0
-    # read -t 0 is non-blocking: consume whatever is already queued, then stop.
-    while IFS= read -r -t 0 -n 1024 _chunk < /dev/tty 2>/dev/null; do
+    py="$(command -v python3 2>/dev/null || true)"
+    # Prefer a short non-blocking drain: /exit often arrives slightly after the
+    # agent process reaps, so wait up to ~0.4s for a quiet tty.
+    if [[ -n "$py" ]]; then
+        "$py" - <<'PY' 2>/dev/null || true
+import os, select, time
+
+try:
+    fd = os.open("/dev/tty", os.O_RDONLY | os.O_NONBLOCK)
+except OSError:
+    raise SystemExit(0)
+try:
+    deadline = time.monotonic() + 0.4
+    quiet_for = 0.05
+    last_data = time.monotonic()
+    while time.monotonic() < deadline:
+        timeout = min(deadline - time.monotonic(), quiet_for)
+        if timeout < 0:
+            break
+        ready, _, _ = select.select([fd], [], [], timeout)
+        if not ready:
+            if time.monotonic() - last_data >= quiet_for:
+                break
+            continue
+        try:
+            chunk = os.read(fd, 4096)
+        except BlockingIOError:
+            break
+        if not chunk:
+            break
+        last_data = time.monotonic()
+finally:
+    os.close(fd)
+PY
+        return 0
+    fi
+    local _chunk
+    # Bash fallback when python3 is missing.
+    sleep 0.05 2>/dev/null || true
+    while IFS= read -r -t 0.1 -n 1024 _chunk < /dev/tty 2>/dev/null; do
         :
     done
 }
@@ -7830,7 +7868,7 @@ function resume_agent_session()
                     --delimiter=$'\t' \
                     --with-nth=2.. \
                     --prompt='agent session > ' \
-                    --header='name · updated · cwd · last prompt  (enter to resume)' \
+                    --header='pane label · updated · cwd · last prompt  (enter to resume)' \
                 | cut -f1
         )"
         [[ -n "$picked" ]] || {
@@ -7846,7 +7884,9 @@ function resume_agent_session()
         _init_files_ensure_agent_model_auto
     fi
     printf 'resume_agent_session: agent --model auto --resume=%s\n' "$id"
-    exec "$agent_bin" --model auto --resume="$id"
+    # Do not exec — /exit would replace this shell and, with iTerm
+    # "Close Sessions On End", close the tab. Same chrome cleanup as `agent`.
+    _init_files_run_agent_with_chrome_cleanup "$agent_bin" --model auto --resume="$id"
 }
 
 function invalidate_tool_version_cache()
