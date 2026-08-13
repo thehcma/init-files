@@ -7587,9 +7587,89 @@ function _init_files_run_agent_with_chrome_cleanup()
     return "$rc"
 }
 
+# Printed before upstream `agent --help` / `agent help` so wrapper flags are discoverable.
+function _init_files_agent_wrapper_help()
+{
+    cat <<'EOF'
+init-files agent wrapper:
+
+  -N, --name <label>   Name the session once it gets an id (stripped before CLI)
+                       Same as later: name_agent_session <label> [id]
+
+  Chat launches also:
+    • reset CLI default model / vim / statusline (ensure_model_auto)
+    • pass --model auto unless you already pass --model / --list-models
+    • clear iTerm agent chrome + drain leaked /exit typeahead on exit
+
+  Related helpers:
+    agent_sessions [query]
+    name_agent_session <label> [session_id]
+    resume_agent_session [--named] [name|#|id]
+
+  Tab completes wrapper flags (-N/--name) and common CLI options/commands.
+
+Upstream CLI help follows.
+EOF
+}
+
+# Tab-complete init-files wrapper flags plus common Cursor agent CLI options/commands.
+function _init_files_agent_complete()
+{
+    local cur prev opts cmds
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    opts='-N --name -h --help -v --version -p --print -f --force --yolo --model --list-models --mode --plan --resume --continue --output-format --stream-partial-output --auto-review --sandbox --approve-mcps --trust --workspace --add-dir --plugin-dir -w --worktree --worktree-base --skip-worktree-setup --api-key -H --header -e --endpoint'
+    cmds='ls models login logout mcp plugin worker status whoami about update create-chat resume generate-rule rule install-shell-integration uninstall-shell-integration help agent bedrock'
+
+    case "$prev" in
+        --name|-N)
+            # Free-form label; do not offer flags as the name.
+            return 0
+            ;;
+        --mode)
+            # shellcheck disable=SC2207
+            COMPREPLY=( $(compgen -W 'plan ask' -- "$cur") )
+            return 0
+            ;;
+        --sandbox)
+            # shellcheck disable=SC2207
+            COMPREPLY=( $(compgen -W 'enabled disabled' -- "$cur") )
+            return 0
+            ;;
+        --output-format)
+            # shellcheck disable=SC2207
+            COMPREPLY=( $(compgen -W 'text json stream-json' -- "$cur") )
+            return 0
+            ;;
+        --model|--workspace|--add-dir|--plugin-dir|--worktree|--worktree-base|\
+        --api-key|--header|--endpoint|-H|-e|-w)
+            return 0
+            ;;
+    esac
+
+    if [[ "$cur" == -* ]]; then
+        # shellcheck disable=SC2207
+        COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
+        return 0
+    fi
+
+    # First non-option word: CLI subcommands (wrapper passes these through).
+    # shellcheck disable=SC2207
+    COMPREPLY=( $(compgen -W "$cmds" -- "$cur") )
+}
+
+function _init_files_resume_agent_session_complete()
+{
+    local cur="${COMP_WORDS[COMP_CWORD]}"
+    if [[ "$cur" == -* ]]; then
+        # shellcheck disable=SC2207
+        COMPREPLY=( $(compgen -W '--named' -- "$cur") )
+    fi
+}
+
 function agent()
 {
-    local bin a has_model=0 is_chat=1
+    local bin a has_model=0 is_chat=1 want_help=0
     local -a args=()
     local pending_name=""
     bin="$(type -P agent 2>/dev/null || true)"
@@ -7634,7 +7714,12 @@ function agent()
     case "${1:-}" in
         ls|models|login|logout|mcp|plugin|worker|status|whoami|about|update|\
         generate-rule|rule|install-shell-integration|\
-        uninstall-shell-integration|help)
+        uninstall-shell-integration|bedrock)
+            "$bin" "$@"
+            return
+            ;;
+        help)
+            _init_files_agent_wrapper_help
             "$bin" "$@"
             return
             ;;
@@ -7663,11 +7748,20 @@ function agent()
             --model|--model=*|--list-models)
                 has_model=1
                 ;;
-            --help|-h|--version|-v)
+            --help|-h)
+                want_help=1
+                is_chat=0
+                ;;
+            --version|-v)
                 is_chat=0
                 ;;
         esac
     done
+    if [[ $want_help -eq 1 ]]; then
+        _init_files_agent_wrapper_help
+        "$bin" "$@"
+        return
+    fi
     if [[ $is_chat -eq 1 ]]; then
         # Reset config without forwarding agent arguments.
         # shellcheck disable=SC2119
@@ -10048,6 +10142,13 @@ if [[ $- == *i* ]]; then
     _init_load_fzf || true
     complete -o filenames -F _cda cda
     complete -o filenames -F _cdb cdb
+    # agent is a bash function wrapping the CLI; bind our completer explicitly.
+    if type _init_files_agent_complete > /dev/null 2>&1; then
+        complete -o default -F _init_files_agent_complete agent
+    fi
+    if type _init_files_resume_agent_session_complete > /dev/null 2>&1; then
+        complete -F _init_files_resume_agent_session_complete resume_agent_session
+    fi
     # After fzf (it rebinds ssh); cssh/cmsh/cesh are functions and need an explicit complete.
     if type _init_bind_cssh_cmsh_completion > /dev/null 2>&1; then
         _init_bind_cssh_cmsh_completion

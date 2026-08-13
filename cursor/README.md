@@ -49,6 +49,11 @@ On remote hosts, the clone path must exist (`~/.local/share/init-files`); `refre
 ## Commands
 
 ```bash
+# Discover wrapper flags (prints before upstream CLI help):
+agent --help
+agent -h
+# Tab completes -N/--name and common CLI options/commands.
+
 # Start a new chat already labeled (recommended):
 agent --name jerico-dns
 agent -N jerico-vim "fix the title id"
@@ -62,7 +67,7 @@ agent_sessions dns                     # filter by prompt/name/cwd/id
 
 # Resume via fzf (named sessions listed first):
 resume_agent_session                   # fzf picker
-resume_agent_session --named           # fzf, named only
+resume_agent_session --named           # fzf, named only (Tab-completes --named)
 resume_agent_session jerico-vim        # by name
 resume_agent_session 2                 # by list index
 resume_agent_session 2e376153-a303-…   # by id / unique prefix

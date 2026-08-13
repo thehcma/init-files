@@ -217,6 +217,7 @@ Failures append to `…/bash/rotate.log`. Implementation: [`lib/history_rotate`]
 ### Always
 
 - Custom: `cda` → `complete -o filenames -F _cda cda`; `cdb` → `complete -o filenames -F _cdb cdb`
+- Custom: `agent` → `_init_files_agent_complete` (wrapper `-N`/`--name` + common CLI flags/commands); `resume_agent_session` → `--named`
 
 ### Readline (interactive)
 
