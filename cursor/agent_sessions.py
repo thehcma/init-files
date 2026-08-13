@@ -231,6 +231,18 @@ def fzf_display(row: dict) -> str:
     return "  ".join(parts).replace("\t", " ")
 
 
+def fzf_header() -> str:
+    """Same fixed widths as fzf_display so the fzf --header lines up."""
+    return "  ".join(
+        [
+            fit("label", FZF_LABEL_W),
+            fit("updated", FZF_TIME_W),
+            fit("cwd", FZF_CWD_W),
+            fit("last prompt", FZF_PROMPT_W),
+        ]
+    )
+
+
 def cmd_fzf(argv: list[str]) -> int:
     """Emit TSV lines for fzf: id<TAB>display (pane-style label first)."""
     named_only = "--named" in argv
@@ -244,6 +256,11 @@ def cmd_fzf(argv: list[str]) -> int:
     )
     for r in rows:
         print(f"{r['id']}\t{fzf_display(r)}")
+    return 0
+
+
+def cmd_fzf_header(_argv: list[str]) -> int:
+    print(fzf_header())
     return 0
 
 
@@ -363,7 +380,7 @@ def cmd_record(argv: list[str]) -> int:
 def main() -> int:
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print(
-            "usage: agent_sessions.py list|fzf|resolve|name|record ...",
+            "usage: agent_sessions.py list|fzf|fzf-header|resolve|name|record ...",
             file=sys.stderr,
         )
         return 2
@@ -373,6 +390,8 @@ def main() -> int:
         return cmd_list(argv)
     if cmd == "fzf":
         return cmd_fzf(argv)
+    if cmd == "fzf-header":
+        return cmd_fzf_header(argv)
     if cmd == "resolve":
         return cmd_resolve(argv)
     if cmd == "name":

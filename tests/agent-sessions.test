@@ -118,6 +118,10 @@ assert col_starts(a) == col_starts(b)
 # time column starts at same index and looks like a date on both
 ts = m.FZF_LABEL_W + 2
 assert a[ts:ts+4].isdigit() and b[ts:ts+4].isdigit()
+hdr = m.fzf_header()
+assert len(hdr) == len(a), (len(hdr), len(a), hdr, a)
+assert hdr.startswith("label")
+assert "updated" in hdr[m.FZF_LABEL_W + 2 :]
 print("ok")
 PY
 )"

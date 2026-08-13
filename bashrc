@@ -7860,6 +7860,11 @@ function resume_agent_session()
             return 1
         fi
         [[ $named_only -eq 1 ]] && fzf_args+=(--named)
+        fzf_header="$("$py" "$script" fzf-header 2>/dev/null || true)"
+        [[ -n "$fzf_header" ]] || fzf_header='label  updated  cwd  last prompt'
+        # fzf draws a 2-char pointer gutter on rows but not on --header; pad so
+        # fixed columns still line up under the headings.
+        fzf_header="  ${fzf_header}"
         picked="$(
             "$py" "$script" fzf "${fzf_args[@]}" \
                 | "$fzf_bin" \
@@ -7868,7 +7873,7 @@ function resume_agent_session()
                     --delimiter=$'\t' \
                     --with-nth=2.. \
                     --prompt='agent session > ' \
-                    --header='label (fixed)  updated  cwd  last prompt' \
+                    --header="$fzf_header" \
                 | cut -f1
         )"
         [[ -n "$picked" ]] || {
