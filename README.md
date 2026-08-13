@@ -393,6 +393,7 @@ Interactive shells, about once per day (`init_files_max_age_seconds` / `tool_ver
 | `INIT_FILES_ALT_USER` | Set by bashrc when `$USER` is not allowlisted (starship reads this; do not set by hand) |
 | `INIT_FILES_SKIP_TOOL_CHECK=1` | Emergency: skip `check_tool_versions` on interactive load (e.g. hung package-manager probe) |
 | `INIT_FILES_SKIP_DAILY_REFRESH=1` | Emergency: skip daily `refresh_init_files -q` on interactive load |
+| `INIT_FILES_SKIP_ORPHAN_CLEANUP_OFFER=1` | Emergency: skip weekly leftover prefs/pipx cleanup offer |
 
 ---
 
@@ -587,7 +588,9 @@ init_files_cleanup_orphans        # list orphans (dry run)
 init_files_cleanup_orphans --apply
 ```
 
-`provision_init_files` / interactive bashrc **migrate** legacy pipx dir names and Bonjour-scoped prefs onto the canonical host key; they never delete foreign hosts’ state. Cleanup is always explicit (`--apply`).
+Interactive shells **offer** `init_files_cleanup_orphans --apply` about once a week when leftovers are present (stamp: `~/.local/state/init-files/last-orphan-cleanup-offer`). Decline is fine; add live NFS hostnames to `nfs-hosts` so they are not treated as orphans. Emergency skip: `INIT_FILES_SKIP_ORPHAN_CLEANUP_OFFER=1`.
+
+`provision_init_files` / interactive bashrc **migrate** legacy pipx dir names and Bonjour-scoped prefs onto the canonical host key; they never delete foreign hosts’ state. Cleanup is always explicit (`--apply`) or confirmed at the weekly prompt.
 
 `./provision_init_files` also:
 

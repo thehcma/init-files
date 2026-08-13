@@ -38,6 +38,7 @@ Tracked content is shared. Host-specific absolute tool paths are **generated on 
 | `lib/error` | Script-only `init_files_die` / `warn` / `log`. Not sourced from bashrc. |
 | `lib/interactive_input` | `bt` / `cache_ssh` path and timeout checks (sourced by bashrc). |
 | `lib/iterm_host_label` | Local vs ssh/et/mosh label for the iTerm pane status bar (`user.hostlabel`). |
+| `lib/orphan_cleanup` | Host-scoped leftover prefs / pipx detection for `init_files_cleanup_orphans`. |
 | `lib/history_rotate` | Soft/hard history archive bounds + session prune (issue #9). |
 | `lib/github_bootstrap` | Guided GitHub bootstrap for `bootstrap_host` (gh HTTPS + SSH confirm/retry; issue #18 UX). |
 | `lib/tool_version_cache` | Atomic write + mkdir lock helpers for tool-version `latest` / `last-report` / `last-check`. |
@@ -96,7 +97,7 @@ Do **not** commit:
 - **Host scope key** matches PS1 **and** `~/.local/opt/pipx/<hostname>/`: macOS `ComputerName` via `scutil` (not Bonjour `LocalHostName`); Linux short hostname. `provision_init_files` migrates `*.<LocalHostName>` / hostname-f/s prefs and pipx trees onto the canonical key when they differ.
 - `host_tag()` / pipx layout use the same key (override only via `tool_host_tag` if needed).
 - `init_files_doctor` — read-only deploy sanity (bashrc/vimrc symlinks, login hook, iTerm curated prefs on Darwin, HEAD, tools, pipx wrapper, GitHub transport, OS tier).
-- `init_files_cleanup_orphans [--apply]` — list/remove NFS leftover prefs and pipx trees; keep set = current host + `~/.config/init-files/nfs-hosts` + `--keep`.
+- `init_files_cleanup_orphans [--apply]` — list/remove NFS leftover prefs and pipx trees; keep set = current host + `~/.config/init-files/nfs-hosts` + `--keep`. Interactive shells offer `--apply` about weekly when leftovers are detected (`last-orphan-cleanup-offer`; skip with `INIT_FILES_SKIP_ORPHAN_CLEANUP_OFFER=1`).
 - Stale pipx wrappers (`$init_tool_python3` unbound) are rebaked by `provision_init_files`, `update_pipx`, and interactive bashrc load.
 
 ### Dev vs non-dev (per host)

@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Tests for lib/orphan_cleanup (host-scoped leftover prefs / pipx).
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+
+# shellcheck disable=SC1091
+source "${root}/lib/orphan_cleanup"
+
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/orphan-cleanup.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+
+cfg="$tmp/config"
+pipx="$tmp/pipx"
+mkdir -p "$cfg" "$pipx/current-host" "$pipx/legacy-host"
+touch "$cfg/tools.current-host" "$cfg/tools.legacy-host" \
+    "$cfg/github-https.legacy-host" "$cfg/fancy-prompt.other" \
+    "$cfg/tools"
+
+printf '\n=== keep hosts ===\n'
+keep="$(init_files_orphan_keep_hosts "$cfg" 'current-host')"
+assert_contains 'keeps current' "$keep" 'current-host'
+
+printf 'legacy-nfs\n# comment\n\nother-live\n' >"$cfg/nfs-hosts"
+keep="$(init_files_orphan_keep_hosts "$cfg" 'current-host' 'extra-keep')"
+assert_contains 'nfs-hosts entry' "$keep" 'legacy-nfs'
+assert_contains 'nfs-hosts other' "$keep" 'other-live'
+assert_contains 'extra --keep' "$keep" 'extra-keep'
+assert_not_contains 'skips comment line' "$keep" 'comment'
+
+printf '\n=== orphan list ===\n'
+list="$(init_files_orphan_list "$cfg" "$pipx" 'current-host')"
+assert_contains 'legacy tools' "$list" "$cfg/tools.legacy-host"
+assert_contains 'legacy github-https' "$list" "$cfg/github-https.legacy-host"
+assert_contains 'fancy other' "$list" "$cfg/fancy-prompt.other"
+assert_contains 'unscoped tools' "$list" "$cfg/tools"
+assert_contains 'legacy pipx' "$list" "$pipx/legacy-host"
+assert_not_contains 'keeps current tools' "$list" "$cfg/tools.current-host"
+assert_not_contains 'keeps current pipx' "$list" "$pipx/current-host"
+
+list_kept="$(init_files_orphan_list "$cfg" "$pipx" 'current-host' 'legacy-host')"
+assert_not_contains '--keep legacy tools' "$list_kept" "$cfg/tools.legacy-host"
+assert_not_contains '--keep legacy pipx' "$list_kept" "$pipx/legacy-host"
+assert_contains 'still orphans fancy' "$list_kept" "$cfg/fancy-prompt.other"
+
+printf 'legacy-host\n' >"$cfg/nfs-hosts"
+list_nfs="$(init_files_orphan_list "$cfg" "$pipx" 'current-host')"
+assert_not_contains 'nfs-hosts keeps legacy tools' "$list_nfs" "$cfg/tools.legacy-host"
+assert_not_contains 'nfs-hosts keeps legacy pipx' "$list_nfs" "$pipx/legacy-host"
+
+test_summary

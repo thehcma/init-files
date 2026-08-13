@@ -99,6 +99,10 @@ if [[ -f "${_init_files_clone_dir}/lib/iterm_host_label" ]]; then
     # shellcheck disable=SC1091
     . "${_init_files_clone_dir}/lib/iterm_host_label"
 fi
+if [[ -f "${_init_files_clone_dir}/lib/orphan_cleanup" ]]; then
+    # shellcheck disable=SC1091
+    . "${_init_files_clone_dir}/lib/orphan_cleanup"
+fi
 unset _init_files_clone_dir
 
 if [[ -f "$init_files_tools_file" ]]; then
@@ -4446,9 +4450,9 @@ function host_tag()
 # (one hostname per line) or passed via --keep HOST.
 function init_files_cleanup_orphans()
 {
-    local apply=0 cfg_dir pipx_root entry base host
-    local -a keep_hosts=() orphans=()
-    local nfs_hosts_file
+    local apply=0 cfg_dir pipx_root entry host
+    local -a keep_extra=() orphans=()
+    local nfs_hosts_file keep_label
 
     cfg_dir="${init_files_config_dir:-${XDG_CONFIG_HOME:-$HOME/.config}/init-files}"
     pipx_root="${HOME}/.local/opt/pipx"
@@ -4459,7 +4463,7 @@ function init_files_cleanup_orphans()
             --apply) apply=1; shift ;;
             --keep)
                 [[ -n "${2:-}" ]] || { printf 'init_files_cleanup_orphans: --keep needs HOST\n' >&2; return 1; }
-                keep_hosts+=("$2")
+                keep_extra+=("$2")
                 shift 2
                 ;;
             -h|--help)
@@ -4472,7 +4476,8 @@ init_files_host (and not listed in ~/.config/init-files/nfs-hosts or --keep).
   --apply   remove listed orphans (prefs files and entire pipx/<host> dirs)
   --keep H  treat H as a live host (repeatable)
 
-Does nothing destructive without --apply.
+Does nothing destructive without --apply. Interactive shells may offer this
+about weekly when leftovers are detected (see last-orphan-cleanup-offer).
 EOF
                 return 0
                 ;;
@@ -4483,54 +4488,28 @@ EOF
         esac
     done
 
-    keep_hosts+=("${init_files_host:-}")
-    if [[ -r "$nfs_hosts_file" ]]; then
-        while IFS= read -r host || [[ -n "$host" ]]; do
-            [[ -n "$host" && "$host" != \#* ]] || continue
-            keep_hosts+=("$host")
-        done < "$nfs_hosts_file"
-    fi
-
-    _init_files_orphan_is_kept()
-    {
-        local candidate="$1" k
-        for k in "${keep_hosts[@]}"; do
-            [[ -n "$k" && "$candidate" == "$k" ]] && return 0
-        done
+    if ! declare -F init_files_orphan_list > /dev/null 2>&1; then
+        printf 'init_files_cleanup_orphans: lib/orphan_cleanup not loaded\n' >&2
         return 1
-    }
-
-    for prefix in no-dev github-https github-ssh fancy-prompt tools; do
-        for entry in "$cfg_dir"/"${prefix}".*; do
-            [[ -e "$entry" ]] || continue
-            base="${entry##*/}"
-            host="${base#"${prefix}."}"
-            [[ -n "$host" && "$host" != "$base" ]] || continue
-            _init_files_orphan_is_kept "$host" && continue
-            orphans+=("$entry")
-        done
-    done
-
-    # Legacy unscoped tools (still loaded as fallback, but orphan-ish on NFS).
-    if [[ -f "$cfg_dir/tools" && -n "${init_files_host:-}" && -f "$cfg_dir/tools.${init_files_host}" ]]; then
-        orphans+=("$cfg_dir/tools")
     fi
 
-    if [[ -d "$pipx_root" ]]; then
-        for entry in "$pipx_root"/*; do
-            [[ -d "$entry" ]] || continue
-            host="$(basename "$entry")"
-            _init_files_orphan_is_kept "$host" && continue
-            orphans+=("$entry")
-        done
+    while IFS= read -r entry || [[ -n "$entry" ]]; do
+        [[ -n "$entry" ]] || continue
+        orphans+=("$entry")
+    done < <(init_files_orphan_list "$cfg_dir" "$pipx_root" "${init_files_host:-}" "${keep_extra[@]}")
+
+    keep_label="${init_files_host:-}"
+    [[ ${#keep_extra[@]} -gt 0 ]] && keep_label+=" ${keep_extra[*]}"
+    if [[ -r "$nfs_hosts_file" ]]; then
+        keep_label+=" (+nfs-hosts)"
     fi
 
     if [[ ${#orphans[@]} -eq 0 ]]; then
-        printf 'init_files_cleanup_orphans: no orphans (kept: %s)\n' "${keep_hosts[*]}"
+        printf 'init_files_cleanup_orphans: no orphans (kept: %s)\n' "$keep_label"
         return 0
     fi
 
-    printf 'Orphans (not in keep set: %s):\n' "${keep_hosts[*]}"
+    printf 'Orphans (not in keep set: %s):\n' "$keep_label"
     for entry in "${orphans[@]}"; do
         printf '  %s\n' "$entry"
     done
@@ -4547,6 +4526,65 @@ EOF
             rm -f "$entry" && printf 'Removed file %s\n' "$entry"
         fi
     done
+}
+
+# Interactive: about weekly, if host-scoped leftovers exist, offer --apply.
+function _init_maybe_offer_orphan_cleanup()
+{
+    local state_dir stamp now age cfg_dir pipx_root entry reply
+    local -a orphans=()
+
+    [[ $- == *i* ]] || return 0
+    [[ -z "${_init_files_in_refresh_reload:-}" ]] || return 0
+    [[ -z "${INIT_FILES_SKIP_ORPHAN_CLEANUP_OFFER:-}" ]] || return 0
+    [[ -t 0 && -t 2 ]] || return 0
+    declare -F init_files_orphan_list > /dev/null 2>&1 || return 0
+    declare -F init_files_cleanup_orphans > /dev/null 2>&1 || return 0
+    [[ -n "${init_files_host:-}" ]] || return 0
+
+    state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/init-files"
+    stamp="${state_dir}/last-orphan-cleanup-offer"
+    mkdir -p "$state_dir" 2>/dev/null || true
+
+    now=$(date +%s 2>/dev/null || echo 0)
+    [[ "$now" =~ ^[0-9]+$ ]] || return 0
+    if [[ -f "$stamp" ]]; then
+        age=$(tr -d '[:space:]' < "$stamp" 2>/dev/null || echo 0)
+        # ~7 days between offers / clean checks.
+        if [[ "$age" =~ ^[0-9]+$ ]] && (( now >= age && (now - age) < 604800 )); then
+            return 0
+        fi
+    fi
+
+    cfg_dir="${init_files_config_dir:-${XDG_CONFIG_HOME:-$HOME/.config}/init-files}"
+    pipx_root="${HOME}/.local/opt/pipx"
+    while IFS= read -r entry || [[ -n "$entry" ]]; do
+        [[ -n "$entry" ]] || continue
+        orphans+=("$entry")
+    done < <(init_files_orphan_list "$cfg_dir" "$pipx_root" "$init_files_host")
+
+    if [[ ${#orphans[@]} -eq 0 ]]; then
+        date +%s > "$stamp" 2>/dev/null || true
+        return 0
+    fi
+
+    printf 'init-files: leftover host-scoped prefs/pipx (not %s):\n' "$init_files_host" >&2
+    for entry in "${orphans[@]}"; do
+        printf '  %s\n' "$entry" >&2
+    done
+    printf 'Remove them now with init_files_cleanup_orphans --apply? [Y/n] ' >&2
+    read -r reply || reply=n
+    case "$reply" in
+        ''|y|Y|yes|YES)
+            init_files_cleanup_orphans --apply
+            ;;
+        *)
+            printf 'Skipped. Review: init_files_cleanup_orphans\n' >&2
+            printf 'Keep live NFS hosts in ~/.config/init-files/nfs-hosts\n' >&2
+            ;;
+    esac
+    date +%s > "$stamp" 2>/dev/null || true
+    return 0
 }
 
 # Deploy sanity check (read-only unless noted). See GitHub issue #15.
@@ -9906,6 +9944,11 @@ if [[ $- == *i* ]]; then
     # Emergency bypass: INIT_FILES_SKIP_DAILY_REFRESH=1 source ~/.bashrc
     if [[ -z "${_init_files_in_refresh_reload:-}" && -z "${INIT_FILES_SKIP_DAILY_REFRESH:-}" ]]; then
         refresh_init_files -q || true
+    fi
+    # Weekly: leftover host-scoped prefs/pipx after ComputerName / NFS churn.
+    if [[ -z "${_init_files_in_refresh_reload:-}" ]] \
+        && declare -F _init_maybe_offer_orphan_cleanup > /dev/null 2>&1; then
+        _init_maybe_offer_orphan_cleanup || true
     fi
 fi
 

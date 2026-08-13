@@ -1,0 +1,79 @@
+# Host-scoped prefs / pipx orphan detection for init_files_cleanup_orphans.
+# shellcheck shell=bash
+# Sourced by bashrc; used by tests/orphan-cleanup.test.
+# Predicates return; never exit (this is sourced).
+
+# Print keep-set host keys (current + nfs-hosts + extras), one per line.
+# Usage: init_files_orphan_keep_hosts CFG_DIR CURRENT_HOST [EXTRA_HOST...]
+init_files_orphan_keep_hosts()
+{
+    local cfg_dir="${1-}" current="${2-}" host nfs_hosts_file
+    local -a extras=()
+
+    shift 2 2>/dev/null || true
+    extras=("$@")
+
+    [[ -n "$current" ]] && printf '%s\n' "$current"
+    for host in "${extras[@]}"; do
+        [[ -n "$host" ]] && printf '%s\n' "$host"
+    done
+
+    nfs_hosts_file="${cfg_dir}/nfs-hosts"
+    if [[ -n "$cfg_dir" && -r "$nfs_hosts_file" ]]; then
+        while IFS= read -r host || [[ -n "$host" ]]; do
+            [[ -n "$host" && "$host" != \#* ]] || continue
+            printf '%s\n' "$host"
+        done < "$nfs_hosts_file"
+    fi
+}
+
+# True when CANDIDATE is in the keep list (newline-separated KEEP_TEXT).
+init_files_orphan_is_kept()
+{
+    local candidate="${1-}" keep_text="${2-}" k
+    [[ -n "$candidate" ]] || return 1
+    while IFS= read -r k || [[ -n "$k" ]]; do
+        [[ -n "$k" && "$candidate" == "$k" ]] && return 0
+    done <<< "$keep_text"
+    return 1
+}
+
+# Print orphan paths (prefs + optional pipx trees), one per line.
+# Usage: init_files_orphan_list CFG_DIR PIPX_ROOT CURRENT_HOST [EXTRA_KEEP_HOST...]
+init_files_orphan_list()
+{
+    local cfg_dir="${1-}" pipx_root="${2-}" current="${3-}"
+    local keep_text entry base host prefix
+    local -a extras=()
+
+    shift 3 2>/dev/null || true
+    extras=("$@")
+    keep_text="$(init_files_orphan_keep_hosts "$cfg_dir" "$current" "${extras[@]}")"
+
+    [[ -n "$cfg_dir" && -d "$cfg_dir" ]] || return 0
+
+    for prefix in no-dev github-https github-ssh fancy-prompt tools; do
+        for entry in "$cfg_dir"/"${prefix}".*; do
+            [[ -e "$entry" ]] || continue
+            base="${entry##*/}"
+            host="${base#"${prefix}."}"
+            [[ -n "$host" && "$host" != "$base" ]] || continue
+            init_files_orphan_is_kept "$host" "$keep_text" && continue
+            printf '%s\n' "$entry"
+        done
+    done
+
+    # Legacy unscoped tools (still loaded as fallback, but orphan-ish on NFS).
+    if [[ -f "$cfg_dir/tools" && -n "$current" && -f "$cfg_dir/tools.${current}" ]]; then
+        printf '%s\n' "$cfg_dir/tools"
+    fi
+
+    if [[ -n "$pipx_root" && -d "$pipx_root" ]]; then
+        for entry in "$pipx_root"/*; do
+            [[ -d "$entry" ]] || continue
+            host="$(basename "$entry")"
+            init_files_orphan_is_kept "$host" "$keep_text" && continue
+            printf '%s\n' "$entry"
+        done
+    fi
+}
