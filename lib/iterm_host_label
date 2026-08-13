@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Detect local vs ssh/et/mosh for the iTerm pane status bar host label.
+# shellcheck shell=bash
+# Sourced by bashrc; used by tests/iterm-host-label.test.
+# Predicates return; never exit (this is sourced).
+
+# True when this shell is talking to iTerm2 (local or via SSH LC_* forwarding).
+init_files_iterm_is_client()
+{
+    [[ "${LC_TERMINAL:-}" == iTerm2 || "${TERM_PROGRAM:-}" == iTerm.app ]]
+}
+
+# True when an ancestor looks like mosh-server (mosh drops SSH_* on the remote).
+init_files_iterm_parent_is_mosh()
+{
+    local pid="${PPID:-}" comm
+    local i=0
+
+    while [[ -n "$pid" && "$pid" -gt 1 && $i -lt 4 ]]; do
+        comm="$(ps -o comm= -p "$pid" 2>/dev/null || true)"
+        comm="${comm##*/}"
+        comm="${comm%% *}"
+        case "$comm" in
+            mosh-server|mosh|mosh-client)
+                return 0
+                ;;
+        esac
+        pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# True when this shell arrived via ssh, Eternal Terminal, or mosh.
+# Caches in _init_files_iterm_remote for the life of the shell (tests must unset).
+init_files_iterm_is_remote_session()
+{
+    if [[ -n "${_init_files_iterm_remote-}" ]]; then
+        [[ "${_init_files_iterm_remote}" == 1 ]]
+        return
+    fi
+    if [[ -n "${SSH_CONNECTION:-}${SSH_CLIENT:-}${SSH_TTY:-}${ET_VERSION:-}" ]] \
+        || init_files_iterm_parent_is_mosh; then
+        _init_files_iterm_remote=1
+        return 0
+    fi
+    _init_files_iterm_remote=0
+    return 1
+}
+
+# Print the pane label: "local" or the short hostname of the remote.
+init_files_iterm_session_host_label()
+{
+    if init_files_iterm_is_remote_session; then
+        hostname -s 2>/dev/null || hostname 2>/dev/null || printf 'remote'
+        return 0
+    fi
+    printf 'local'
+}

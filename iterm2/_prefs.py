@@ -14,6 +14,7 @@ from typing import Any
 # frames, Sparkle, NoSync*, AI, …) is dropped on export.
 TOP_LEVEL_KEEP = frozenset(
     {
+        "AllowClipboardAccess",
         "Default Bookmark Guid",
         "New Bookmarks",
         "PointerActions",

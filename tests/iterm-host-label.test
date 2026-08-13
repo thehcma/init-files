@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# Tests for lib/iterm_host_label (iTerm pane host label).
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+
+# shellcheck disable=SC1091
+source "${root}/lib/iterm_host_label"
+
+_reset_remote_cache()
+{
+    unset _init_files_iterm_remote SSH_CONNECTION SSH_CLIENT SSH_TTY ET_VERSION
+}
+
+_assert_str_eq()
+{
+    local label="$1" got="$2" want="$3"
+    if [[ "$got" == "$want" ]]; then
+        pass_case "$label"
+    else
+        fail_case "$label (got '$got' want '$want')"
+    fi
+}
+
+printf '\n=== iterm client ===\n'
+_reset_remote_cache
+unset LC_TERMINAL TERM_PROGRAM
+rc=0
+init_files_iterm_is_client || rc=$?
+assert_exit_nonzero 'no iTerm env' "$rc"
+LC_TERMINAL=iTerm2
+rc=0
+init_files_iterm_is_client || rc=$?
+assert_exit_0 'LC_TERMINAL=iTerm2' "$rc"
+unset LC_TERMINAL
+TERM_PROGRAM=iTerm.app
+rc=0
+init_files_iterm_is_client || rc=$?
+assert_exit_0 'TERM_PROGRAM=iTerm.app' "$rc"
+unset TERM_PROGRAM
+
+printf '\n=== local vs remote label ===\n'
+_reset_remote_cache
+label="$(init_files_iterm_session_host_label)"
+_assert_str_eq 'plain shell is local' "$label" 'local'
+
+_reset_remote_cache
+SSH_CONNECTION='1.2.3.4 1234 5.6.7.8 22'
+export SSH_CONNECTION
+label="$(init_files_iterm_session_host_label)"
+host="$(hostname -s 2>/dev/null || hostname)"
+_assert_str_eq 'SSH_CONNECTION uses hostname' "$label" "$host"
+
+_reset_remote_cache
+ET_VERSION='6.2.9'
+export ET_VERSION
+label="$(init_files_iterm_session_host_label)"
+_assert_str_eq 'ET_VERSION uses hostname' "$label" "$host"
+
+_reset_remote_cache
+SSH_TTY=/dev/ttys001
+export SSH_TTY
+rc=0
+init_files_iterm_is_remote_session || rc=$?
+assert_exit_0 'SSH_TTY is remote' "$rc"
+
+_reset_remote_cache
+rc=0
+init_files_iterm_is_remote_session || rc=$?
+assert_exit_nonzero 'no remote env is local' "$rc"
+# Cached local must not flip if SSH appears later in this shell.
+SSH_CONNECTION='1.2.3.4 1 5.6.7.8 22'
+export SSH_CONNECTION
+rc=0
+init_files_iterm_is_remote_session || rc=$?
+assert_exit_nonzero 'remote cache sticks for this shell' "$rc"
+
+printf '\n=== curated status bar layout ===\n'
+plist="${root}/iterm2/com.googlecode.iterm2.plist"
+if python3 - "$plist" <<'PY'
+import plistlib, sys
+path = sys.argv[1]
+with open(path, "rb") as fh:
+    data = plistlib.load(fh)
+bookmarks = data.get("New Bookmarks") or []
+assert bookmarks, "no profiles"
+profile = bookmarks[0]
+assert profile.get("Show Status Bar") in (True, 1), "Show Status Bar not enabled"
+layout = profile.get("Status Bar Layout") or {}
+comps = layout.get("components") or []
+classes = [c.get("class") for c in comps if isinstance(c, dict)]
+assert "iTermStatusBarSpringComponent" in classes, classes
+assert "iTermStatusBarSwiftyStringComponent" in classes, classes
+adv = layout.get("advanced configuration") or {}
+assert adv.get("algorithm") == 1, adv
+found = False
+for comp in comps:
+    knobs = (comp.get("configuration") or {}).get("knobs") or {}
+    expr = knobs.get("expression") or ""
+    if "user.hostlabel" in expr:
+        found = True
+        break
+assert found, "interpolated string missing user.hostlabel"
+PY
+then
+    pass_case 'curated plist has right-side hostlabel'
+else
+    fail_case 'curated plist has right-side hostlabel'
+fi
+
+test_summary

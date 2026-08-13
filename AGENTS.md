@@ -37,6 +37,7 @@ Tracked content is shared. Host-specific absolute tool paths are **generated on 
 | `lib/host_paths` | Shared Homebrew prefix / brew-bin / MacVim discovery probes (provision + bashrc). No env overrides. |
 | `lib/error` | Script-only `init_files_die` / `warn` / `log`. Not sourced from bashrc. |
 | `lib/interactive_input` | `bt` / `cache_ssh` path and timeout checks (sourced by bashrc). |
+| `lib/iterm_host_label` | Local vs ssh/et/mosh label for the iTerm pane status bar (`user.hostlabel`). |
 | `lib/history_rotate` | Soft/hard history archive bounds + session prune (issue #9). |
 | `lib/github_bootstrap` | Guided GitHub bootstrap for `bootstrap_host` (gh HTTPS + SSH confirm/retry; issue #18 UX). |
 | `lib/tool_version_cache` | Atomic write + mkdir lock helpers for tool-version `latest` / `last-report` / `last-check`. |

@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>AllowClipboardAccess</key>
+	<true/>
 	<key>ApplePressAndHoldEnabled</key>
 	<false/>
 	<key>Default Bookmark Guid</key>
@@ -253,6 +255,8 @@
 			<string>Default</string>
 			<key>Disable Window Resizing</key>
 			<false/>
+			<key>Disable Window Resizing by Unfocused Sessions</key>
+			<false/>
 			<key>Flashing Bell</key>
 			<false/>
 			<key>Foreground Color</key>
@@ -351,8 +355,55 @@
 			</dict>
 			<key>Send Code When Idle</key>
 			<false/>
+			<key>Show Status Bar</key>
+			<true/>
 			<key>Silence Bell</key>
 			<true/>
+			<key>Status Bar Layout</key>
+			<dict>
+				<key>advanced configuration</key>
+				<dict>
+					<key>algorithm</key>
+					<integer>1</integer>
+					<key>remove empty components</key>
+					<true/>
+				</dict>
+				<key>components</key>
+				<array>
+					<dict>
+						<key>class</key>
+						<string>iTermStatusBarSpringComponent</string>
+						<key>configuration</key>
+						<dict>
+							<key>knobs</key>
+							<dict>
+								<key>base: compression resistance</key>
+								<real>0.01</real>
+								<key>base: priority</key>
+								<real>5.0</real>
+								<key>iTermStatusBarSpringComponentSpringConstantKey</key>
+								<real>0.01</real>
+							</dict>
+						</dict>
+					</dict>
+					<dict>
+						<key>class</key>
+						<string>iTermStatusBarSwiftyStringComponent</string>
+						<key>configuration</key>
+						<dict>
+							<key>knobs</key>
+							<dict>
+								<key>base: compression resistance</key>
+								<real>1.0</real>
+								<key>base: priority</key>
+								<real>8.0</real>
+								<key>expression</key>
+								<string>\(user.hostlabel)</string>
+							</dict>
+						</dict>
+					</dict>
+				</array>
+			</dict>
 			<key>Sync Title</key>
 			<false/>
 			<key>Terminal Type</key>

@@ -95,6 +95,10 @@ if [[ -f "${_init_files_clone_dir}/lib/history_rotate" ]]; then
     # shellcheck disable=SC1091
     . "${_init_files_clone_dir}/lib/history_rotate"
 fi
+if [[ -f "${_init_files_clone_dir}/lib/iterm_host_label" ]]; then
+    # shellcheck disable=SC1091
+    . "${_init_files_clone_dir}/lib/iterm_host_label"
+fi
 unset _init_files_clone_dir
 
 if [[ -f "$init_files_tools_file" ]]; then
@@ -454,6 +458,26 @@ function _init_is_rocky_8_1()
     id="${ID:-}"
     version_id="${VERSION_ID:-}"
     [[ "$id" == "rocky" && "$version_id" == "8.1" ]]
+}
+
+# Push ssh/et/mosh vs "local" into iTerm user.hostlabel (pane status bar, right).
+function _init_iterm_report_host_label()
+{
+    local label b64
+
+    [[ $- == *i* ]] || return 0
+    declare -F init_files_iterm_is_client > /dev/null 2>&1 || return 0
+    init_files_iterm_is_client || return 0
+    declare -F init_files_iterm_session_host_label > /dev/null 2>&1 || return 0
+    command -v base64 > /dev/null 2>&1 || return 0
+    [[ -t 1 ]] || return 0
+
+    label="$(init_files_iterm_session_host_label)"
+    [[ -n "$label" ]] || return 0
+    [[ "$label" == "${_init_iterm_host_label_last-}" ]] && return 0
+    b64="$(printf '%s' "$label" | base64 | tr -d '\n')"
+    printf '\033]1337;SetUserVar=%s=%s\007' hostlabel "$b64"
+    _init_iterm_host_label_last="$label"
 }
 
 # Source bash-completion when already installed. Never installs packages;
@@ -1288,9 +1312,17 @@ EOF
 
 function bun()
 {
-    local script="${HOME}/work/ai/bunnify/scripts/bunnify"
-    if [[ ! -x "$script" ]]; then
-        echo "bun: missing executable ${script}" >&2
+    local script=""
+    local pipx_bin="${HOME}/.local/bin/bunnify"
+    local checkout="${HOME}/work/ai/bunnify/scripts/bunnify"
+
+    # pipx (PIPX_BIN_DIR) first; checkout is a local-dev fallback only.
+    if [[ -x "$pipx_bin" ]]; then
+        script="$pipx_bin"
+    elif [[ -x "$checkout" ]]; then
+        script="$checkout"
+    else
+        echo "bun: bunnify not found (try: pipx install bunnify)" >&2
         return 1
     fi
     if ! _init_has_display; then
@@ -5710,6 +5742,17 @@ function _init_prompt_ensure_history_sync()
     fi
 }
 
+function _init_prompt_ensure_session_hooks()
+{
+    local pc
+    pc="$(_init_prompt_ensure_history_sync "${1-}")"
+    if [[ ";${pc};" == *";_init_iterm_report_host_label;"* ]]; then
+        printf '%s' "$pc"
+    else
+        printf '%s;%s' "$pc" '_init_iterm_report_host_label'
+    fi
+}
+
 # Unwrap Starship's PROMPT_COMMAND / DEBUG / functions without changing PS1.
 # Safe to call before re-init (refresh_init_files reload) or when switching to plain.
 function _init_prompt_unwrap_starship()
@@ -5724,7 +5767,7 @@ function _init_prompt_unwrap_starship()
         restored="${PROMPT_COMMAND-}"
     fi
     restored="$(_init_prompt_strip_starship_precmd "$restored")"
-    PROMPT_COMMAND="$(_init_prompt_ensure_history_sync "$restored")"
+    PROMPT_COMMAND="$(_init_prompt_ensure_session_hooks "$restored")"
 
     if [[ -n "${_init_prompt_saved_debug_trap:-}" ]]; then
         eval "$_init_prompt_saved_debug_trap"
@@ -8920,12 +8963,39 @@ function versions_equal()
     [[ -n "$current_version" && -n "$latest_version" && "$current_version" == "$latest_version" ]]
 }
 
+# MacVim's mvim wrapper always injects -g, so `mvim --serverlist` becomes
+# `Vim -g --serverlist` and can hang against a running MacVim (-MMNoWindow).
+# Prefer Contents/MacOS/Vim for --version / --serverlist / --remote-*.
+function _init_vim_rpc_bin()
+{
+    local bin="${1:-}" link resolved dir rpc
+    [[ -n "$bin" && -x "$bin" ]] || return 1
+    resolved="$bin"
+    if [[ -L "$resolved" ]]; then
+        link="$(readlink "$resolved" 2>/dev/null || true)"
+        if [[ -n "$link" ]]; then
+            if [[ "$link" == /* ]]; then
+                resolved="$link"
+            else
+                resolved="$(dirname -- "$resolved")/$link"
+            fi
+        fi
+    fi
+    dir="$(dirname -- "$resolved")"
+    if [[ -x "${dir}/../MacOS/Vim" ]]; then
+        rpc="$(cd "${dir}/../MacOS" && pwd)/Vim"
+        [[ -x "$rpc" ]] && { printf '%s\n' "$rpc"; return 0; }
+    fi
+    printf '%s\n' "$bin"
+}
+
 # True when bin is a Vim front that accepts --servername / --remote-*.
 function _init_vim_has_clientserver()
 {
-    local bin="$1"
-    [[ -n "$bin" && -x "$bin" ]] || return 1
-    "$bin" --version 2>/dev/null | command grep -Fq '+clientserver'
+    local rpc
+    rpc="$(_init_vim_rpc_bin "${1:-}" 2>/dev/null || true)"
+    [[ -n "$rpc" && -x "$rpc" ]] || return 1
+    "$rpc" --version 2>/dev/null | command grep -Fq '+clientserver'
 }
 
 function vi()
@@ -8933,6 +9003,7 @@ function vi()
     # GUI / standalone window (MacVim on macOS, gvim on Linux).
     # Use v for in-terminal vim.
     local server="${gvim_servername:-HCMA}"
+    local rpc
 
     if [[ -z "${gvimcl:-}" || ! -x "$gvimcl" ]]; then
         echo "vi: GUI editor not found (install MacVim / gvim). Use v for terminal vim." >&2
@@ -8940,19 +9011,24 @@ function vi()
     fi
 
     if _init_vim_has_clientserver "$gvimcl"; then
-        if "$gvimcl" --serverlist 2>/dev/null | command grep -Fxiq "$server"; then
-            if [[ "$#" -eq 0 ]]; then
-                "$gvimcl" --servername "$server" --remote-send '<Esc>:tabnew<CR>'
-            else
-                "$gvimcl" --servername "$server" --remote-tab-silent "$@"
-            fi
-        else
-            # First GUI instance for this server name.
+        rpc="$(_init_vim_rpc_bin "$gvimcl")"
+        if [[ "$#" -eq 0 ]]; then
+            # Untitled window. Do not --remote-send :tabnew — that can target a
+            # hidden MacVim (-MMNoWindow) and show nothing. mvim with no files
+            # asks the running app (or starts one) for a visible window.
             if _init_is_darwin; then
-                "$gvimcl" --servername "$server" -g "$@"
+                "$gvimcl" --servername "$server" -g
             else
-                "$gvimcl" --servername "$server" "$@"
+                "$gvimcl" --servername "$server"
             fi
+            return
+        fi
+        if "$rpc" --serverlist 2>/dev/null | command grep -Fxiq "$server"; then
+            "$rpc" --servername "$server" --remote-tab-silent "$@"
+        elif _init_is_darwin; then
+            "$gvimcl" --servername "$server" -g "$@"
+        else
+            "$gvimcl" --servername "$server" "$@"
         fi
         return
     fi
@@ -9114,29 +9190,33 @@ fi
 
 function rvi()
 {
+    local rpc
     _init_is_darwin || { echo "rvi: macOS only" >&2; return 1; }
     if [[ -z "${gvimcl:-}" || ! -x "$gvimcl" ]] || ! _init_vim_has_clientserver "$gvimcl"; then
         echo "rvi: MacVim (mvim with +clientserver) required" >&2
         return 1
     fi
+    rpc="$(_init_vim_rpc_bin "$gvimcl")"
     if [[ "$*" = /* ]]; then
-        "$gvimcl" --servername "${gvim_servername:-HCMA}" --remote-send ":split<space>$*<cr>"
+        "$rpc" --servername "${gvim_servername:-HCMA}" --remote-send ":split<space>$*<cr>"
     else
-        "$gvimcl" --servername "${gvim_servername:-HCMA}" --remote-send ":split<space>$PWD/$*<cr>"
+        "$rpc" --servername "${gvim_servername:-HCMA}" --remote-send ":split<space>$PWD/$*<cr>"
     fi
 }
 
 function rvii()
 {
+    local rpc
     _init_is_darwin || { echo "rvii: macOS only" >&2; return 1; }
     if [[ -z "${gvimcl:-}" || ! -x "$gvimcl" ]] || ! _init_vim_has_clientserver "$gvimcl"; then
         echo "rvii: MacVim (mvim with +clientserver) required" >&2
         return 1
     fi
+    rpc="$(_init_vim_rpc_bin "$gvimcl")"
     if [[ "${*:2}" = /* ]]; then
-        "$gvimcl" --servername "$1" --remote-send ":split<space>${*:2}<cr>"
+        "$rpc" --servername "$1" --remote-send ":split<space>${*:2}<cr>"
     else
-        "$gvimcl" --servername "$1" --remote-send ":split<space>$PWD/${*:2}<cr>"
+        "$rpc" --servername "$1" --remote-send ":split<space>$PWD/${*:2}<cr>"
     fi
 }
 
@@ -9741,11 +9821,10 @@ if [[ "${PROMPT_COMMAND:-}" == *starship_precmd* ]]; then
         PROMPT_COMMAND="${PROMPT_COMMAND//;;/;}"
     fi
 fi
-case ";${PROMPT_COMMAND:-};" in
-    *";history_sync;"*) ;;
-    ';;') PROMPT_COMMAND='history_sync' ;;
-    *) PROMPT_COMMAND="history_sync;$PROMPT_COMMAND" ;;
-esac
+PROMPT_COMMAND="$(_init_prompt_ensure_session_hooks "${PROMPT_COMMAND-}")"
+if [[ $- == *i* ]] && declare -F _init_iterm_report_host_label > /dev/null 2>&1; then
+    _init_iterm_report_host_label
+fi
 # Re-install EXIT trap on reload (trap is not cleared by sourcing).
 trap 'history_finalize' EXIT
 
