@@ -318,6 +318,11 @@ fi
 "$python3_bin" "$prefs_py" merge "$tmp_existing" "$curated_plist" "$tmp_merged"
 defaults import "$domain" "$tmp_merged"
 
+geom="$("$python3_bin" "$prefs_py" geometry "$curated_plist" 2>/dev/null || true)"
+if [[ -n "$geom" ]]; then
+    printf 'Default grid: %s\n' "$geom"
+fi
+
 # Font availability: check, offer user-local Meslo zip when meslo-nerd missing.
 # Missing fonts are a warning — prefs are already merged; do not abort install.
 set +e

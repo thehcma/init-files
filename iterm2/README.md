@@ -18,7 +18,7 @@ Shell functions are Darwin-only (fail on Linux). Scripts stay runnable under `~/
 ## What is tracked
 
 - Profiles (`New Bookmarks`): fonts, ANSI/UI colors, `Keyboard Map`, mouse reporting, Option-key sends, etc.
-  - **Default grid** `300×80` (Columns×Rows) for new sessions; **Normal Font** Meslo LGS Nerd Font Mono **15**.
+  - **Default grid** preferred `300×80` when the main display’s usable area is at least as large as the authoring monitor (~3008×1662 points); otherwise ~¼ of usable area (½×½), derived from the profile font. **Normal Font** Meslo LGS Nerd Font Mono **15**. Export always stores the preferred max; install/merge applies the host-adaptive size.
   - **Left Option = Esc+** (so bash/fzf `Alt-C` / `\ec` works). **Right Option = Normal** (keep Option-C → `ç` on the right key).
   - **Shift+Enter** / **Option+Enter** → CSI-u (`[13;2u` / `[13;3u`) so Cursor Agent (and similar TUIs) insert a newline instead of submitting. Without these, iTerm often sends plain Return for Shift+Enter.
   - **Session-initiated window resize allowed** (`Disable Window Resizing` and `Disable Window Resizing by Unfocused Sessions` both false) so apps can resize without the “Allow it?” prompt — including from a split pane or background tab.

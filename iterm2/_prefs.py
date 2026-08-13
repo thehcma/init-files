@@ -3,12 +3,28 @@
 
 from __future__ import annotations
 
+import copy
+import math
 import os
 import plistlib
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+# Preferred new-window grid when the main display is at least as large as the
+# authoring monitor (visibleFrame points). Smaller displays get ~1/4 usable area.
+PREFERRED_COLUMNS = 300
+PREFERRED_ROWS = 80
+# Authoring Mac visibleFrame (points), from NSScreen.mainScreen.visibleFrame.
+MIN_PREFERRED_VISIBLE = (3008.0, 1662.0)
+# Window chrome outside the character grid (title / tabs / pane status / scroll).
+GEOMETRY_CHROME_WIDTH = 24.0
+GEOMETRY_CHROME_HEIGHT = 88.0
+GEOMETRY_MIN_COLUMNS = 60
+GEOMETRY_MIN_ROWS = 20
+# Override probe for tests: INIT_FILES_ITERM_VISIBLE_FRAME=WxH (points).
 
 # Top-level keys that carry look-and-feel or input. Everything else (window
 # frames, Sparkle, NoSync*, AI, …) is dropped on export.
@@ -85,14 +101,213 @@ def curate(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def curate_profile(profile: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in profile.items() if k not in PROFILE_DROP}
+    out = {k: v for k, v in profile.items() if k not in PROFILE_DROP}
+    # Host-adaptive Columns/Rows are applied only at merge time. Export always
+    # stores the preferred max so small-display installs do not poison the repo.
+    if "Columns" in out or "Rows" in out:
+        out["Columns"] = PREFERRED_COLUMNS
+        out["Rows"] = PREFERRED_ROWS
+    return out
 
 
 def merge(existing: dict[str, Any], curated: dict[str, Any]) -> dict[str, Any]:
     merged = dict(existing)
     for key, value in curated.items():
-        merged[key] = value
+        if key == "New Bookmarks" and isinstance(value, list):
+            merged[key] = [
+                copy.deepcopy(p) if isinstance(p, dict) else p for p in value
+            ]
+        else:
+            merged[key] = value
+    apply_adaptive_geometry(merged)
     return merged
+
+
+def font_point_size(font_spec: str) -> float:
+    match = FONT_RE.match((font_spec or "").strip())
+    if match:
+        try:
+            return float(match.group(2))
+        except ValueError:
+            return 12.0
+    return 12.0
+
+
+def visible_frame_points() -> tuple[float, float] | None:
+    """Main-screen usable size in points (excludes menu bar / Dock)."""
+    override = (os.environ.get("INIT_FILES_ITERM_VISIBLE_FRAME") or "").strip()
+    if override:
+        try:
+            width_s, height_s = override.lower().split("x", 1)
+            width, height = float(width_s), float(height_s)
+            if width > 0 and height > 0:
+                return width, height
+        except ValueError:
+            pass
+        return None
+    if sys.platform != "darwin":
+        return None
+    script = (
+        'ObjC.import("AppKit");'
+        "var f=$.NSScreen.mainScreen.visibleFrame;"
+        'f.size.width+" "+f.size.height;'
+    )
+    try:
+        out = subprocess.check_output(
+            ["osascript", "-l", "JavaScript", "-e", script],
+            text=True,
+            timeout=5,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        width_s, height_s = out.split()
+        width, height = float(width_s), float(height_s)
+        if width > 0 and height > 0:
+            return width, height
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    return None
+
+
+def _jxa_cell_metrics(postscript_name: str, point_size: float) -> tuple[float, float] | None:
+    """Return (advance_width, line_height) in points via AppKit, or None."""
+    if sys.platform != "darwin" or point_size <= 0:
+        return None
+    # Escape for JXA single-quoted string.
+    safe = postscript_name.replace("\\", "\\\\").replace("'", "\\'")
+    script = (
+        "ObjC.import('AppKit');"
+        f"var font=$.NSFont['fontWithName:size:']('{safe}', {point_size});"
+        "if(!font){'';}else{"
+        "var adv=font.maximumAdvancement;"
+        "var h=font.ascender-font.descender+font.leading;"
+        "adv.width+' '+h;"
+        "}"
+    )
+    try:
+        out = subprocess.check_output(
+            ["osascript", "-l", "JavaScript", "-e", script],
+            text=True,
+            timeout=5,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        if not out:
+            return None
+        width_s, height_s = out.split()
+        width, height = float(width_s), float(height_s)
+        if width > 0 and height > 0:
+            return width, height
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    return None
+
+
+def cell_size_points(
+    font_spec: str,
+    *,
+    horizontal_spacing: float = 1.0,
+    vertical_spacing: float = 1.0,
+) -> tuple[float, float]:
+    """Estimate one character cell in points (width, height)."""
+    point_size = font_point_size(font_spec)
+    family = font_family(font_spec)
+    measured = _jxa_cell_metrics(family, point_size)
+    if measured is not None:
+        cell_w, cell_h = measured
+    else:
+        # Menlo / Meslo-ish monospace fallbacks (calibrated on Meslo 15).
+        cell_w = point_size * 0.602
+        cell_h = point_size * 1.262
+    h_space = horizontal_spacing if horizontal_spacing > 0 else 1.0
+    v_space = vertical_spacing if vertical_spacing > 0 else 1.0
+    return cell_w * h_space, cell_h * v_space
+
+
+def _profile_spacing(profile: dict[str, Any], key: str) -> float:
+    raw = profile.get(key, 1.0)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 1.0
+    return value if value > 0 else 1.0
+
+
+def compute_adaptive_grid(
+    preferred_cols: int,
+    preferred_rows: int,
+    font_spec: str,
+    *,
+    horizontal_spacing: float = 1.0,
+    vertical_spacing: float = 1.0,
+    visible: tuple[float, float] | None = None,
+) -> tuple[int, int, str]:
+    """Return (columns, rows, mode) for a new iTerm window on this display.
+
+    mode is ``preferred`` when the main screen is at least MIN_PREFERRED_VISIBLE,
+    ``quarter`` when sized to ~1/4 usable area, or ``preferred-fallback`` when
+    the screen size cannot be probed.
+    """
+    pref_c = max(1, int(preferred_cols))
+    pref_r = max(1, int(preferred_rows))
+    if visible is None:
+        visible = visible_frame_points()
+    if visible is None:
+        return pref_c, pref_r, "preferred-fallback"
+
+    usable_w, usable_h = visible
+    min_w, min_h = MIN_PREFERRED_VISIBLE
+    if usable_w + 0.5 >= min_w and usable_h + 0.5 >= min_h:
+        return pref_c, pref_r, "preferred"
+
+    cell_w, cell_h = cell_size_points(
+        font_spec,
+        horizontal_spacing=horizontal_spacing,
+        vertical_spacing=vertical_spacing,
+    )
+    if cell_w <= 0 or cell_h <= 0:
+        return pref_c, pref_r, "preferred-fallback"
+
+    # Half width × half height ≈ one quarter of usable area.
+    target_w = usable_w * 0.5
+    target_h = usable_h * 0.5
+    cols = int(math.floor((target_w - GEOMETRY_CHROME_WIDTH) / cell_w))
+    rows = int(math.floor((target_h - GEOMETRY_CHROME_HEIGHT) / cell_h))
+    max_cols = int(math.floor((usable_w - GEOMETRY_CHROME_WIDTH) / cell_w))
+    max_rows = int(math.floor((usable_h - GEOMETRY_CHROME_HEIGHT) / cell_h))
+    cols = max(GEOMETRY_MIN_COLUMNS, min(pref_c, cols, max_cols))
+    rows = max(GEOMETRY_MIN_ROWS, min(pref_r, rows, max_rows))
+    return cols, rows, "quarter"
+
+
+def apply_adaptive_geometry(prefs: dict[str, Any]) -> None:
+    """Rewrite Columns/Rows on bookmarks that declare a grid."""
+    bookmarks = prefs.get("New Bookmarks")
+    if not isinstance(bookmarks, list):
+        return
+    for profile in bookmarks:
+        if not isinstance(profile, dict):
+            continue
+        if "Columns" not in profile and "Rows" not in profile:
+            continue
+        try:
+            pref_c = int(profile.get("Columns", PREFERRED_COLUMNS))
+        except (TypeError, ValueError):
+            pref_c = PREFERRED_COLUMNS
+        try:
+            pref_r = int(profile.get("Rows", PREFERRED_ROWS))
+        except (TypeError, ValueError):
+            pref_r = PREFERRED_ROWS
+        font_spec = profile.get("Normal Font")
+        if not isinstance(font_spec, str) or not font_spec.strip():
+            font_spec = "MesloLGSNFM-Regular 15"
+        cols, rows, _mode = compute_adaptive_grid(
+            pref_c,
+            pref_r,
+            font_spec.strip(),
+            horizontal_spacing=_profile_spacing(profile, "Horizontal Spacing"),
+            vertical_spacing=_profile_spacing(profile, "Vertical Spacing"),
+        )
+        profile["Columns"] = cols
+        profile["Rows"] = rows
 
 
 def profile_fonts(curated: dict[str, Any]) -> list[str]:
@@ -305,7 +520,8 @@ def load_meta(path: Path) -> dict[str, Any]:
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
         print(
-            f"usage: {argv[0]} curate|merge|fonts|check-fonts|equal|write-meta|version-note ...",
+            f"usage: {argv[0]} curate|merge|fonts|check-fonts|equal|geometry|"
+            "write-meta|version-note ...",
             file=sys.stderr,
         )
         return 2
@@ -355,6 +571,52 @@ def main(argv: list[str]) -> int:
         a = load_plist(Path(argv[2]))
         b = load_plist(Path(argv[3]))
         return 0 if a == b else 1
+    if cmd == "geometry":
+        # geometry [CURATED.plist] — print cols rows mode usableWxH font
+        if len(argv) not in (2, 3):
+            print(f"usage: {argv[0]} geometry [CURATED.plist]", file=sys.stderr)
+            return 2
+        font_spec = "MesloLGSNFM-Regular 15"
+        pref_c, pref_r = PREFERRED_COLUMNS, PREFERRED_ROWS
+        h_space, v_space = 1.0, 1.0
+        if len(argv) == 3:
+            curated = load_plist(Path(argv[2]))
+            bookmarks = curated.get("New Bookmarks") or []
+            if isinstance(bookmarks, list):
+                for profile in bookmarks:
+                    if not isinstance(profile, dict):
+                        continue
+                    if "Columns" not in profile and "Rows" not in profile:
+                        continue
+                    try:
+                        pref_c = int(profile.get("Columns", pref_c))
+                    except (TypeError, ValueError):
+                        pass
+                    try:
+                        pref_r = int(profile.get("Rows", pref_r))
+                    except (TypeError, ValueError):
+                        pass
+                    normal = profile.get("Normal Font")
+                    if isinstance(normal, str) and normal.strip():
+                        font_spec = normal.strip()
+                    h_space = _profile_spacing(profile, "Horizontal Spacing")
+                    v_space = _profile_spacing(profile, "Vertical Spacing")
+                    break
+        visible = visible_frame_points()
+        cols, rows, mode = compute_adaptive_grid(
+            pref_c,
+            pref_r,
+            font_spec,
+            horizontal_spacing=h_space,
+            vertical_spacing=v_space,
+            visible=visible,
+        )
+        if visible is None:
+            usable = "unknown"
+        else:
+            usable = f"{visible[0]:.0f}x{visible[1]:.0f}"
+        print(f"{cols}x{rows}\t{mode}\tusable={usable}\tfont={font_spec}")
+        return 0
     if cmd == "write-meta":
         # write-meta OUT.json iterm_version [host]
         if len(argv) not in (4, 5):

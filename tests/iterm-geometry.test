@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# Adaptive iTerm Columns/Rows (preferred vs quarter of usable area).
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+prefs_py="${root}/iterm2/_prefs.py"
+readonly prefs_py
+
+_assert_str_eq()
+{
+    local label="$1" got="$2" want="$3"
+    if [[ "$got" == "$want" ]]; then
+        pass_case "$label"
+    else
+        fail_case "$label (got '$got' want '$want')"
+    fi
+}
+
+printf '\n=== preferred on authoring-sized display ===\n'
+got="$(
+    INIT_FILES_ITERM_VISIBLE_FRAME=3008x1662 python3 - <<'PY' "$prefs_py"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("prefs", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+cols, rows, mode = m.compute_adaptive_grid(
+    m.PREFERRED_COLUMNS,
+    m.PREFERRED_ROWS,
+    "MesloLGSNFM-Regular 15",
+    visible=(3008.0, 1662.0),
+)
+print(f"{cols}x{rows}:{mode}")
+PY
+)"
+_assert_str_eq 'authoring display keeps 300x80' "$got" '300x80:preferred'
+
+printf '\n=== slightly larger keeps preferred ===\n'
+got="$(
+    python3 - <<'PY' "$prefs_py"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("prefs", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+cols, rows, mode = m.compute_adaptive_grid(
+    m.PREFERRED_COLUMNS,
+    m.PREFERRED_ROWS,
+    "MesloLGSNFM-Regular 15",
+    visible=(3200.0, 1800.0),
+)
+print(f"{cols}x{rows}:{mode}")
+PY
+)"
+_assert_str_eq 'larger display keeps preferred' "$got" '300x80:preferred'
+
+printf '\n=== smaller display uses quarter mode ===\n'
+got="$(
+    python3 - <<'PY' "$prefs_py"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("prefs", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+cols, rows, mode = m.compute_adaptive_grid(
+    m.PREFERRED_COLUMNS,
+    m.PREFERRED_ROWS,
+    "MesloLGSNFM-Regular 15",
+    visible=(1440.0, 900.0),
+)
+print(f"{mode}:{cols}:{rows}")
+assert mode == "quarter", mode
+assert cols < m.PREFERRED_COLUMNS, cols
+assert rows < m.PREFERRED_ROWS, rows
+assert cols >= m.GEOMETRY_MIN_COLUMNS, cols
+assert rows >= m.GEOMETRY_MIN_ROWS, rows
+print("ok")
+PY
+)"
+_assert_str_eq 'laptop-sized display quarters' "$(printf '%s\n' "$got" | tail -n1)" 'ok'
+
+printf '\n=== curate restores preferred grid ===\n'
+got="$(
+    python3 - <<'PY' "$prefs_py"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("prefs", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+raw = {
+    "New Bookmarks": [
+        {
+            "Name": "Default",
+            "Columns": 120,
+            "Rows": 40,
+            "Normal Font": "MesloLGSNFM-Regular 15",
+            "Command": "/bin/bash",
+        }
+    ]
+}
+out = m.curate(raw)
+prof = out["New Bookmarks"][0]
+assert "Command" not in prof
+assert prof["Columns"] == m.PREFERRED_COLUMNS
+assert prof["Rows"] == m.PREFERRED_ROWS
+print("ok")
+PY
+)"
+_assert_str_eq 'export curate pins preferred Columns/Rows' "$got" 'ok'
+
+printf '\n=== merge applies adaptive Columns/Rows ===\n'
+got="$(
+    INIT_FILES_ITERM_VISIBLE_FRAME=1440x900 python3 - <<'PY' "$prefs_py"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("prefs", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+curated = {
+    "New Bookmarks": [
+        {
+            "Name": "Default",
+            "Columns": m.PREFERRED_COLUMNS,
+            "Rows": m.PREFERRED_ROWS,
+            "Normal Font": "MesloLGSNFM-Regular 15",
+            "Horizontal Spacing": 1.0,
+            "Vertical Spacing": 1.0,
+        }
+    ]
+}
+merged = m.merge({}, curated)
+prof = merged["New Bookmarks"][0]
+assert prof["Columns"] < m.PREFERRED_COLUMNS
+assert prof["Rows"] < m.PREFERRED_ROWS
+# Curated input must not be mutated.
+assert curated["New Bookmarks"][0]["Columns"] == m.PREFERRED_COLUMNS
+print(f"{prof['Columns']}x{prof['Rows']}")
+PY
+)"
+if [[ "$got" =~ ^[0-9]+x[0-9]+$ ]]; then
+    pass_case "merge writes quarter grid ($got)"
+else
+    fail_case "merge quarter grid (got '$got')"
+fi
+
+test_summary
