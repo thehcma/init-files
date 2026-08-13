@@ -47,7 +47,7 @@ Glyphs (`❯`, ``) need a **Nerd Font** in the terminal that draws them:
 | Ubuntu GUI terminal (GNOME Terminal, Terminator, …) | Install Meslo into `~/.local/share/fonts`, `fc-cache -f`, then pick **MesloLGS Nerd Font Mono** in the profile |
 | Raw Linux VT (`Ctrl+Alt+F*`) | Limited PSF fonts — Nerd glyphs will not render reliably; use a GUI terminal or SSH from iTerm |
 
-Each iTerm pane title bar embeds the status bar (no extra row on splits): **left** is the Cursor Agent short session id while `agent` is running (`user.agentsession`; cleared when it exits), **right** is `local` or the hop hostname after `cssh` / `cesh` / `cmsh` (`user.hostlabel`). Cmd-Q / reopen iTerm after `refresh_iterm_settings` if an existing window still has the old chrome.
+Each iTerm pane title bar embeds the status bar (no extra row on splits): **left** is the Cursor Agent short session id while `agent` is running (`user.agentsession`; cleared when it exits), **right** is `local` or the hop hostname after `cssh` / `cesh` / `cmsh` (`user.hostlabel` — remote shells use the same host label as PS1 / `_init_host_label`, i.e. macOS ComputerName). Cmd-Q / reopen iTerm after `refresh_iterm_settings` if an existing window still has the old chrome.
 
 ```bash
 # Ubuntu GUI terminal — same family as iTerm (see also vim/README.md)

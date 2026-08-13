@@ -209,11 +209,105 @@ Then re-check: provision_init_files   # or bootstrap_host
 EOF
 }
 
+# True when $1 is a GitHub HTTPS remote (github.com or gist.github.com).
+init_files_git_url_is_github_https()
+{
+    local url="${1:-}"
+    case "$url" in
+        https://github.com/*|https://gist.github.com/*|http://github.com/*|http://gist.github.com/*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# Point git at `gh auth git-credential` for github.com HTTPS (clears inherited
+# osxkeychain for those hosts). Requires gh already authenticated.
+# Returns 0 when configured; 1 when gh/git missing or not logged in.
+init_files_configure_gh_git_credential()
+{
+    local git_bin gh_bin gh_helper='!gh auth git-credential'
+
+    git_bin="$(command -v git 2>/dev/null || true)"
+    gh_bin="$(command -v gh 2>/dev/null || true)"
+    [[ -n "$git_bin" && -x "$git_bin" ]] || return 1
+    [[ -n "$gh_bin" && -x "$gh_bin" ]] || return 1
+    "$gh_bin" auth status >/dev/null 2>&1 || return 1
+
+    "$git_bin" config --global --unset-all credential.https://github.com.helper 2>/dev/null || true
+    "$git_bin" config --global --unset-all credential.https://gist.github.com.helper 2>/dev/null || true
+    "$git_bin" config --global --add credential.https://github.com.helper '' || true
+    "$git_bin" config --global --add credential.https://github.com.helper "$gh_helper" || true
+    "$git_bin" config --global --add credential.https://gist.github.com.helper '' || true
+    "$git_bin" config --global --add credential.https://gist.github.com.helper "$gh_helper" || true
+    return 0
+}
+
+# Before cloning a GitHub HTTPS private overlay: require gh auth (2FA-capable via
+# `gh auth login`), wire git-credential, never fall back to username/password.
+# Non-GitHub / SSH URLs → no-op success. Returns 0 when ready; 1 on failure.
+init_files_ensure_github_https_auth_for_clone()
+{
+    local repo="${1:-}"
+    local gh_bin auth_err
+
+    init_files_git_url_is_github_https "$repo" || return 0
+
+    gh_bin="$(command -v gh 2>/dev/null || true)"
+    if [[ -z "$gh_bin" || ! -x "$gh_bin" ]]; then
+        log "ERROR    GitHub HTTPS overlay clone needs the GitHub CLI (gh)"
+        log "         Install gh, then: gh auth login"
+        log "         (Password prompts cannot satisfy 2FA — use gh auth instead.)"
+        return 1
+    fi
+
+    if ! "$gh_bin" auth status >/dev/null 2>&1; then
+        log "WARN     gh is not authenticated (private GitHub repos need a token)"
+        if [[ -t 0 && -t 2 ]] && declare -F prompt_yn > /dev/null 2>&1; then
+            cat >&2 <<'EOF'
+
+GitHub HTTPS for a private overlay uses gh (supports 2FA / SSO).
+Username/password prompts will not work — run gh auth login instead.
+
+EOF
+            if prompt_yn "Run gh auth login now? [Y/n]"; then
+                log "Running  gh auth login…"
+                if ! "$gh_bin" auth login; then
+                    log "ERROR    gh auth login failed or was cancelled"
+                    return 1
+                fi
+            else
+                log "ERROR    skip gh auth — cannot clone private HTTPS overlay without credentials"
+                return 1
+            fi
+        else
+            log "ERROR    run: gh auth login   then retry (non-interactive / no TTY)"
+            return 1
+        fi
+    fi
+
+    if ! "$gh_bin" auth status >/dev/null 2>&1; then
+        auth_err="$("$gh_bin" auth status 2>&1 || true)"
+        log "ERROR    gh still not authenticated after login"
+        [[ -n "$auth_err" ]] && printf '%s\n' "$auth_err" >&2
+        return 1
+    fi
+
+    if ! init_files_configure_gh_git_credential; then
+        log "ERROR    could not configure git to use gh auth git-credential"
+        return 1
+    fi
+    log "OK       GitHub HTTPS via gh auth git-credential (no username/password prompt)"
+    return 0
+}
+
 # Attempt one clone of the private overlay. Requires log; prompt_line helpful.
 # Returns 0 on successful clone (does not verify .ssh materials).
 init_files_try_clone_private_config()
 {
-    local dir repo git_bin parent
+    local dir repo git_bin parent clone_err rc
 
     dir="$(init_files_private_config_dir)"
     git_bin="$(command -v git 2>/dev/null || true)"
@@ -246,16 +340,48 @@ init_files_try_clone_private_config()
     fi
     init_files_remember_config_repo_url "$repo" || true
 
+    init_files_ensure_github_https_auth_for_clone "$repo" || return 1
+
     parent="$(dirname "$dir")"
     mkdir -p "$parent" || return 1
     log "Cloning  $repo -> $dir"
-    if "$git_bin" clone --depth 1 --branch main "$repo" "$dir" 2>/dev/null \
-        || "$git_bin" clone --depth 1 "$repo" "$dir" 2>/dev/null; then
+    # Fail closed on missing credentials (no username/password prompt); surface git stderr.
+    clone_err="$(mktemp "${TMPDIR:-/tmp}/init-files-config-clone.XXXXXX")" || clone_err=""
+    rc=1
+    if [[ -n "$clone_err" ]]; then
+        if GIT_TERMINAL_PROMPT=0 "$git_bin" clone --depth 1 --branch main "$repo" "$dir" 2>"$clone_err" \
+            || GIT_TERMINAL_PROMPT=0 "$git_bin" clone --depth 1 "$repo" "$dir" 2>"$clone_err"; then
+            rc=0
+        fi
+    else
+        if GIT_TERMINAL_PROMPT=0 "$git_bin" clone --depth 1 --branch main "$repo" "$dir" \
+            || GIT_TERMINAL_PROMPT=0 "$git_bin" clone --depth 1 "$repo" "$dir"; then
+            rc=0
+        fi
+    fi
+    if [[ $rc -eq 0 ]]; then
+        [[ -n "$clone_err" ]] && rm -f "$clone_err"
         log "OK       cloned private config overlay"
         return 0
     fi
 
-    log "ERROR    clone failed — check URL / auth (try: gh auth login), then retry"
+    log "ERROR    clone failed"
+    if [[ -n "$clone_err" && -s "$clone_err" ]]; then
+        printf '%s\n' "---- git clone stderr ----" >&2
+        cat "$clone_err" >&2 || true
+        printf '%s\n' "--------------------------" >&2
+        rm -f "$clone_err"
+    fi
+    if init_files_git_url_is_github_https "$repo"; then
+        log "         Check URL access and: gh auth status"
+        log "         Re-auth if needed: gh auth login"
+    else
+        log "         Check URL / SSH keys (try: cache_ssh), then retry"
+    fi
+    # Remove partial clone dirs left by a failed git clone.
+    if [[ -e "$dir" && ! -d "$dir/.git" ]]; then
+        rm -rf "$dir" 2>/dev/null || true
+    fi
     return 1
 }
 
@@ -306,8 +432,14 @@ init_files_prompt_config_repo_url()
 {
     local url=""
 
+    cat >&2 <<'EOF'
+Private config git URL (HTTPS or SSH).
+  Example: https://github.com/OWNER/private-config.git
+       or: git@github.com:OWNER/private-config.git
+EOF
+
     if declare -F prompt_line > /dev/null 2>&1; then
-        url="$(prompt_line 'Private config git URL (HTTPS or SSH):')"
+        url="$(prompt_line 'URL:')"
         printf '%s\n' "$url"
         return 0
     fi
@@ -316,7 +448,7 @@ init_files_prompt_config_repo_url()
         return 1
     fi
     while [[ -z "$url" ]]; do
-        printf '%s ' 'Private config git URL (HTTPS or SSH):' >&2
+        printf '%s ' 'URL:' >&2
         read -r url || return 1
         url="$(printf '%s' "$url" | tr -d '[:space:]')"
     done

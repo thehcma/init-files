@@ -55,15 +55,35 @@ _assert_str_eq 'plain shell is local' "$label" 'local'
 _reset_remote_cache
 SSH_CONNECTION='1.2.3.4 1234 5.6.7.8 22'
 export SSH_CONNECTION
+# Without prompt helpers, falls back to hostname -s (same as pre-ComputerName path).
 label="$(init_files_iterm_session_host_label)"
 host="$(hostname -s 2>/dev/null || hostname)"
-_assert_str_eq 'SSH_CONNECTION uses hostname' "$label" "$host"
+_assert_str_eq 'SSH_CONNECTION falls back to hostname' "$label" "$host"
+
+# Prefer the same resolver as PS1 when available (ComputerName on macOS).
+# shellcheck disable=SC2317 # stub called via declare -F from lib
+_init_host_label() { printf '%s\n' 'Prompt-Host'; }
+_reset_remote_cache
+SSH_CONNECTION='1.2.3.4 1234 5.6.7.8 22'
+export SSH_CONNECTION
+label="$(init_files_iterm_session_host_label)"
+_assert_str_eq 'SSH uses _init_host_label when defined' "$label" 'Prompt-Host'
+unset -f _init_host_label
+
+# shellcheck disable=SC2317 # stub called via declare -F from lib
+_init_files_raw_host_label() { printf '%s\n' 'Raw-ComputerName'; }
+_reset_remote_cache
+SSH_CONNECTION='1.2.3.4 1234 5.6.7.8 22'
+export SSH_CONNECTION
+label="$(init_files_iterm_session_host_label)"
+_assert_str_eq 'SSH uses _init_files_raw_host_label' "$label" 'Raw-ComputerName'
+unset -f _init_files_raw_host_label
 
 _reset_remote_cache
 ET_VERSION='6.2.9'
 export ET_VERSION
 label="$(init_files_iterm_session_host_label)"
-_assert_str_eq 'ET_VERSION uses hostname' "$label" "$host"
+_assert_str_eq 'ET_VERSION falls back to hostname' "$label" "$host"
 
 _reset_remote_cache
 SSH_TTY=/dev/ttys001

@@ -2071,10 +2071,10 @@ ensure_github_https_credentials()
 {
     # Use `gh auth git-credential` for GitHub HTTPS. Seeding osxkeychain caused
     # repeated Keychain ACL dialogs (get+store per git op), especially from
-    # non-Terminal parents (Cursor/agent). Empty helper clears inherited
-    # system osxkeychain so github.com never hits it.
+    # non-Terminal parents (Cursor/agent). Shared helper in lib/config_paths.
     local git_bin="${1:-}"
-    local gh_bin gh_helper='!gh auth git-credential'
+    local gh_bin
+    local gh_helper='!gh auth git-credential'
 
     gh_bin="$(command -v gh 2>/dev/null || true)"
     [[ -n "$gh_bin" && -x "$gh_bin" ]] || {
@@ -2087,6 +2087,16 @@ ensure_github_https_credentials()
         return 0
     fi
 
+    if declare -F init_files_configure_gh_git_credential > /dev/null 2>&1; then
+        if init_files_configure_gh_git_credential; then
+            log "OK       GitHub HTTPS via gh auth git-credential"
+            return 0
+        fi
+        log "WARN     failed to configure gh auth git-credential"
+        return 0
+    fi
+
+    # Fallback if config_paths was not sourced (should not happen in provision).
     "$git_bin" config --global --unset-all credential.https://github.com.helper 2>/dev/null || true
     "$git_bin" config --global --unset-all credential.https://gist.github.com.helper 2>/dev/null || true
     "$git_bin" config --global --add credential.https://github.com.helper '' || true
@@ -2166,6 +2176,10 @@ warn_if_github_key_missing()
     log "         Or: provision_init_files --github-https if this host uses gh/HTTPS instead."
 }
 
+# GitHub transport (HTTPS credential helper / SSH insteadOf) before private
+# overlay clone so HTTPS clones use gh auth instead of username/password.
+ensure_github_git_transport
+
 init_files_ensure_private_config_repo "$(( quiet == 0 ))" || true
 # Hint when overlay clone is behind cached origin/main (full pull is daily -q).
 if [[ $quiet -eq 0 ]] && declare -F init_files_private_config_behind_cached > /dev/null 2>&1 \
@@ -2190,7 +2204,6 @@ if [[ -f "$ssh_hosts_snippet" && -f "$ssh_hosts_snippet_legacy" ]]; then
 fi
 install_github_ssh_snippet
 ensure_github_known_hosts
-ensure_github_git_transport
 warn_if_github_key_missing
 
 # ~/.bashrc is a symlink into the clone so refresh_init_files only needs to git pull.

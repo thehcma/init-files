@@ -2,6 +2,8 @@
 # shellcheck shell=bash
 # Sourced by bashrc; used by tests/iterm-host-label.test.
 # Predicates return; never exit (this is sourced).
+# Remote label matches PS1: prefer _init_host_label / _init_files_raw_host_label
+# (macOS ComputerName), else hostname -s.
 
 # True when this shell is talking to iTerm2 (local or via SSH LC_* forwarding).
 init_files_iterm_is_client()
@@ -47,11 +49,24 @@ init_files_iterm_is_remote_session()
     return 1
 }
 
-# Print the pane label: "local" or the short hostname of the remote.
+# Print the pane label: "local" or the same host label as the shell prompt.
+# Remote sessions prefer `_init_host_label` / `_init_files_raw_host_label`
+# (macOS ComputerName, else short hostname) so the pane matches PS1.
 init_files_iterm_session_host_label()
 {
+    local name
+
     if init_files_iterm_is_remote_session; then
-        hostname -s 2>/dev/null || hostname 2>/dev/null || printf 'remote'
+        if declare -F _init_host_label > /dev/null 2>&1; then
+            name="$(_init_host_label)"
+        elif declare -F _init_files_raw_host_label > /dev/null 2>&1; then
+            name="$(_init_files_raw_host_label)"
+        else
+            name="$(hostname -s 2>/dev/null || hostname 2>/dev/null || true)"
+        fi
+        name="${name//$'\n'/}"
+        [[ -n "$name" ]] || name=remote
+        printf '%s' "$name"
         return 0
     fi
     printf 'local'

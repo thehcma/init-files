@@ -1220,6 +1220,17 @@ setup_https_mode()
         ensure_gh_authenticated
     fi
 
+    # Wire git → gh before any private overlay clone (config_paths may not be
+    # loaded yet; re-run after clone sources lib/config_paths if needed).
+    bootstrap_source_config_paths 2>/dev/null || true
+    if declare -F init_files_configure_gh_git_credential > /dev/null 2>&1; then
+        if init_files_configure_gh_git_credential; then
+            log "OK       GitHub HTTPS via gh auth git-credential"
+        else
+            log "WARN     could not configure gh auth git-credential yet"
+        fi
+    fi
+
     # Ensure install receives --github-https even when preference was remembered.
     if [[ $github_transport_explicit -eq 0 ]]; then
         install_args+=(--github-https)

@@ -26,6 +26,9 @@ assert_contains 'defines ensure clone helper' "$lib_text" 'init_files_ensure_pri
 assert_contains 'defines complete check' "$lib_text" 'init_files_private_config_complete()'
 assert_contains 'defines fix steps printer' "$lib_text" 'init_files_print_config_overlay_fix_steps()'
 assert_contains 'defines try clone' "$lib_text" 'init_files_try_clone_private_config()'
+assert_contains 'defines github https url check' "$lib_text" 'init_files_git_url_is_github_https()'
+assert_contains 'defines gh credential configure' "$lib_text" 'init_files_configure_gh_git_credential()'
+assert_contains 'defines gh auth for clone' "$lib_text" 'init_files_ensure_github_https_auth_for_clone()'
 assert_contains 'defines identity parser' "$lib_text" 'init_files_github_identity_files_from_template()'
 assert_contains 'defines missing ssh report' "$lib_text" 'init_files_report_missing_config_ssh()'
 assert_contains 'defines remember url' "$lib_text" 'init_files_remember_config_repo_url()'
@@ -371,6 +374,61 @@ if [[ "$got" == 'https://github.com/OWNER/private-config' ]]; then
     pass_case 'normalize HTTPS github URL'
 else
     fail_case "normalize HTTPS github URL (got $got)"
+fi
+
+printf '\n=== behavioral: github HTTPS URL detection ===\n'
+if init_files_git_url_is_github_https 'https://github.com/OWNER/private-config.git'; then
+    pass_case 'detects github.com HTTPS'
+else
+    fail_case 'detects github.com HTTPS'
+fi
+if init_files_git_url_is_github_https 'https://gist.github.com/OWNER/abc'; then
+    pass_case 'detects gist.github.com HTTPS'
+else
+    fail_case 'detects gist.github.com HTTPS'
+fi
+if init_files_git_url_is_github_https 'git@github.com:OWNER/private-config.git'; then
+    fail_case 'SSH github URL is not HTTPS'
+else
+    pass_case 'SSH github URL is not HTTPS'
+fi
+if init_files_git_url_is_github_https 'https://gitlab.com/OWNER/repo.git'; then
+    fail_case 'non-github HTTPS is not github HTTPS'
+else
+    pass_case 'non-github HTTPS is not github HTTPS'
+fi
+
+# Non-github HTTPS clone auth helper is a no-op success.
+if init_files_ensure_github_https_auth_for_clone 'https://example.invalid/overlay.git'; then
+    pass_case 'auth-for-clone no-op for non-github HTTPS'
+else
+    fail_case 'auth-for-clone no-op for non-github HTTPS'
+fi
+# SSH URLs skip gh HTTPS auth.
+if init_files_ensure_github_https_auth_for_clone 'git@github.com:OWNER/private-config.git'; then
+    pass_case 'auth-for-clone no-op for SSH'
+else
+    fail_case 'auth-for-clone no-op for SSH'
+fi
+
+# Prompt text includes an example (non-TTY → fails; check source).
+if grep -Fq 'Example: https://github.com/OWNER/private-config.git' "$root/lib/config_paths"; then
+    pass_case 'URL prompt includes example'
+else
+    fail_case 'URL prompt includes example'
+fi
+# Clone path must not swallow git stderr (surface auth failures).
+if grep -Fq -- '---- git clone stderr ----' "$root/lib/config_paths"; then
+    pass_case 'clone surfaces git stderr'
+else
+    fail_case 'clone surfaces git stderr'
+fi
+# Must defer GitHub HTTPS auth to gh (no password prompt path).
+if grep -Fq 'GIT_TERMINAL_PROMPT=0' "$root/lib/config_paths" \
+    && grep -Fq 'gh auth login' "$root/lib/config_paths"; then
+    pass_case 'HTTPS clone uses gh auth not password prompts'
+else
+    fail_case 'HTTPS clone uses gh auth not password prompts'
 fi
 
 # URL drift: remembered pref vs fake clone origin

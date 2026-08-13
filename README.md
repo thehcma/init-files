@@ -118,7 +118,7 @@ Interactive prompts (when no transport flag / remembered preference):
 
 `--key-from HOST` alone only fetches the preferred SSH key; GitHub transport still follows `gh` auth / flags / remembered prefs (HTTPS preferred).
 
-When shared SSH materials are desired, bootstrap/provision may also prompt for your **private config overlay** git URL (remembered; never hardcoded in this repo).
+When shared SSH materials are desired, bootstrap/provision may also prompt for your **private config overlay** git URL (remembered; never hardcoded in this repo). Example: `https://github.com/OWNER/private-config.git`. For GitHub HTTPS overlays, the clone path checks `gh auth status`, offers `gh auth login` when needed (2FA/SSO), wires `gh auth git-credential`, and surfaces clone errors — it does not fall back to username/password prompts.
 
 **3) Only after** the `=== bootstrap_host verify ===` block shows `bashrc: … OK`:
 
@@ -452,7 +452,9 @@ User-specific SSH materials and policy live in a **private config overlay** (not
 
 | Path | Role |
 | --- | --- |
-| `~/.local/share/config` | Git clone of your private overlay (`INIT_FILES_CONFIG_REPO` / remembered URL) |
+| `~/.local/share/config` | Git clone of your private overlay (`INIT_FILES_CONFIG_REPO` / remembered URL; prompted with an example when missing) |
+
+Interactive clone of a **GitHub HTTPS** overlay URL uses `gh auth` (checks status, offers `gh auth login` for 2FA/SSO, configures `gh auth git-credential`) and prints git’s stderr on failure — never username/password prompts.
 | `~/.local/share/config/.ssh/` | Templates provision installs into `~/.ssh` |
 | `~/.ssh/` | Live OpenSSH home: **private keys**, `authorized_keys`, `config`, `known_hosts` |
 
