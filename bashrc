@@ -7517,18 +7517,35 @@ function _init_files_consume_agent_pending_name()
     fi
 }
 
+# Discard pending tty typeahead after the agent TUI exits. Slash commands like
+# /exit can leak bytes into the shell (often becoming a bare "exit"), and with
+# iTerm "Close Sessions On End" that kills the tab/window.
+function _init_files_drain_tty_typeahead()
+{
+    local _chunk
+    [[ -r /dev/tty ]] || return 0
+    # read -t 0 is non-blocking: consume whatever is already queued, then stop.
+    while IFS= read -r -t 0 -n 1024 _chunk < /dev/tty 2>/dev/null; do
+        :
+    done
+}
+
 # Run Cursor agent CLI then always clear pane agent chrome (normal exit, signals).
 # Local and remote (ssh/et/mosh) panes both rely on OSC to this tty.
 function _init_files_run_agent_with_chrome_cleanup()
 {
-    local rc=0
-    # EXIT covers normal return; also clear explicitly after so a nested trap
-    # reset cannot skip cleanup. INT/TERM: agent usually exits itself first.
+    local rc=0 prev_exit_trap=""
+    # Preserve history_finalize (or any prior EXIT trap); do not trap - EXIT.
+    prev_exit_trap="$(trap -p EXIT 2>/dev/null || true)"
     trap 'clear_agent_iterm_badge' EXIT
     "$@"
     rc=$?
     trap - EXIT
+    if [[ -n "$prev_exit_trap" ]]; then
+        eval "$prev_exit_trap"
+    fi
     clear_agent_iterm_badge
+    _init_files_drain_tty_typeahead
     return "$rc"
 }
 
