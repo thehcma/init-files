@@ -7868,7 +7868,7 @@ function resume_agent_session()
                     --delimiter=$'\t' \
                     --with-nth=2.. \
                     --prompt='agent session > ' \
-                    --header='pane label · updated · cwd · last prompt  (enter to resume)' \
+                    --header='label (fixed)  updated  cwd  last prompt' \
                 | cut -f1
         )"
         [[ -n "$picked" ]] || {

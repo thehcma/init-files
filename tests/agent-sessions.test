@@ -63,7 +63,6 @@ fake = [
     }
 ]
 with mock.patch.object(m, "iter_sessions", return_value=fake):
-    # Capture stdout
     import io, contextlib
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
@@ -73,11 +72,55 @@ with mock.patch.object(m, "iter_sessions", return_value=fake):
     assert "\t" in line
     _id, display = line.split("\t", 1)
     assert _id.startswith("4c4432a2")
-    assert display.startswith("4c4432a2:ITerm Host Display"), display
+    assert display.lstrip().startswith("4c4432a2:ITerm Host Display"), display
     assert "(unnamed)" not in display
 print("ok")
 PY
 )"
 _assert_str_eq 'fzf shows pane-style title' "$got" 'ok'
+
+printf '\n=== fzf columns are fixed width ===\n'
+got="$(
+    python3 - <<'PY' "$py"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("asess", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+def col_starts(display: str) -> list[int]:
+    # Columns are joined with two spaces; recover starts from known widths.
+    w = [m.FZF_LABEL_W, m.FZF_TIME_W, m.FZF_CWD_W, m.FZF_PROMPT_W]
+    starts = [0]
+    pos = 0
+    for i, width in enumerate(w[:-1]):
+        pos += width + 2
+        starts.append(pos)
+    return starts
+
+a = m.fzf_display({
+    "id": "aaaaaaaa-1111",
+    "updated_ms": 1_700_000_000_000,
+    "name": "",
+    "title": "Short",
+    "cwd": "/a",
+    "latest": "x",
+})
+b = m.fzf_display({
+    "id": "bbbbbbbb-2222",
+    "updated_ms": 1_700_000_100_000,
+    "name": "very-long-user-label-that-will-clip",
+    "title": "",
+    "cwd": "/Users/Henrique.Andrade/work/ai/repository-helpers/deep",
+    "latest": "a much longer last prompt that should also clip for alignment",
+})
+assert len(a) == len(b), (len(a), len(b), a, b)
+assert col_starts(a) == col_starts(b)
+# time column starts at same index and looks like a date on both
+ts = m.FZF_LABEL_W + 2
+assert a[ts:ts+4].isdigit() and b[ts:ts+4].isdigit()
+print("ok")
+PY
+)"
+_assert_str_eq 'fzf fixed column widths' "$got" 'ok'
 
 test_summary

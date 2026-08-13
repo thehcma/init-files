@@ -51,6 +51,25 @@ def clip(text: str, n: int = 72) -> str:
     return text[: n - 1] + "…"
 
 
+def fit(text: str, width: int) -> str:
+    """Clip to width and left-pad so fzf columns align in a monospace font."""
+    text = " ".join((text or "").split())
+    if width <= 0:
+        return ""
+    if len(text) > width:
+        if width == 1:
+            return text[:1]
+        return text[: width - 1] + "…"
+    return text.ljust(width)
+
+
+# Fixed fzf column widths (pane label · time · cwd · last prompt).
+FZF_LABEL_W = 36
+FZF_TIME_W = 16
+FZF_CWD_W = 32
+FZF_PROMPT_W = 44
+
+
 def session_label(row: dict) -> str:
     """Friendly name: user label, else Cursor auto title (pane / statusline)."""
     user = (row.get("name") or "").strip()
@@ -201,6 +220,17 @@ def cmd_list(argv: list[str]) -> int:
     return 0
 
 
+def fzf_display(row: dict) -> str:
+    """Fixed-width columns matching the resume_agent_session fzf header."""
+    parts = [
+        fit(pane_style_label(row), FZF_LABEL_W),
+        fit(fmt_time(int(row.get("updated_ms") or 0)), FZF_TIME_W),
+        fit(row.get("cwd") or "-", FZF_CWD_W),
+        fit(row.get("latest") or "-", FZF_PROMPT_W),
+    ]
+    return "  ".join(parts).replace("\t", " ")
+
+
 def cmd_fzf(argv: list[str]) -> int:
     """Emit TSV lines for fzf: id<TAB>display (pane-style label first)."""
     named_only = "--named" in argv
@@ -213,14 +243,7 @@ def cmd_fzf(argv: list[str]) -> int:
         key=lambda r: (0 if (r.get("name") or "").strip() else 1, -int(r.get("updated_ms") or 0))
     )
     for r in rows:
-        label = pane_style_label(r)
-        display = (
-            f"{label}  ·  {fmt_time(r['updated_ms'])}  ·  "
-            f"{clip(r.get('cwd') or '-', 36)}  ·  {clip(r.get('latest') or '-', 48)}"
-        )
-        # Keep tabs out of the display field.
-        display = display.replace("\t", " ")
-        print(f"{r['id']}\t{display}")
+        print(f"{r['id']}\t{fzf_display(r)}")
     return 0
 
 
