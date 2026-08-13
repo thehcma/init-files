@@ -43,6 +43,9 @@ TOP_LEVEL_KEEP = frozenset(
         "ShowPaneTitles",
         "ShowPaneTitlesEvenIfOnlyOnePane",
         "StatusBarPosition",
+        # When true (iTerm default), Cmd-N reuses last-closed window size and
+        # ignores profile Columns/Rows — keep false so adaptive grid applies.
+        "RememberWindowPositions",
     }
 )
 
@@ -120,6 +123,12 @@ def merge(existing: dict[str, Any], curated: dict[str, Any]) -> dict[str, Any]:
         else:
             merged[key] = value
     apply_adaptive_geometry(merged)
+    # Drop remembered frames so a full quit does not resurrect old pixel sizes
+    # ahead of profile Columns/Rows (see RememberWindowPositions).
+    for key in list(merged):
+        if str(key).startswith("NSWindow Frame iTerm Window"):
+            del merged[key]
+    merged.pop("NoSyncSavedWindowPositions", None)
     return merged
 
 

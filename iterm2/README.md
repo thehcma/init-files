@@ -19,12 +19,14 @@ Shell functions are Darwin-only (fail on Linux). Scripts stay runnable under `~/
 
 - Profiles (`New Bookmarks`): fonts, ANSI/UI colors, `Keyboard Map`, mouse reporting, Option-key sends, etc.
   - **Default grid** preferred `300×80` when the main display’s usable area is at least as large as the authoring monitor (~3008×1662 points); otherwise ~¼ of usable area (½×½), derived from the profile font. **Normal Font** Meslo LGS Nerd Font Mono **15**. Export always stores the preferred max; install/merge applies the host-adaptive size.
+  - **`RememberWindowPositions` off** so new windows use that profile grid instead of the last-closed window’s pixel size. **New tabs** still inherit the current window (iTerm behavior). Profile changes need a full **Cmd-Q** quit — `defaults import` alone does not reload bookmarks in a running iTerm.
   - **Left Option = Esc+** (so bash/fzf `Alt-C` / `\ec` works). **Right Option = Normal** (keep Option-C → `ç` on the right key).
   - **Shift+Enter** / **Option+Enter** → CSI-u (`[13;2u` / `[13;3u`) so Cursor Agent (and similar TUIs) insert a newline instead of submitting. Without these, iTerm often sends plain Return for Shift+Enter.
   - **Session-initiated window resize allowed** (`Disable Window Resizing` and `Disable Window Resizing by Unfocused Sessions` both false) so apps can resize without the “Allow it?” prompt — including from a split pane or background tab.
   - **Per-pane status bar** (tight packing) embedded in the pane title bar (`SeparateStatusBarsPerPane` + top position; `ShowPaneTitlesEvenIfOnlyOnePane`). Left: `\(user.agentsession)` (Cursor Agent short id from `cursor/statusline`; empty when not in an agent). Right: `\(user.hostlabel)` (`local` or hop hostname from bashrc / `cssh`/`cesh`/`cmsh`). Embedding hides iTerm’s title label — agent id must live in the status bar, not only OSC 0/1/2.
 - Daily `refresh_init_files -q` compares live curated prefs to the clone plist and offers `refresh_iterm_settings` when they differ (macOS only; no auto-apply under `-q`).
 - Global input: `PointerActions`, `FocusFollowsMouse`, Esc feedback toggles when present
+- **Remember window positions** (`RememberWindowPositions` = false) so profile Columns/Rows apply to new windows
 - **Pane title + status bar placement**: `ShowPaneTitles`, `ShowPaneTitlesEvenIfOnlyOnePane`, `SeparateStatusBarsPerPane`, `StatusBarPosition` (top, so the host label sits in the pane title)
 - **Applications in terminal may access clipboard** (`AllowClipboardAccess`) so OSC 52 / shell copy-to-clipboard is allowed without a prompt
 - `Default Bookmark Guid`

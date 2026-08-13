@@ -146,4 +146,37 @@ else
     fail_case "merge quarter grid (got '$got')"
 fi
 
+printf '\n=== merge clears remembered window frames ===\n'
+got="$(
+    python3 - <<'PY' "$prefs_py"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("prefs", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+existing = {
+    "NSWindow Frame iTerm Window 0": "0 0 100 100 0 0 1000 800 ",
+    "NoSyncSavedWindowPositions": {"0": "{0, 0}"},
+    "AllowClipboardAccess": False,
+}
+curated = {
+    "AllowClipboardAccess": True,
+    "RememberWindowPositions": False,
+    "New Bookmarks": [
+        {
+            "Name": "Default",
+            "Columns": m.PREFERRED_COLUMNS,
+            "Rows": m.PREFERRED_ROWS,
+            "Normal Font": "MesloLGSNFM-Regular 15",
+        }
+    ],
+}
+merged = m.merge(existing, curated)
+assert "NSWindow Frame iTerm Window 0" not in merged
+assert "NoSyncSavedWindowPositions" not in merged
+assert merged.get("RememberWindowPositions") is False
+print("ok")
+PY
+)"
+_assert_str_eq 'merge drops saved iTerm frames' "$got" 'ok'
+
 test_summary

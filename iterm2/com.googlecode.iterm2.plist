@@ -487,6 +487,8 @@
 			<string>kNextWindowPointerAction</string>
 		</dict>
 	</dict>
+	<key>RememberWindowPositions</key>
+	<false/>
 	<key>SeparateStatusBarsPerPane</key>
 	<true/>
 	<key>ShowPaneTitles</key>

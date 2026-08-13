@@ -337,5 +337,13 @@ if [[ -f "$repo_iterm2/ensure_iterm_badge.py" ]]; then
     "$python3_bin" "$repo_iterm2/ensure_iterm_badge.py" --curated "$curated_plist" || true
 fi
 
-printf 'Fully quit iTerm (Cmd-Q) and reopen for changes to apply.\n'
+if ps -ax -o command= 2>/dev/null \
+        | awk '$0 ~ /\/iTerm\.app\/Contents\/MacOS\/iTerm2$/ { found=1; exit } END { exit !found }'
+then
+    printf 'iTerm is running — profile grid/font stay stale until a full quit.\n' >&2
+    printf '  Quit with Cmd-Q (not just close windows), then reopen.\n' >&2
+    printf '  New tabs keep the current window size; open a new window after relaunch.\n' >&2
+else
+    printf 'Fully quit iTerm (Cmd-Q) and reopen for changes to apply.\n'
+fi
 [[ -n "$iterm_app" ]] && printf 'App: %s\n' "$iterm_app"
