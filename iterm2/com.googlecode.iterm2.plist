@@ -372,6 +372,22 @@
 				<array>
 					<dict>
 						<key>class</key>
+						<string>iTermStatusBarSwiftyStringComponent</string>
+						<key>configuration</key>
+						<dict>
+							<key>knobs</key>
+							<dict>
+								<key>base: compression resistance</key>
+								<real>1.0</real>
+								<key>base: priority</key>
+								<real>8.0</real>
+								<key>expression</key>
+								<string>\(user.agentsession)</string>
+							</dict>
+						</dict>
+					</dict>
+					<dict>
+						<key>class</key>
 						<string>iTermStatusBarSpringComponent</string>
 						<key>configuration</key>
 						<dict>
@@ -467,8 +483,16 @@
 			<string>kNextWindowPointerAction</string>
 		</dict>
 	</dict>
+	<key>SeparateStatusBarsPerPane</key>
+	<true/>
+	<key>ShowPaneTitles</key>
+	<true/>
+	<key>ShowPaneTitlesEvenIfOnlyOnePane</key>
+	<true/>
 	<key>SoundForEsc</key>
 	<false/>
+	<key>StatusBarPosition</key>
+	<integer>0</integer>
 	<key>VisualIndicatorForEsc</key>
 	<false/>
 </dict>

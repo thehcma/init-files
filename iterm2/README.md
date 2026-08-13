@@ -21,9 +21,10 @@ Shell functions are Darwin-only (fail on Linux). Scripts stay runnable under `~/
   - **Left Option = Esc+** (so bash/fzf `Alt-C` / `\ec` works). **Right Option = Normal** (keep Option-C → `ç` on the right key).
   - **Shift+Enter** / **Option+Enter** → CSI-u (`[13;2u` / `[13;3u`) so Cursor Agent (and similar TUIs) insert a newline instead of submitting. Without these, iTerm often sends plain Return for Shift+Enter.
   - **Session-initiated window resize allowed** (`Disable Window Resizing` and `Disable Window Resizing by Unfocused Sessions` both false) so apps can resize without the “Allow it?” prompt — including from a split pane or background tab.
-  - **Per-pane status bar** (tight packing): spring + `\(user.hostlabel)` on the right. bashrc reports `local`, or the short hostname after ssh/et/mosh (needs this bashrc on the remote).
+  - **Per-pane status bar** (tight packing) embedded in the pane title bar (`SeparateStatusBarsPerPane` + top position; `ShowPaneTitlesEvenIfOnlyOnePane`). Left: `\(user.agentsession)` (Cursor Agent short id from `cursor/statusline`; empty when not in an agent). Right: `\(user.hostlabel)` (`local` or hop hostname from bashrc / `cssh`/`cesh`/`cmsh`). Embedding hides iTerm’s title label — agent id must live in the status bar, not only OSC 0/1/2.
 - Daily `refresh_init_files -q` compares live curated prefs to the clone plist and offers `refresh_iterm_settings` when they differ (macOS only; no auto-apply under `-q`).
 - Global input: `PointerActions`, `FocusFollowsMouse`, Esc feedback toggles when present
+- **Pane title + status bar placement**: `ShowPaneTitles`, `ShowPaneTitlesEvenIfOnlyOnePane`, `SeparateStatusBarsPerPane`, `StatusBarPosition` (top, so the host label sits in the pane title)
 - **Applications in terminal may access clipboard** (`AllowClipboardAccess`) so OSC 52 / shell copy-to-clipboard is allowed without a prompt
 - `Default Bookmark Guid`
 - Soft metadata: iTerm version (+ export host) in `meta.json`

@@ -135,8 +135,12 @@ PY
     tab_label="$short"
     [[ -n "$name" ]] && tab_label="${short}:${name}"
     _init_files_set_session_title "$tab_label"
-    # Wipe any leftover corner badge from older init-files.
+    # Pane title label is hidden when the iTerm status bar is embedded in the
+    # pane title — put the same id in user.agentsession for the left status slot.
     if command -v base64 >/dev/null 2>&1; then
+        b64="$(printf '%s' "$tab_label" | base64 | tr -d '\n')"
+        _init_files_tty_osc "$(printf '\033]1337;SetUserVar=%s=%s\007' agentsession "$b64")"
+        # Wipe any leftover corner badge from older init-files.
         b64="$(printf '' | base64 | tr -d '\n')"
         _init_files_tty_osc "$(printf '\033]1337;SetBadgeFormat=%s\007' "$b64")"
     fi

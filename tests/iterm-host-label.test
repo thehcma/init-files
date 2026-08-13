@@ -83,6 +83,16 @@ rc=0
 init_files_iterm_is_remote_session || rc=$?
 assert_exit_nonzero 'remote cache sticks for this shell' "$rc"
 
+printf '\n=== dest / short label ===\n'
+_assert_str_eq 'cssh host' "$(init_files_iterm_dest_from_args other-host)" 'other-host'
+_assert_str_eq 'cssh -t host' "$(init_files_iterm_dest_from_args -t mac-host)" 'mac-host'
+_assert_str_eq 'cssh -p 22 host' "$(init_files_iterm_dest_from_args -p 22 user@foo.example.com)" 'user@foo.example.com'
+_assert_str_eq 'cesh --macserver host' "$(init_files_iterm_dest_from_args --macserver box)" 'box'
+_assert_str_eq 'short user@fqdn' "$(init_files_iterm_short_label 'user@foo.example.com')" 'foo'
+_assert_str_eq 'short alias' "$(init_files_iterm_short_label 'mac-host')" 'mac-host'
+_assert_str_eq 'short ipv4' "$(init_files_iterm_short_label '10.0.0.5')" '10.0.0.5'
+_assert_str_eq 'short host:port' "$(init_files_iterm_short_label 'box:2022')" 'box'
+
 printf '\n=== curated status bar layout ===\n'
 plist="${root}/iterm2/com.googlecode.iterm2.plist"
 if python3 - "$plist" <<'PY'
@@ -90,6 +100,9 @@ import plistlib, sys
 path = sys.argv[1]
 with open(path, "rb") as fh:
     data = plistlib.load(fh)
+assert data.get("SeparateStatusBarsPerPane") in (True, 1), "SeparateStatusBarsPerPane"
+assert data.get("ShowPaneTitlesEvenIfOnlyOnePane") in (True, 1), "ShowPaneTitlesEvenIfOnlyOnePane"
+assert data.get("StatusBarPosition") in (0, "0"), data.get("StatusBarPosition")
 bookmarks = data.get("New Bookmarks") or []
 assert bookmarks, "no profiles"
 profile = bookmarks[0]
@@ -101,19 +114,24 @@ assert "iTermStatusBarSpringComponent" in classes, classes
 assert "iTermStatusBarSwiftyStringComponent" in classes, classes
 adv = layout.get("advanced configuration") or {}
 assert adv.get("algorithm") == 1, adv
-found = False
+assert adv.get("remove empty components") in (True, 1), adv
+exprs = []
 for comp in comps:
     knobs = (comp.get("configuration") or {}).get("knobs") or {}
     expr = knobs.get("expression") or ""
-    if "user.hostlabel" in expr:
-        found = True
-        break
-assert found, "interpolated string missing user.hostlabel"
+    if expr:
+        exprs.append(expr)
+assert any("user.agentsession" in e for e in exprs), exprs
+assert any("user.hostlabel" in e for e in exprs), exprs
+# Agent id left of spring; hostlabel right.
+agent_i = next(i for i, e in enumerate(exprs) if "user.agentsession" in e)
+host_i = next(i for i, e in enumerate(exprs) if "user.hostlabel" in e)
+assert agent_i < host_i, exprs
 PY
 then
-    pass_case 'curated plist has right-side hostlabel'
+    pass_case 'curated plist embeds agentsession + hostlabel in pane title'
 else
-    fail_case 'curated plist has right-side hostlabel'
+    fail_case 'curated plist embeds agentsession + hostlabel in pane title'
 fi
 
 test_summary

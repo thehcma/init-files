@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 # Detect local vs ssh/et/mosh for the iTerm pane status bar host label.
 # shellcheck shell=bash
 # Sourced by bashrc; used by tests/iterm-host-label.test.
@@ -56,4 +55,75 @@ init_files_iterm_session_host_label()
         return 0
     fi
     printf 'local'
+}
+
+# First destination-like operand from ssh/et/mosh-style argv.
+init_files_iterm_dest_from_args()
+{
+    local a skip=0
+
+    for a in "$@"; do
+        if (( skip )); then
+            skip=0
+            continue
+        fi
+        case "$a" in
+            --)
+                continue
+                ;;
+            --port|--server|--command|--ssh|--identity|--jump|--config|--option)
+                skip=1
+                continue
+                ;;
+            --*=*|--*)
+                continue
+                ;;
+            -[bcDEeFIiJLlmOopQRSWw])
+                skip=1
+                continue
+                ;;
+            -*)
+                continue
+                ;;
+            *)
+                printf '%s' "$a"
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
+# Short label from a user@host[:port] / FQDN / IPv4 destination.
+init_files_iterm_short_label()
+{
+    local dest="${1-}"
+
+    dest="${dest##*@}"
+    dest="${dest#[}"
+    dest="${dest%]}"
+    if [[ "$dest" =~ ^([^:]+):[0-9]+$ ]]; then
+        dest="${BASH_REMATCH[1]}"
+    fi
+    if [[ "$dest" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ || "$dest" == *:* ]]; then
+        printf '%s' "$dest"
+        return 0
+    fi
+    printf '%s' "${dest%%.*}"
+}
+
+# OSC 1337 SetUserVar=hostlabel=base64 to this pane's tty (not stdout).
+init_files_iterm_emit_host_label()
+{
+    local label="${1-}" b64
+
+    [[ -n "$label" ]] || return 0
+    init_files_iterm_is_client || return 0
+    command -v base64 > /dev/null 2>&1 || return 0
+    b64="$(printf '%s' "$label" | base64 | tr -d '\n')"
+    if [[ -c /dev/tty ]]; then
+        printf '\033]1337;SetUserVar=%s=%s\007' hostlabel "$b64" > /dev/tty
+    else
+        printf '\033]1337;SetUserVar=%s=%s\007' hostlabel "$b64"
+    fi
 }

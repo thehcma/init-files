@@ -14,7 +14,7 @@ Many panes are **SSH into other boxes**. The corner iTerm badge is easy to mis-a
 
 ## How we disambiguate
 
-1. **While alive** — iTerm **tab title** shows the short id (`2e376153`, or `2e376153:name` if named). No corner badge (stale badges are cleared). Title is left after `agent` exits so you can still read the id.
+1. **While alive** — iTerm **tab title** (OSC) and the **left side of the pane status bar** (`user.agentsession`) show the short id (`2e376153`, or `2e376153:name` if named). No corner badge (stale badges are cleared). Both are left after `agent` exits so you can still read the id. (When the status bar is embedded in the pane title, iTerm hides the title label — the status-bar slot is required.)
 2. **Name them** — `name_agent_session jerico-dns` or start with `agent --name jerico-dns` (name appears in the title and resume lists).
 3. **After death** — `agent_sessions` / `resume_agent_session`.
 

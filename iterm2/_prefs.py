@@ -23,6 +23,10 @@ TOP_LEVEL_KEEP = frozenset(
         "HapticFeedbackForEsc",
         "SoundForEsc",
         "VisualIndicatorForEsc",
+        "SeparateStatusBarsPerPane",
+        "ShowPaneTitles",
+        "ShowPaneTitlesEvenIfOnlyOnePane",
+        "StatusBarPosition",
     }
 )
 

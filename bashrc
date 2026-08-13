@@ -463,21 +463,39 @@ function _init_is_rocky_8_1()
 # Push ssh/et/mosh vs "local" into iTerm user.hostlabel (pane status bar, right).
 function _init_iterm_report_host_label()
 {
-    local label b64
+    local label
 
     [[ $- == *i* ]] || return 0
-    declare -F init_files_iterm_is_client > /dev/null 2>&1 || return 0
-    init_files_iterm_is_client || return 0
     declare -F init_files_iterm_session_host_label > /dev/null 2>&1 || return 0
-    command -v base64 > /dev/null 2>&1 || return 0
-    [[ -t 1 ]] || return 0
+    declare -F init_files_iterm_emit_host_label > /dev/null 2>&1 || return 0
 
     label="$(init_files_iterm_session_host_label)"
     [[ -n "$label" ]] || return 0
     [[ "$label" == "${_init_iterm_host_label_last-}" ]] && return 0
-    b64="$(printf '%s' "$label" | base64 | tr -d '\n')"
-    printf '\033]1337;SetUserVar=%s=%s\007' hostlabel "$b64"
+    init_files_iterm_emit_host_label "$label" || return 0
     _init_iterm_host_label_last="$label"
+}
+
+# Set the pane label from cssh/cesh/cmsh destination before the hop blocks this shell.
+function _init_iterm_mark_hop()
+{
+    local dest label
+
+    declare -F init_files_iterm_dest_from_args > /dev/null 2>&1 || return 0
+    declare -F init_files_iterm_short_label > /dev/null 2>&1 || return 0
+    declare -F init_files_iterm_emit_host_label > /dev/null 2>&1 || return 0
+    dest="$(init_files_iterm_dest_from_args "$@")" || return 0
+    [[ -n "$dest" ]] || return 0
+    label="$(init_files_iterm_short_label "$dest")"
+    [[ -n "$label" ]] || return 0
+    init_files_iterm_emit_host_label "$label" || return 0
+    _init_iterm_host_label_last="$label"
+}
+
+function _init_iterm_unmark_hop()
+{
+    _init_iterm_host_label_last=""
+    _init_iterm_report_host_label
 }
 
 # Source bash-completion when already installed. Never installs packages;
@@ -2097,7 +2115,7 @@ function _init_bind_cssh_cmsh_completion()
 # Does not shadow the et binary — use cesh explicitly for interactive hops.
 function cesh()
 {
-    local et_bin ssh_bin ssh_dir host
+    local et_bin ssh_bin ssh_dir host rc
     local -a args=()
 
     case "${1:-}" in
@@ -2153,20 +2171,26 @@ EOF
     if [[ -z "$ssh_bin" || ! -x "$ssh_bin" ]]; then
         ssh_bin="$(command -v ssh 2>/dev/null || true)"
     fi
+    _init_iterm_mark_hop "${args[@]}"
     if [[ -n "$ssh_bin" && -x "$ssh_bin" ]]; then
         ssh_dir="$(dirname -- "$ssh_bin")"
         PATH="${ssh_dir}${PATH:+:$PATH}" "$et_bin" "${args[@]}"
-        return $?
+        rc=$?
+        _init_iterm_unmark_hop
+        return "$rc"
     fi
 
     "$et_bin" "${args[@]}"
+    rc=$?
+    _init_iterm_unmark_hop
+    return "$rc"
 }
 
 # mosh with automatic preferred-key re-cache when the agent lifetime has expired.
 # Does not shadow the mosh binary — use cmsh explicitly for interactive hops.
 function cmsh()
 {
-    local mosh_bin ssh_bin arg has_ssh_opt=0 host
+    local mosh_bin ssh_bin arg has_ssh_opt=0 host rc
     local -a args=()
 
     case "${1:-}" in
@@ -2227,6 +2251,7 @@ EOF
     done
 
     # Prefer provisioned ssh for the login handshake (mosh default is bare "ssh").
+    _init_iterm_mark_hop "${args[@]}"
     if [[ "$has_ssh_opt" -eq 0 ]]; then
         ssh_bin="${init_tool_ssh:-}"
         if [[ -z "$ssh_bin" || ! -x "$ssh_bin" ]]; then
@@ -2234,11 +2259,16 @@ EOF
         fi
         if [[ -n "$ssh_bin" && -x "$ssh_bin" ]]; then
             "$mosh_bin" --ssh="$ssh_bin" "${args[@]}"
-            return $?
+            rc=$?
+            _init_iterm_unmark_hop
+            return "$rc"
         fi
     fi
 
     "$mosh_bin" "${args[@]}"
+    rc=$?
+    _init_iterm_unmark_hop
+    return "$rc"
 }
 
 function createpatch()
@@ -2279,7 +2309,7 @@ EOF
 # Does not shadow the ssh binary — use cssh explicitly for interactive hops.
 function cssh()
 {
-    local ssh_bin host
+    local ssh_bin host rc
     local -a args=()
 
     case "${1:-}" in
@@ -2326,7 +2356,11 @@ EOF
         return 1
     fi
 
+    _init_iterm_mark_hop "${args[@]}"
     "$ssh_bin" "${args[@]}"
+    rc=$?
+    _init_iterm_unmark_hop
+    return "$rc"
 }
 
 function decrypt()
