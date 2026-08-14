@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Tests for cda/cdb dir listing + completion filters.
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+
+# bashrc is not a lib; pull just the helpers so we do not run interactive init.
+# shellcheck disable=SC1090
+source <(sed -n \
+    -e '/^function _init_cd_work_filter_completions()/,/^}$/p' \
+    -e '/^function _init_cd_work_list_dirs()/,/^}$/p' \
+    "${root}/bashrc")
+
+tmpdir=
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
+mkdir -p \
+    "${tmpdir}/top" \
+    "${tmpdir}/nested/child" \
+    "${tmpdir}/.hidden/inside" \
+    "${tmpdir}/visible/.secret/deep" \
+    "${tmpdir}/reference-implementation/fact-finding/geico"
+
+printf '\n=== shallow list (cda) ===\n'
+got="$(_init_cd_work_list_dirs "$tmpdir" 0)"
+assert_eq 'shallow lists immediate children' "$got" \
+    $'nested\nreference-implementation\ntop\nvisible'
+assert_not_contains 'shallow omits nested child' "$got" 'nested/child'
+assert_not_contains 'shallow omits hidden' "$got" '.hidden'
+
+printf '\n=== recursive list (cdb) ===\n'
+got="$(_init_cd_work_list_dirs "$tmpdir" 1)"
+assert_contains 'recursive lists nested child' "$got" 'nested/child'
+assert_contains 'recursive lists geico' "$got" \
+    'reference-implementation/fact-finding/geico'
+assert_not_contains 'recursive prunes hidden dir' "$got" '.hidden'
+assert_not_contains 'recursive prunes hidden children' "$got" 'inside'
+assert_not_contains 'recursive prunes .secret under visible' "$got" '.secret'
+assert_not_contains 'recursive prunes deep under hidden' "$got" 'deep'
+
+printf '\n=== completion filter (cdb) ===\n'
+candidates="$(_init_cd_work_list_dirs "$tmpdir" 1)"
+got="$(printf '%s\n' "$candidates" | _init_cd_work_filter_completions 'gei')"
+assert_eq 'basename prefix gei → geico path' "$got" \
+    'reference-implementation/fact-finding/geico'
+
+got="$(printf '%s\n' "$candidates" | _init_cd_work_filter_completions 'nested/c')"
+assert_eq 'path prefix nested/c → nested/child' "$got" 'nested/child'
+
+got="$(printf '%s\n' "$candidates" | _init_cd_work_filter_completions 'nope')"
+assert_eq 'no match stays empty' "$got" ''
+
+shopt -s nocasematch
+got="$(printf '%s\n' "$candidates" | _init_cd_work_filter_completions 'GEI')"
+shopt -u nocasematch
+assert_eq 'nocasematch basename GEI → geico' "$got" \
+    'reference-implementation/fact-finding/geico'
+
+test_summary

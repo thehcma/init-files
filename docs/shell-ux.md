@@ -88,7 +88,8 @@ v **/README.md
 cda                 # picker; . = ~/work/ai
 cda rusty           # exact match, or fzf with query prefilled
 cda .               # always ~/work/ai
-cdb                 # picker; . = ~/work/brk-tech
+cdb                 # picker (any dir under ~/work/brk-tech); . = ~/work/brk-tech
+cdb gei<Tab>        # → reference-implementation/…/geico (basename match)
 cdb candidate       # exact match, or fzf with query prefilled
 cdb .               # always ~/work/brk-tech
 ```
@@ -216,7 +217,7 @@ Failures append to `…/bash/rotate.log`. Implementation: [`lib/history_rotate`]
 
 ### Always
 
-- Custom: `cda` → `complete -o filenames -F _cda cda`; `cdb` → `complete -o filenames -F _cdb cdb`
+- Custom: `cda` → `complete -o filenames -F _cda cda` (top-level only); `cdb` → `complete -o filenames -F _cdb cdb` (any depth; basename or path prefix)
 - Custom: `agent` → `_init_files_agent_complete` (wrapper `-N`/`--name` + common CLI flags/commands); `resume_agent_session` → `--named`
 
 ### Readline (interactive)

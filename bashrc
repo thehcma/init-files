@@ -205,7 +205,7 @@ function _cda()
 
 function _cdb()
 {
-    _init_cd_work_complete "${HOME}/work/brk-tech"
+    _init_cd_work_complete "${HOME}/work/brk-tech" --recursive
 }
 
 # Dirs that cda/cdb last prepended to PATH (colon-separated); cleared/replaced
@@ -253,19 +253,84 @@ function _init_cd_project_apply_script_paths()
 
 function _init_cd_work_complete()
 {
-    local cur base="${1:-}"
+    local cur base="${1:-}" recursive=0
+    local -a matches=()
+    local nocasematch_was_off=0
+    local rel
+
+    [[ "${2:-}" == --recursive ]] && recursive=1
     cur="${COMP_WORDS[COMP_CWORD]}"
     [[ -n "$base" && -d "$base" ]] || return 0
-    # compgen intentionally emits one completion per word.
-    # shellcheck disable=SC2207
-    COMPREPLY=( $(cd -- "$base" && compgen -d -- "$cur") )
+
+    if (( ! recursive )); then
+        # compgen intentionally emits one completion per word.
+        # shellcheck disable=SC2207
+        COMPREPLY=( $(cd -- "$base" && compgen -d -- "$cur") )
+        return 0
+    fi
+
+    # Match completion-ignore-case for basename / path-prefix filters.
+    shopt -q nocasematch || { nocasematch_was_off=1; shopt -s nocasematch; }
+    while IFS= read -r rel; do
+        matches+=("$rel")
+    done < <(_init_cd_work_list_dirs "$base" 1 | _init_cd_work_filter_completions "$cur")
+    (( nocasematch_was_off )) && shopt -u nocasematch
+
+    COMPREPLY=("${matches[@]}")
+}
+
+# Filter relative dir paths for cda/cdb completion. Reads candidates on stdin.
+# Matches path prefix always; when cur has no /, also matches basename prefix
+# (so `gei` → …/geico). Honors nocasematch when already set by the caller.
+function _init_cd_work_filter_completions()
+{
+    local cur="${1:-}" rel
+
+    while IFS= read -r rel; do
+        [[ -n "$rel" ]] || continue
+        if [[ "$rel" == "$cur"* ]]; then
+            printf '%s\n' "$rel"
+        elif [[ "$cur" != */* && "${rel##*/}" == "$cur"* ]]; then
+            printf '%s\n' "$rel"
+        fi
+    done
+}
+
+# Relative dir names under base for cda/cdb fzf + recursive completion.
+# recursive=1 lists any depth (cdb); otherwise immediate children only (cda).
+# Hidden names are skipped (and not descended into when recursive).
+function _init_cd_work_list_dirs()
+{
+    local base="${1:-}" recursive="${2:-0}"
+
+    [[ -n "$base" && -d "$base" ]] || return 0
+
+    {
+        if (( recursive )); then
+            find "$base" -mindepth 1 \( -name '.*' -prune -o \( -type d -o -type l \) -print \)
+        else
+            find "$base" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) ! -name '.*' -print
+        fi
+    } | while IFS= read -r path; do
+        [[ -d "$path" ]] || continue
+        printf '%s\n' "${path#"${base}/"}"
+    done | LC_ALL=C sort
 }
 
 # Shared body for cda / cdb (and future ~/work/* jumpers).
-# Usage: _init_cd_work_project <cmd> <base> [name]
+# Usage: _init_cd_work_project [--recursive] <cmd> <base> [name]
 function _init_cd_work_project()
 {
-    local cmd="${1:-cd}" base="${2:-}" base_disp target fzf_bin picked query preview_cmd list_bin
+    local cmd base base_disp target fzf_bin picked query preview_cmd list_bin recursive=0
+    local fzf_pick_help fzf_enter_noun tab_help
+
+    if [[ "${1:-}" == --recursive ]]; then
+        recursive=1
+        shift
+    fi
+
+    cmd="${1:-cd}"
+    base="${2:-}"
     shift 2 || true
 
     base_disp="$base"
@@ -275,6 +340,16 @@ function _init_cd_work_project()
         base_disp='~'
     fi
 
+    if (( recursive )); then
+        fzf_pick_help="any directory under ${base_disp}"
+        fzf_enter_noun="directory"
+        tab_help="any directory under ${base_disp} (basename or path prefix)"
+    else
+        fzf_pick_help="a project"
+        fzf_enter_noun="project"
+        tab_help="subdirectory names under ${base_disp}"
+    fi
+
     case "${1:-}" in
         -h|--help)
             cat <<EOF
@@ -282,13 +357,13 @@ Usage: ${cmd} [name]
 
 Change to a project directory under ${base_disp}.
 
-  ${cmd}              fuzzy-pick a project with fzf (falls back to ${base_disp}
-                   if fzf is missing or stdin is not a TTY)
+  ${cmd}              fuzzy-pick ${fzf_pick_help} with fzf (falls back to
+                   ${base_disp} if fzf is missing or stdin is not a TTY)
   ${cmd} .            cd to ${base_disp}
   ${cmd} <name>       cd to ${base_disp}/<name> when it exists; otherwise open
                    fzf with that string as the initial query
 
-Tab-completes subdirectory names under ${base_disp}.
+Tab-completes ${tab_help}.
 
 When entering a project, prepends that project's scripts/ and scripts/dev/
 (if present) to PATH. Leaving via ${cmd} (no args or another project), or
@@ -347,16 +422,12 @@ EOF
         {
             printf '%s\n' .
             # Include directory symlinks (-type d alone skips them on BSD/GNU find).
-            find "$base" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) ! -name '.*' -print \
-                | while IFS= read -r path; do
-                    [[ -d "$path" ]] || continue
-                    printf '%s\n' "${path#"${base}/"}"
-                done | LC_ALL=C sort
+            _init_cd_work_list_dirs "$base" "$recursive"
         } | "$fzf_bin" \
             --height=40% \
             --reverse \
             --prompt="${cmd} > " \
-            --header="$base  (enter project; . = this dir)" \
+            --header="$base  (enter ${fzf_enter_noun}; . = this dir)" \
             --preview "cd -- $(printf '%q' "$base") && $preview_cmd" \
             ${query:+--query="$query"}
     )" || true
@@ -1602,7 +1673,7 @@ function cda()
 
 function cdb()
 {
-    _init_cd_work_project cdb "${HOME}/work/brk-tech" "$@"
+    _init_cd_work_project --recursive cdb "${HOME}/work/brk-tech" "$@"
 }
 
 function cdr()
