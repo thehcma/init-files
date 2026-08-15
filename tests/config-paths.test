@@ -52,6 +52,7 @@ assert_contains 'daily check reuses config refresh' "$bashrc_text" 'refresh_init
 assert_contains 'config refresh previews commits' "$bashrc_text" 'log --oneline --decorate "$local_head..$remote_head"'
 assert_contains 'config refresh confirms update' "$bashrc_text" 'Apply this private config update and provision it? [Y/n]'
 assert_contains 'config refresh repairs clean unborn clone' "$bashrc_text" 'checkout --quiet -B main --track origin/main'
+assert_contains 'config refresh creates origin main tracking ref' "$bashrc_text" '+refs/heads/main:refs/remotes/origin/main'
 # Must not hardcode a private overlay remote in public init-files.
 if grep -Eq 'github\.com/.+/config\.git' "$root/lib/config_paths"; then
     fail_case 'no hardcoded private config git URL'

@@ -6582,11 +6582,13 @@ function refresh_init_config()
     }
     echo "refresh_init_config: checking $origin"
     if [[ "$origin" == https://* ]] && type _init_files_git_https > /dev/null 2>&1; then
-        _init_files_git_https "$git_bin" -C "$dir" fetch --quiet origin main || {
+        _init_files_git_https "$git_bin" -C "$dir" fetch --quiet origin \
+            '+refs/heads/main:refs/remotes/origin/main' || {
             echo "refresh_init_config: fetch failed" >&2
             return 1
         }
-    elif ! GIT_TERMINAL_PROMPT=0 "$git_bin" -C "$dir" fetch --quiet origin main; then
+    elif ! GIT_TERMINAL_PROMPT=0 "$git_bin" -C "$dir" fetch --quiet origin \
+        '+refs/heads/main:refs/remotes/origin/main'; then
         echo "refresh_init_config: fetch failed" >&2
         return 1
     fi
