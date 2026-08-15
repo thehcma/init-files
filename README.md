@@ -335,6 +335,7 @@ Use this whenever you want the latest `main` (bashrc / provision / rules). Full 
 ### Manual refresh
 
 ```bash
+refresh_init_config             # preview private overlay changes, confirm, pull + provision
 refresh_init_files              # pull + provision + reload this shell
 refresh_init_files -q           # daily: offer pull if main / private config moved; repair deploy drift
 refresh_init_files --no-dev     # pull, then provision --no-dev (persist non-dev mode)
@@ -375,7 +376,7 @@ Interactive shells, about once per day (`init_files_max_age_seconds` / `tool_ver
 | --- | --- |
 | Tool versions | Reprint cached diagnostic every shell (with color); rebuild at most once/day, or sooner when the background latest-* cache updates. No `[N]+ Done` job noise. Skipped on `--no-dev` hosts. |
 | init-files `main` | `git ls-remote` vs local HEAD; if behind, prompt `Update now? [Y/n]` (TTY) or print `Run: refresh_init_files`. |
-| Private config overlay | Same for `~/.local/share/config` `origin/main` (plus remembered-URL drift); if behind, prompt pull then optional `provision_init_files`. |
+| Private config overlay | Same for `~/.local/share/config` `origin/main` (plus remembered-URL drift); if behind, use `refresh_init_config` to preview changes, confirm, pull, and provision. |
 | Local deploy drift | Compare this host’s deployables to the clone: `~/.bashrc` / `~/.vimrc` symlinks, retired `~/.gvimrc`, login-profile bashrc hook, broken `tools.<hostname>` paths, and (macOS) curated iTerm prefs vs `iterm2/com.googlecode.iterm2.plist`. If anything differs, prompt `Repair now with …? [Y/n]` (TTY) or print `Run: …`. Narrow fixes use `refresh_vimrc` / `refresh_iterm_settings`; otherwise `refresh_init_files`. Never auto-applies under `-q`. |
 | Remote check failure | If `ls-remote` fails (offline/auth/network), print a flag + hint (`cache_ssh` or `gh auth`); on a TTY offer `Retry … remote check now? [Y/n]` (may run `cache_ssh` on SSH hosts). Still runs the private-config and deploy-drift checks even when the init-files probe fails. Non-TTY prints a later hint. |
 
@@ -507,8 +508,7 @@ chmod 644 ~/.ssh/<name>.pub
 6. Push the overlay; on each host:
 
 ```bash
-git -C ~/.local/share/config pull --ff-only
-refresh_init_files    # or: ./provision_init_files
+refresh_init_config
 ```
 
 Overrides: `INIT_FILES_SSH_KEY` (absolute path), `INIT_FILES_SSH_KEY_BASENAME` (for `--key-from`), remembered `~/.config/init-files/ssh-key-basename`. Legacy `INIT_FILES_HOUSE_KEY*` still work.
@@ -518,8 +518,9 @@ Overrides: `INIT_FILES_SSH_KEY` (absolute path), `INIT_FILES_SSH_KEY_BASENAME` (
 | Trigger | Behavior |
 | --- | --- |
 | `./provision_init_files` | Always merges/installs overlay SSH materials when present |
+| `refresh_init_config` | Fetches and previews incoming commits/files, confirms, fast-forwards the overlay, provisions it, and reloads the current shell |
 | `refresh_init_files` (full) | Always re-runs `provision_init_files` after pull |
-| `refresh_init_files -q` (daily) | May offer to pull the private overlay when `main` moved, then provision |
+| `refresh_init_files -q` (daily) | When the private overlay moved, invokes the same `refresh_init_config` preview/confirm/update flow |
 | `bootstrap_host` | May prompt for overlay git URL, clone it, then provision |
 
 ### GitHub transport (HTTPS when gh is logged in, else SSH)

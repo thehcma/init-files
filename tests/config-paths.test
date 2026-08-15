@@ -11,6 +11,7 @@ test_init
 
 root="$(cd "${script_dir}/.." && pwd)"
 readonly root
+bashrc_text="$(<"${root}/bashrc")"
 
 # shellcheck disable=SC1091
 source "${root}/lib/config_paths"
@@ -44,6 +45,11 @@ assert_contains 'defines basename ok helper' "$lib_text" 'init_files_ssh_key_bas
 assert_contains 'defines url normalize' "$lib_text" 'init_files_normalize_git_repo_url()'
 assert_contains 'defines url drift check' "$lib_text" 'init_files_private_config_url_drifted()'
 assert_contains 'defines pull helper' "$lib_text" 'init_files_pull_private_config()'
+assert_contains 'defines config refresh command' "$bashrc_text" 'function refresh_init_config()'
+assert_contains 'daily check reuses config refresh' "$bashrc_text" 'refresh_init_config || true'
+# shellcheck disable=SC2016
+assert_contains 'config refresh previews commits' "$bashrc_text" 'log --oneline --decorate "$local_head..$remote_head"'
+assert_contains 'config refresh confirms update' "$bashrc_text" 'Apply this private config update and provision it? [Y/n]'
 # Must not hardcode a private overlay remote in public init-files.
 if grep -Eq 'github\.com/.+/config\.git' "$root/lib/config_paths"; then
     fail_case 'no hardcoded private config git URL'

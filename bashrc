@@ -10,6 +10,7 @@
 #
 # Install / refresh:
 #   ~/.local/share/init-files/provision_init_files [--no-dev|--dev]  # tools + symlinks + ssh
+#   refresh_init_config                                      # preview + pull private overlay
 #   refresh_init_files [--no-dev|--dev] [--github-https|--github-ssh] [--no-iterm]
 #   refresh_init_files -q                                   # daily: offer pull / deploy repair
 #   --no-dev persists under ~/.config/init-files/no-dev.<hostname>
@@ -6381,12 +6382,12 @@ _init_files_offer_remote_check_retry()
     return 1
 }
 
-# Daily quiet path: private config overlay URL drift or origin/main moved.
-# Suggests pull (and provision to re-merge SSH) — never auto-applies.
+# Daily quiet path: detect private config URL drift or origin/main movement.
+# Outdated overlays use refresh_init_config for the shared preview/update flow.
 _init_files_offer_private_config_update()
 {
     local dir origin preferred np no git_bin local_head remote_head
-    local local_short remote_short reply drifted=0 behind=0
+    local drifted=0
 
     declare -F init_files_private_config_dir > /dev/null 2>&1 || return 0
     dir="$(init_files_private_config_dir)"
@@ -6428,48 +6429,15 @@ _init_files_offer_private_config_update()
 
     local_head="$("$git_bin" -C "$dir" rev-parse HEAD 2>/dev/null || true)"
     if [[ -n "$local_head" && "$local_head" != "$remote_head" ]]; then
-        behind=1
-        local_short="$("$git_bin" -C "$dir" rev-parse --short HEAD 2>/dev/null || echo '?')"
-        remote_short=$(printf '%.7s' "$remote_head")
-        echo "init-files: private config main has moved (local $local_short → $remote_short)." >&2
-        if [[ -t 0 && -t 2 ]]; then
-            printf 'Pull private config now? [Y/n] ' >&2
-            read -r reply || reply=n
-            case "$reply" in
-                ''|y|Y|yes|YES)
-                    if declare -F init_files_pull_private_config > /dev/null 2>&1; then
-                        if init_files_pull_private_config; then
-                            echo "Pulled ${dir/#$HOME/~}. Re-merge SSH materials:" >&2
-                            echo "  ${init_files_dir:-$HOME/.local/share/init-files}/provision_init_files" >&2
-                            if [[ -t 0 && -t 2 ]]; then
-                                printf 'Run provision_init_files now? [Y/n] ' >&2
-                                read -r reply || reply=n
-                                case "$reply" in
-                                    ''|y|Y|yes|YES)
-                                        "${init_files_dir:-$HOME/.local/share/init-files}/provision_init_files" || true
-                                        ;;
-                                    *) echo "Skipped provision." >&2 ;;
-                                esac
-                            fi
-                        else
-                            echo "Pull failed. Check auth / remote URL, then:" >&2
-                            echo "  git -C ${dir} pull --ff-only" >&2
-                        fi
-                    else
-                        echo "Run: git -C ${dir} pull --ff-only" >&2
-                        echo "Then: ${init_files_dir:-$HOME/.local/share/init-files}/provision_init_files" >&2
-                    fi
-                    ;;
-                *)
-                    echo "Skipped. Later: git -C ${dir} pull --ff-only && provision_init_files" >&2
-                    ;;
-            esac
+        if declare -F refresh_init_config > /dev/null 2>&1; then
+            # Periodic checks use default options.
+            # shellcheck disable=SC2119
+            refresh_init_config || true
         else
-            echo "Run: git -C ${dir} pull --ff-only && provision_init_files" >&2
+            echo "init-files: private config update available. Run: refresh_init_config" >&2
         fi
     fi
 
-    [[ $drifted -eq 1 || $behind -eq 1 ]]
     return 0
 }
 
@@ -6560,6 +6528,140 @@ _init_files_warn_tools_reinstall_if_needed()
     printf '%s\n' "$reasons" | sed 's/^/  /' >&2
     printf '  Fix: %s/provision_init_files && source ~/.bashrc\n' "$clone_dir" >&2
     printf '  (or: refresh_init_files — pulls main and always provisions)\n' >&2
+}
+
+# shellcheck disable=SC2120
+function refresh_init_config()
+{
+    local dir git_bin origin local_head remote_head provision_cmd reply
+    local local_short remote_short
+
+    case "${1:-}" in
+        -h|--help)
+            echo "Usage: refresh_init_config" >&2
+            echo "  Fetch and preview private config updates, confirm, fast-forward," >&2
+            echo "  run provision_init_files, and reload ~/.bashrc." >&2
+            return 0
+            ;;
+        '') ;;
+        *)
+            echo "ERROR: refresh_init_config: unknown option: $1" >&2
+            return 1
+            ;;
+    esac
+    [[ $# -le 1 ]] || {
+        echo "ERROR: refresh_init_config: unexpected arguments" >&2
+        return 1
+    }
+
+    declare -F init_files_private_config_dir > /dev/null 2>&1 || {
+        echo "refresh_init_config: private config helpers unavailable; run refresh_init_files" >&2
+        return 1
+    }
+    dir="$(init_files_private_config_dir)"
+    [[ -d "$dir/.git" ]] || {
+        echo "refresh_init_config: ${dir/#$HOME/~} is not a git clone" >&2
+        echo "  Set INIT_FILES_CONFIG_REPO, then run provision_init_files interactively." >&2
+        return 1
+    }
+
+    git_bin="${init_tool_git:-}"
+    if [[ -z "$git_bin" || ! -x "$git_bin" ]]; then
+        git_bin="$(command -v git 2>/dev/null || true)"
+    fi
+    [[ -n "$git_bin" && -x "$git_bin" ]] || {
+        echo "refresh_init_config: git not available (run provision_init_files)" >&2
+        return 1
+    }
+
+    if declare -F init_files_private_config_url_drifted > /dev/null 2>&1 \
+        && init_files_private_config_url_drifted; then
+        echo "refresh_init_config: configured URL differs from clone origin" >&2
+        echo "  configured: $(init_files_config_repo_url 2>/dev/null || true)" >&2
+        echo "  origin:     $(init_files_private_config_origin_url 2>/dev/null || true)" >&2
+        echo "  Update the origin or configured URL before refreshing." >&2
+        return 1
+    fi
+
+    origin="$("$git_bin" -C "$dir" remote get-url origin 2>/dev/null || true)"
+    [[ -n "$origin" ]] || {
+        echo "refresh_init_config: overlay clone has no origin remote" >&2
+        return 1
+    }
+    echo "refresh_init_config: checking $origin"
+    if [[ "$origin" == https://* ]] && type _init_files_git_https > /dev/null 2>&1; then
+        _init_files_git_https "$git_bin" -C "$dir" fetch --quiet origin main || {
+            echo "refresh_init_config: fetch failed" >&2
+            return 1
+        }
+    elif ! GIT_TERMINAL_PROMPT=0 "$git_bin" -C "$dir" fetch --quiet origin main; then
+        echo "refresh_init_config: fetch failed" >&2
+        return 1
+    fi
+
+    local_head="$("$git_bin" -C "$dir" rev-parse HEAD 2>/dev/null || true)"
+    remote_head="$("$git_bin" -C "$dir" rev-parse origin/main 2>/dev/null || true)"
+    [[ -n "$local_head" && -n "$remote_head" ]] || {
+        echo "refresh_init_config: could not resolve local HEAD and origin/main" >&2
+        return 1
+    }
+    local_short="$("$git_bin" -C "$dir" rev-parse --short "$local_head")"
+    remote_short="$("$git_bin" -C "$dir" rev-parse --short "$remote_head")"
+    if [[ "$local_head" == "$remote_head" ]]; then
+        echo "refresh_init_config: private config at $local_short (already current)"
+        return 0
+    fi
+    if ! "$git_bin" -C "$dir" merge-base --is-ancestor "$local_head" "$remote_head"; then
+        echo "refresh_init_config: local HEAD cannot fast-forward to origin/main" >&2
+        echo "  Resolve the overlay history manually in $dir." >&2
+        return 1
+    fi
+
+    printf 'refresh_init_config: private config %s -> %s would add:\n' "$local_short" "$remote_short"
+    "$git_bin" --no-pager -C "$dir" log --oneline --decorate "$local_head..$remote_head"
+    printf '\nChanged files:\n'
+    "$git_bin" --no-pager -C "$dir" diff --stat "$local_head..$remote_head"
+
+    if [[ ! -t 0 || ! -t 2 ]]; then
+        echo "refresh_init_config: update available; rerun interactively to confirm" >&2
+        return 1
+    fi
+    printf 'Apply this private config update and provision it? [Y/n] ' >&2
+    read -r reply || reply=n
+    case "$reply" in
+        ''|y|Y|yes|YES) ;;
+        *)
+            echo "refresh_init_config: skipped"
+            return 0
+            ;;
+    esac
+
+    "$git_bin" -C "$dir" merge --ff-only "$remote_head" || {
+        echo "refresh_init_config: fast-forward failed" >&2
+        return 1
+    }
+    provision_cmd="${init_files_dir:-${XDG_DATA_HOME:-$HOME/.local/share}/init-files}/provision_init_files"
+    [[ -x "$provision_cmd" ]] || {
+        echo "refresh_init_config: missing $provision_cmd" >&2
+        return 1
+    }
+    echo "refresh_init_config: running ${provision_cmd##*/}"
+    "$provision_cmd" || {
+        echo "refresh_init_config: provision failed" >&2
+        return 1
+    }
+
+    if [[ $- == *i* && -z "${_init_files_in_config_refresh_reload:-}" ]]; then
+        _init_files_in_config_refresh_reload=1
+        INIT_FILES_BASHRC_FORCE=1
+        # The deployed bashrc path is runtime-generated.
+        # shellcheck disable=SC1091
+        if . "${HOME}/.bashrc"; then
+            echo "refresh_init_config: reloaded ~/.bashrc in this shell"
+        fi
+        unset _init_files_in_config_refresh_reload
+    fi
+    return 0
 }
 
 function refresh_init_files()
