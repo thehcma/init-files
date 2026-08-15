@@ -6651,10 +6651,19 @@ function refresh_init_config()
     esac
 
     if [[ $initial_checkout -eq 1 ]]; then
-        "$git_bin" -C "$dir" checkout --quiet -B main --track origin/main || {
+        if [[ -z "$("$git_bin" -C "$dir" config --get-all remote.origin.fetch 2>/dev/null || true)" ]]; then
+            "$git_bin" -C "$dir" config --add remote.origin.fetch \
+                '+refs/heads/*:refs/remotes/origin/*' || {
+                echo "refresh_init_config: could not restore origin fetch configuration" >&2
+                return 1
+            }
+        fi
+        if ! "$git_bin" -C "$dir" config branch.main.remote origin \
+            || ! "$git_bin" -C "$dir" config branch.main.merge refs/heads/main \
+            || ! "$git_bin" -C "$dir" checkout --quiet -B main "$remote_head"; then
             echo "refresh_init_config: initial checkout of origin/main failed" >&2
             return 1
-        }
+        fi
     else
         "$git_bin" -C "$dir" merge --ff-only "$remote_head" || {
             echo "refresh_init_config: fast-forward failed" >&2
