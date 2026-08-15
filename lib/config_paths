@@ -729,6 +729,31 @@ init_files_git_resolve_commit()
     "$git_bin" -C "$dir" rev-parse --verify "${revision}^{commit}" 2>/dev/null
 }
 
+# True when the worktree equals $3, allowing ignored host-local files. Uses a
+# temporary index so an unborn clone's real index and files remain untouched.
+init_files_git_worktree_matches_commit()
+{
+    local git_bin="${1:-}" dir="${2:-}" commit="${3:-}"
+    local index_file extras rc=0
+
+    [[ -n "$git_bin" && -x "$git_bin" && -d "$dir" && -n "$commit" ]] || return 1
+    index_file="$(mktemp "${TMPDIR:-/tmp}/init-files-config-index.XXXXXX")" || return 1
+    rm -f "$index_file" || return 1
+
+    GIT_INDEX_FILE="$index_file" "$git_bin" -C "$dir" read-tree "$commit" 2>/dev/null || rc=$?
+    if [[ $rc -eq 0 ]]; then
+        GIT_INDEX_FILE="$index_file" "$git_bin" -C "$dir" diff --quiet --no-ext-diff \
+            || rc=$?
+    fi
+    if [[ $rc -eq 0 ]]; then
+        extras="$(GIT_INDEX_FILE="$index_file" "$git_bin" -C "$dir" \
+            ls-files --others --exclude-standard 2>/dev/null || true)"
+        [[ -z "$extras" ]] || rc=1
+    fi
+    rm -f "$index_file"
+    return "$rc"
+}
+
 # Normalize a git remote for equality checks (HTTPS ↔ SSH for github.com).
 init_files_normalize_git_repo_url()
 {

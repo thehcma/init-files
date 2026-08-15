@@ -6527,6 +6527,7 @@ function refresh_init_config()
     local dir git_bin origin local_head remote_head provision_cmd reply
     local empty_tree local_short remote_short worktree_status
     local initial_checkout=0
+    local matching_unborn_worktree=0
 
     case "${1:-}" in
         -h|--help)
@@ -6603,9 +6604,13 @@ function refresh_init_config()
     if [[ -z "$local_head" ]]; then
         worktree_status="$("$git_bin" -C "$dir" status --porcelain --untracked-files=all 2>/dev/null || true)"
         if [[ -n "$worktree_status" ]]; then
-            echo "refresh_init_config: overlay has no local commit and its worktree is not empty" >&2
-            echo "  Move or commit the files in $dir, then retry." >&2
-            return 1
+            if init_files_git_worktree_matches_commit "$git_bin" "$dir" "$remote_head"; then
+                matching_unborn_worktree=1
+            else
+                echo "refresh_init_config: overlay has no local commit and its files differ from origin/main" >&2
+                echo "  Move or commit the files in $dir, then retry." >&2
+                return 1
+            fi
         fi
         initial_checkout=1
         local_short='unborn'
@@ -6657,6 +6662,11 @@ function refresh_init_config()
                 echo "refresh_init_config: could not restore origin fetch configuration" >&2
                 return 1
             }
+        fi
+        if [[ $matching_unborn_worktree -eq 1 ]] \
+            && ! "$git_bin" -C "$dir" read-tree "$remote_head"; then
+            echo "refresh_init_config: could not adopt the matching overlay files" >&2
+            return 1
         fi
         if ! "$git_bin" -C "$dir" config branch.main.remote origin \
             || ! "$git_bin" -C "$dir" config branch.main.merge refs/heads/main \

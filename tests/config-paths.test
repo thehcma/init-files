@@ -46,6 +46,7 @@ assert_contains 'defines url normalize' "$lib_text" 'init_files_normalize_git_re
 assert_contains 'defines url drift check' "$lib_text" 'init_files_private_config_url_drifted()'
 assert_contains 'defines pull helper' "$lib_text" 'init_files_pull_private_config()'
 assert_contains 'defines verified commit resolver' "$lib_text" 'init_files_git_resolve_commit()'
+assert_contains 'defines unborn worktree matcher' "$lib_text" 'init_files_git_worktree_matches_commit()'
 assert_contains 'defines config refresh command' "$bashrc_text" 'function refresh_init_config()'
 assert_contains 'daily check reuses config refresh' "$bashrc_text" 'refresh_init_config || true'
 # shellcheck disable=SC2016
@@ -90,6 +91,27 @@ if [[ "$got" =~ ^[0-9a-f]{40}$ ]]; then
 else
     fail_case "committed HEAD resolves SHA (got $got)"
 fi
+
+mkdir -p "${tmpdir}/matching-source" "${tmpdir}/matching-unborn"
+"$git_bin" -C "${tmpdir}/matching-source" init --quiet
+printf 'shared\n' >"${tmpdir}/matching-source/shared.conf"
+"$git_bin" -C "${tmpdir}/matching-source" add shared.conf
+"$git_bin" -C "${tmpdir}/matching-source" \
+    -c user.name=test -c user.email=test@example.invalid commit --quiet -m initial
+matching_commit="$("$git_bin" -C "${tmpdir}/matching-source" rev-parse HEAD)"
+"$git_bin" -C "${tmpdir}/matching-unborn" init --quiet
+"$git_bin" -C "${tmpdir}/matching-unborn" fetch --quiet \
+    "${tmpdir}/matching-source" "$matching_commit"
+cp "${tmpdir}/matching-source/shared.conf" "${tmpdir}/matching-unborn/shared.conf"
+rc=0
+init_files_git_worktree_matches_commit \
+    "$git_bin" "${tmpdir}/matching-unborn" "$matching_commit" || rc=$?
+assert_exit_0 'matching unborn worktree accepted' "$rc"
+printf 'different\n' >"${tmpdir}/matching-unborn/shared.conf"
+rc=0
+init_files_git_worktree_matches_commit \
+    "$git_bin" "${tmpdir}/matching-unborn" "$matching_commit" || rc=$?
+assert_exit_nonzero 'different unborn worktree rejected' "$rc"
 
 printf '\n=== behavioral: config repo url preference ===\n'
 export INIT_FILES_CONFIG_REPO_PREF="${tmpdir}/config-repo"
