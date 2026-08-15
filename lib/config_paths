@@ -719,6 +719,16 @@ init_files_remember_house_key_basename()
 # Private config overlay freshness (URL drift + origin/main moved)
 # ---------------------------------------------------------------------------
 
+# Resolve $3 only when it names a commit. Unlike plain rev-parse, this prints
+# nothing for an unborn symbolic HEAD.
+init_files_git_resolve_commit()
+{
+    local git_bin="${1:-}" dir="${2:-}" revision="${3:-}"
+
+    [[ -n "$git_bin" && -x "$git_bin" && -d "$dir" && -n "$revision" ]] || return 1
+    "$git_bin" -C "$dir" rev-parse --verify "${revision}^{commit}" 2>/dev/null
+}
+
 # Normalize a git remote for equality checks (HTTPS ↔ SSH for github.com).
 init_files_normalize_git_repo_url()
 {
@@ -773,9 +783,9 @@ init_files_private_config_behind_cached()
     [[ -d "$dir/.git" ]] || return 1
     git_bin="$(command -v git 2>/dev/null || true)"
     [[ -n "$git_bin" && -x "$git_bin" ]] || return 1
-    head="$("$git_bin" -C "$dir" rev-parse HEAD 2>/dev/null || true)"
-    remote="$("$git_bin" -C "$dir" rev-parse origin/main 2>/dev/null || true)"
-    [[ -n "$head" && -n "$remote" && "$head" != "$remote" ]]
+    head="$(init_files_git_resolve_commit "$git_bin" "$dir" HEAD 2>/dev/null || true)"
+    remote="$(init_files_git_resolve_commit "$git_bin" "$dir" origin/main 2>/dev/null || true)"
+    [[ -n "$remote" && "$head" != "$remote" ]]
 }
 
 # Fast-forward pull private config overlay. Returns 0 on success.

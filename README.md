@@ -478,7 +478,7 @@ Provision also ensures `Include ~/.ssh/config.d/*.conf` at the top of `~/.ssh/co
 - **Host aliases** / per-host `IdentityFile` paths go in overlay `config.hosts`.
 - **GitHub SSH** IdentityFile preference order goes in overlay `config.github`.
 
-Prefer **passphrase-protected** keys. Load with `cache_ssh` before scripted / BatchMode hops. For interactive logins after the agent lifetime expires, use **`cssh`** (`ssh`), **`cmsh`** (`mosh` — sleep/IP roaming; needs `mosh-server`), or **`cesh`** (`et` / Eternal Terminal — reconnectable like mosh but a normal pty so CSI-u / Shift+Enter work; needs `etserver` on the remote). With no arguments, all three fuzzy-pick from SSH config + cleartext **known_hosts** via **fzf** when available. None replace the underlying binaries.
+Prefer **passphrase-protected** keys. Load with `cache_ssh` before scripted / BatchMode hops. For interactive logins after the agent lifetime expires, use **`cssh`** (`ssh`), **`cmsh`** (`mosh` — sleep/IP roaming; needs `mosh-server`), or **`cesh`** (`et` / Eternal Terminal — reconnectable like mosh but a normal pty so CSI-u / Shift+Enter work; needs `etserver` on the remote). Each resolves the destination through `ssh -G` and caches that host's effective `IdentityFile`; `SSH_CACHE_KEY` remains an explicit global override. With no arguments, all three fuzzy-pick from SSH config + cleartext **known_hosts** via **fzf** when available. None replace the underlying binaries.
 
 ### Adding a new key
 
@@ -518,7 +518,7 @@ Overrides: `INIT_FILES_SSH_KEY` (absolute path), `INIT_FILES_SSH_KEY_BASENAME` (
 | Trigger | Behavior |
 | --- | --- |
 | `./provision_init_files` | Always merges/installs overlay SSH materials when present |
-| `refresh_init_config` | Fetches and previews incoming commits/files, confirms, fast-forwards the overlay, provisions it, and reloads the current shell |
+| `refresh_init_config` | Fetches and previews incoming commits/files, confirms, fast-forwards the overlay (or initializes a clean clone with an unborn `HEAD` from `origin/main`), provisions it, and reloads the current shell |
 | `refresh_init_files` (full) | Always re-runs `provision_init_files` after pull |
 | `refresh_init_files -q` (daily) | When the private overlay moved, invokes the same `refresh_init_config` preview/confirm/update flow |
 | `bootstrap_host` | May prompt for overlay git URL, clone it, then provision |

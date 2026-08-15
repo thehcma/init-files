@@ -101,10 +101,60 @@ assert_exit_nonzero 'directory refused' "$rc"
 HOME="$old_home"
 export HOME
 
+printf '\n=== ssh host key resolution ===\n'
+HOME="$tmpdir"
+export HOME
+host_key="${tmpdir}/.ssh/id_host"
+fallback_key="${tmpdir}/.ssh/id_fallback"
+printf 'host\n' >"$host_key"
+printf 'fallback\n' >"$fallback_key"
+chmod 600 "$host_key" "$fallback_key"
+fake_ssh="${tmpdir}/fake-ssh"
+cat >"$fake_ssh" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1" == -G && "$2" == -- && "$3" == target-alias ]] || exit 2
+printf '%s\n' \
+    'identityfile ~/.ssh/missing' \
+    'identityfile %d/.ssh/id_host' \
+    'identityfile ~/.ssh/id_fallback'
+EOF
+chmod 755 "$fake_ssh"
+
+got="$(init_files_ssh_key_for_host "$fake_ssh" target-alias)"
+assert_eq 'effective host IdentityFile selected' "$host_key" "$got"
+rc=0
+init_files_ssh_key_for_host "$fake_ssh" wrong-host >/dev/null 2>&1 || rc=$?
+assert_exit_nonzero 'ssh -G failure propagated' "$rc"
+
+cache_calls="${tmpdir}/cache-calls"
+cache_ssh()
+{
+    printf '%s\n' "$*" >>"$cache_calls"
+    [[ "${1-}" != -c ]]
+}
+init_tool_ssh="$fake_ssh"
+export init_tool_ssh
+init_files_cache_ssh_for_host target-alias
+got="$(<"$cache_calls")"
+assert_contains 'host cache checks exact key' "$got" "-c $host_key"
+assert_contains 'host cache adds exact key' "$got" "$host_key"
+
+: >"$cache_calls"
+SSH_CACHE_KEY="$fallback_key"
+export SSH_CACHE_KEY
+init_files_cache_ssh_for_host target-alias
+got="$(<"$cache_calls")"
+assert_eq 'SSH_CACHE_KEY keeps global override' '-c' "$got"
+unset SSH_CACHE_KEY
+HOME="$old_home"
+export HOME
+
 printf '\n=== static ===\n'
 lib_text="$(<"${root}/lib/interactive_input")"
 assert_contains 'defines bt_program_ok' "$lib_text" 'init_files_bt_program_ok()'
 assert_contains 'defines ssh_timeout_ok' "$lib_text" 'init_files_ssh_timeout_ok()'
 assert_contains 'defines ssh_key_usable' "$lib_text" 'init_files_ssh_key_usable()'
+assert_contains 'defines ssh_key_for_host' "$lib_text" 'init_files_ssh_key_for_host()'
+assert_contains 'defines cache_ssh_for_host' "$lib_text" 'init_files_cache_ssh_for_host()'
 
 test_summary

@@ -74,3 +74,45 @@ init_files_ssh_key_usable()
     (( g == 0 )) || return 1
     return 0
 }
+
+# Print the first existing IdentityFile from OpenSSH's effective config for $2.
+# Usage: init_files_ssh_key_for_host ssh_binary user@host
+init_files_ssh_key_for_host()
+{
+    local ssh_cmd="${1-}" host="${2-}"
+    local option key
+
+    init_files_bt_program_ok "$ssh_cmd" || return 1
+    [[ -n "$host" ]] || return 1
+
+    while read -r option key; do
+        [[ "$option" == identityfile && -n "$key" && "$key" != none ]] || continue
+        key="${key/#\~/$HOME}"
+        key="${key//\%d/$HOME}"
+        [[ -f "$key" ]] || continue
+        printf '%s\n' "$key"
+        return 0
+    done < <("$ssh_cmd" -G -- "$host" 2>/dev/null)
+    return 1
+}
+
+# Ensure the key selected by this host's SSH config is loaded in ssh-agent.
+# SSH_CACHE_KEY remains an explicit global override.
+init_files_cache_ssh_for_host()
+{
+    local host="${1-}" ssh_cmd key=""
+
+    if [[ -z "${SSH_CACHE_KEY:-}" && -n "$host" ]]; then
+        ssh_cmd="${init_tool_ssh:-}"
+        if ! init_files_bt_program_ok "$ssh_cmd"; then
+            ssh_cmd="$(command -v ssh 2>/dev/null || true)"
+        fi
+        key="$(init_files_ssh_key_for_host "$ssh_cmd" "$host" 2>/dev/null || true)"
+    fi
+
+    if [[ -n "$key" ]]; then
+        cache_ssh -c "$key" 2>/dev/null || cache_ssh "$key"
+        return $?
+    fi
+    cache_ssh -c 2>/dev/null || cache_ssh
+}

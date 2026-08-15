@@ -45,11 +45,13 @@ assert_contains 'defines basename ok helper' "$lib_text" 'init_files_ssh_key_bas
 assert_contains 'defines url normalize' "$lib_text" 'init_files_normalize_git_repo_url()'
 assert_contains 'defines url drift check' "$lib_text" 'init_files_private_config_url_drifted()'
 assert_contains 'defines pull helper' "$lib_text" 'init_files_pull_private_config()'
+assert_contains 'defines verified commit resolver' "$lib_text" 'init_files_git_resolve_commit()'
 assert_contains 'defines config refresh command' "$bashrc_text" 'function refresh_init_config()'
 assert_contains 'daily check reuses config refresh' "$bashrc_text" 'refresh_init_config || true'
 # shellcheck disable=SC2016
 assert_contains 'config refresh previews commits' "$bashrc_text" 'log --oneline --decorate "$local_head..$remote_head"'
 assert_contains 'config refresh confirms update' "$bashrc_text" 'Apply this private config update and provision it? [Y/n]'
+assert_contains 'config refresh repairs clean unborn clone' "$bashrc_text" 'checkout --quiet -B main --track origin/main'
 # Must not hardcode a private overlay remote in public init-files.
 if grep -Eq 'github\.com/.+/config\.git' "$root/lib/config_paths"; then
     fail_case 'no hardcoded private config git URL'
@@ -66,9 +68,27 @@ fi
 # Stub log for ensure/report paths under tests.
 log() { printf '%s\n' "$*" >&2; }
 
-printf '\n=== behavioral: config repo url preference ===\n'
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
+
+printf '\n=== behavioral: verified git commits ===\n'
+git_bin="$(command -v git)"
+mkdir -p "${tmpdir}/unborn"
+"$git_bin" -C "${tmpdir}/unborn" init --quiet
+got="$(init_files_git_resolve_commit "$git_bin" "${tmpdir}/unborn" HEAD 2>/dev/null || true)"
+if [[ -z "$got" ]]; then
+    pass_case 'unborn HEAD resolves empty'
+else
+    fail_case "unborn HEAD resolves empty (got $got)"
+fi
+got="$(init_files_git_resolve_commit "$git_bin" "$root" HEAD)"
+if [[ "$got" =~ ^[0-9a-f]{40}$ ]]; then
+    pass_case 'committed HEAD resolves SHA'
+else
+    fail_case "committed HEAD resolves SHA (got $got)"
+fi
+
+printf '\n=== behavioral: config repo url preference ===\n'
 export INIT_FILES_CONFIG_REPO_PREF="${tmpdir}/config-repo"
 unset INIT_FILES_CONFIG_REPO 2>/dev/null || true
 if init_files_config_repo_url >/dev/null 2>&1; then

@@ -2187,7 +2187,7 @@ function _init_bind_cssh_cmsh_completion()
     fi
 }
 
-# Eternal Terminal with automatic preferred-key re-cache when the agent lifetime expired.
+# Eternal Terminal with automatic destination-key re-cache when the agent lifetime expired.
 # Does not shadow the et binary — use cesh explicitly for interactive hops.
 function cesh()
 {
@@ -2199,8 +2199,8 @@ function cesh()
             cat <<'EOF'
 Usage: cesh [et-args...]
 
-Like et (Eternal Terminal), but ensures the preferred passphrase SSH key is loaded
-in ssh-agent first. If the key is missing or its cache_ssh lifetime expired,
+Like et (Eternal Terminal), but ensures the destination host's configured
+IdentityFile is loaded in ssh-agent first. If its cache_ssh lifetime expired,
 runs cache_ssh (prompts on a TTY), then invokes et with the same arguments.
 
 With no arguments on a TTY, fuzzy-picks a host from ~/.ssh/config
@@ -2221,17 +2221,14 @@ EOF
             ;;
     esac
 
-    # Quiet check; only prompt when the key is not in the agent.
-    if ! cache_ssh -c 2>/dev/null; then
-        cache_ssh || return $?
-    fi
-
     if [[ $# -eq 0 ]]; then
         host="$(_init_ssh_fzf_pick_host cesh)" || return $?
         args=("$host")
     else
         args=("$@")
     fi
+    host="$(init_files_iterm_dest_from_args "${args[@]}" 2>/dev/null || true)"
+    init_files_cache_ssh_for_host "$host" || return $?
 
     et_bin="${init_tool_et:-}"
     if [[ -z "$et_bin" || ! -x "$et_bin" ]]; then
@@ -2262,7 +2259,7 @@ EOF
     return "$rc"
 }
 
-# mosh with automatic preferred-key re-cache when the agent lifetime has expired.
+# mosh with automatic destination-key re-cache when the agent lifetime has expired.
 # Does not shadow the mosh binary — use cmsh explicitly for interactive hops.
 function cmsh()
 {
@@ -2274,9 +2271,9 @@ function cmsh()
             cat <<'EOF'
 Usage: cmsh [mosh-args...]
 
-Like mosh, but ensures the preferred passphrase SSH key is loaded in ssh-agent first.
-If the key is missing or its cache_ssh lifetime expired, runs cache_ssh
-(prompts on a TTY), then invokes mosh with the same arguments.
+Like mosh, but ensures the destination host's configured IdentityFile is loaded
+in ssh-agent first. If its cache_ssh lifetime expired, runs cache_ssh (prompts
+on a TTY), then invokes mosh with the same arguments.
 
 With no arguments on a TTY, fuzzy-picks a host from ~/.ssh/config
 (config.d) and cleartext ~/.ssh/known_hosts via fzf, then connects.
@@ -2296,17 +2293,14 @@ EOF
             ;;
     esac
 
-    # Quiet check; only prompt when the key is not in the agent.
-    if ! cache_ssh -c 2>/dev/null; then
-        cache_ssh || return $?
-    fi
-
     if [[ $# -eq 0 ]]; then
         host="$(_init_ssh_fzf_pick_host cmsh)" || return $?
         args=("$host")
     else
         args=("$@")
     fi
+    host="$(init_files_iterm_dest_from_args "${args[@]}" 2>/dev/null || true)"
+    init_files_cache_ssh_for_host "$host" || return $?
 
     mosh_bin="${init_tool_mosh:-}"
     if [[ -z "$mosh_bin" || ! -x "$mosh_bin" ]]; then
@@ -2381,7 +2375,7 @@ EOF
     gpg_symmetric --decrypt -- "${target}.crypt"
 }
 
-# ssh with automatic preferred-key re-cache when the agent lifetime has expired.
+# ssh with automatic destination-key re-cache when the agent lifetime has expired.
 # Does not shadow the ssh binary — use cssh explicitly for interactive hops.
 function cssh()
 {
@@ -2393,9 +2387,9 @@ function cssh()
             cat <<'EOF'
 Usage: cssh [ssh-args...]
 
-Like ssh, but ensures the preferred passphrase SSH key is loaded in ssh-agent first.
-If the key is missing or its cache_ssh lifetime expired, runs cache_ssh
-(prompts on a TTY), then invokes ssh with the same arguments.
+Like ssh, but ensures the destination host's configured IdentityFile is loaded
+in ssh-agent first. If its cache_ssh lifetime expired, runs cache_ssh (prompts
+on a TTY), then invokes ssh with the same arguments.
 
 With no arguments on a TTY, fuzzy-picks a host from ~/.ssh/config
 (config.d) and cleartext ~/.ssh/known_hosts via fzf, then connects.
@@ -2411,17 +2405,14 @@ EOF
             ;;
     esac
 
-    # Quiet check; only prompt when the key is not in the agent.
-    if ! cache_ssh -c 2>/dev/null; then
-        cache_ssh || return $?
-    fi
-
     if [[ $# -eq 0 ]]; then
         host="$(_init_ssh_fzf_pick_host cssh)" || return $?
         args=("$host")
     else
         args=("$@")
     fi
+    host="$(init_files_iterm_dest_from_args "${args[@]}" 2>/dev/null || true)"
+    init_files_cache_ssh_for_host "$host" || return $?
 
     ssh_bin="${init_tool_ssh:-}"
     if [[ -z "$ssh_bin" || ! -x "$ssh_bin" ]]; then
@@ -6427,8 +6418,8 @@ _init_files_offer_private_config_update()
         return 0
     fi
 
-    local_head="$("$git_bin" -C "$dir" rev-parse HEAD 2>/dev/null || true)"
-    if [[ -n "$local_head" && "$local_head" != "$remote_head" ]]; then
+    local_head="$(init_files_git_resolve_commit "$git_bin" "$dir" HEAD 2>/dev/null || true)"
+    if [[ "$local_head" != "$remote_head" ]]; then
         if declare -F refresh_init_config > /dev/null 2>&1; then
             # Periodic checks use default options.
             # shellcheck disable=SC2119
@@ -6534,7 +6525,8 @@ _init_files_warn_tools_reinstall_if_needed()
 function refresh_init_config()
 {
     local dir git_bin origin local_head remote_head provision_cmd reply
-    local local_short remote_short
+    local empty_tree local_short remote_short worktree_status
+    local initial_checkout=0
 
     case "${1:-}" in
         -h|--help)
@@ -6599,28 +6591,48 @@ function refresh_init_config()
         return 1
     fi
 
-    local_head="$("$git_bin" -C "$dir" rev-parse HEAD 2>/dev/null || true)"
-    remote_head="$("$git_bin" -C "$dir" rev-parse origin/main 2>/dev/null || true)"
-    [[ -n "$local_head" && -n "$remote_head" ]] || {
-        echo "refresh_init_config: could not resolve local HEAD and origin/main" >&2
+    local_head="$(init_files_git_resolve_commit "$git_bin" "$dir" HEAD 2>/dev/null || true)"
+    remote_head="$(init_files_git_resolve_commit "$git_bin" "$dir" origin/main 2>/dev/null || true)"
+    [[ -n "$remote_head" ]] || {
+        echo "refresh_init_config: could not resolve origin/main after fetch" >&2
         return 1
     }
-    local_short="$("$git_bin" -C "$dir" rev-parse --short "$local_head")"
     remote_short="$("$git_bin" -C "$dir" rev-parse --short "$remote_head")"
-    if [[ "$local_head" == "$remote_head" ]]; then
-        echo "refresh_init_config: private config at $local_short (already current)"
-        return 0
-    fi
-    if ! "$git_bin" -C "$dir" merge-base --is-ancestor "$local_head" "$remote_head"; then
-        echo "refresh_init_config: local HEAD cannot fast-forward to origin/main" >&2
-        echo "  Resolve the overlay history manually in $dir." >&2
-        return 1
+    if [[ -z "$local_head" ]]; then
+        worktree_status="$("$git_bin" -C "$dir" status --porcelain --untracked-files=all 2>/dev/null || true)"
+        if [[ -n "$worktree_status" ]]; then
+            echo "refresh_init_config: overlay has no local commit and its worktree is not empty" >&2
+            echo "  Move or commit the files in $dir, then retry." >&2
+            return 1
+        fi
+        initial_checkout=1
+        local_short='unborn'
+    else
+        local_short="$("$git_bin" -C "$dir" rev-parse --short "$local_head")"
+        if [[ "$local_head" == "$remote_head" ]]; then
+            echo "refresh_init_config: private config at $local_short (already current)"
+            return 0
+        fi
+        if ! "$git_bin" -C "$dir" merge-base --is-ancestor "$local_head" "$remote_head"; then
+            echo "refresh_init_config: local HEAD cannot fast-forward to origin/main" >&2
+            echo "  Resolve the overlay history manually in $dir." >&2
+            return 1
+        fi
     fi
 
     printf 'refresh_init_config: private config %s -> %s would add:\n' "$local_short" "$remote_short"
-    "$git_bin" --no-pager -C "$dir" log --oneline --decorate "$local_head..$remote_head"
+    if [[ $initial_checkout -eq 1 ]]; then
+        "$git_bin" --no-pager -C "$dir" log --oneline --decorate "$remote_head"
+    else
+        "$git_bin" --no-pager -C "$dir" log --oneline --decorate "$local_head..$remote_head"
+    fi
     printf '\nChanged files:\n'
-    "$git_bin" --no-pager -C "$dir" diff --stat "$local_head..$remote_head"
+    if [[ $initial_checkout -eq 1 ]]; then
+        empty_tree="$("$git_bin" -C "$dir" hash-object -t tree /dev/null)"
+        "$git_bin" --no-pager -C "$dir" diff --stat "$empty_tree" "$remote_head"
+    else
+        "$git_bin" --no-pager -C "$dir" diff --stat "$local_head..$remote_head"
+    fi
 
     if [[ ! -t 0 || ! -t 2 ]]; then
         echo "refresh_init_config: update available; rerun interactively to confirm" >&2
@@ -6636,10 +6648,17 @@ function refresh_init_config()
             ;;
     esac
 
-    "$git_bin" -C "$dir" merge --ff-only "$remote_head" || {
-        echo "refresh_init_config: fast-forward failed" >&2
-        return 1
-    }
+    if [[ $initial_checkout -eq 1 ]]; then
+        "$git_bin" -C "$dir" checkout --quiet -B main --track origin/main || {
+            echo "refresh_init_config: initial checkout of origin/main failed" >&2
+            return 1
+        }
+    else
+        "$git_bin" -C "$dir" merge --ff-only "$remote_head" || {
+            echo "refresh_init_config: fast-forward failed" >&2
+            return 1
+        }
+    fi
     provision_cmd="${init_files_dir:-${XDG_DATA_HOME:-$HOME/.local/share}/init-files}/provision_init_files"
     [[ -x "$provision_cmd" ]] || {
         echo "refresh_init_config: missing $provision_cmd" >&2
