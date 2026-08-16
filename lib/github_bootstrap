@@ -163,6 +163,24 @@ bootstrap_verify_gh_auth()
     "$gh_bin" auth status >/dev/null 2>&1
 }
 
+bootstrap_verify_node_toolchain()
+{
+    local candidate npm_bin
+    local nvm_dir="${NVM_DIR:-$HOME/.nvm}"
+
+    # install_node_toolchain runs as a child, so its nvm PATH cannot update us.
+    for candidate in "$nvm_dir"/versions/node/*/bin/npm; do
+        [[ -x "$candidate" ]] || continue
+        if PATH="$(dirname "$candidate"):$PATH" "$candidate" --version >/dev/null 2>&1; then
+            return 0
+        fi
+    done
+
+    npm_bin="$(command -v npm 2>/dev/null || true)"
+    [[ -n "$npm_bin" && -x "$npm_bin" ]] || return 1
+    "$npm_bin" --version >/dev/null 2>&1
+}
+
 # Install gh from GitHub releases under ~/.local (Linux / older macOS bootstrap).
 bootstrap_install_gh_release()
 {
@@ -252,7 +270,7 @@ bootstrap_offer_node_toolchain()
         bootstrap_step_run \
             "install Node toolchain (nvm + LTS)" \
             "\"${clone_dir}/install_node_toolchain\"" \
-            'command -v npm >/dev/null 2>&1 && npm --version >/dev/null 2>&1' \
+            bootstrap_verify_node_toolchain \
             || log "WARN     Node install skipped or failed (optional)"
         return 0
     fi
@@ -260,7 +278,7 @@ bootstrap_offer_node_toolchain()
     bootstrap_step_run \
         "install Node toolchain from ${node_script}" \
         "curl -fsSL \"${node_script}\" -o /tmp/install_node_toolchain && chmod +x /tmp/install_node_toolchain && /tmp/install_node_toolchain -y" \
-        'command -v npm >/dev/null 2>&1 && npm --version >/dev/null 2>&1' \
+        bootstrap_verify_node_toolchain \
         || log "WARN     Node install skipped or failed (optional)"
 }
 

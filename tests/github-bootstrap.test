@@ -21,6 +21,7 @@ assert_contains 'defines linux sudo check' "$lib_text" 'bootstrap_linux_can_sudo
 assert_contains 'defines guided openssh' "$lib_text" 'bootstrap_guided_install_openssh()'
 assert_contains 'defines gh release install' "$lib_text" 'bootstrap_install_gh_release()'
 assert_contains 'defines node offer' "$lib_text" 'bootstrap_offer_node_toolchain()'
+assert_contains 'defines node verifier' "$lib_text" 'bootstrap_verify_node_toolchain()'
 
 printf '\n=== bootstrap_host wiring ===\n'
 boot_text="$(<"${root}/bootstrap_host")"
@@ -45,6 +46,23 @@ if [[ $calls -eq 2 && $rc -eq 0 ]]; then
   pass_case 'step_run retries then succeeds'
 else
   fail_case "step_run retries then succeeds (calls=$calls rc=$rc)"
+fi
+
+printf '\n=== behavioral: nvm child-process verification ===\n'
+test_home="$(mktemp -d)"
+trap 'rm -rf "$test_home"' EXIT
+mkdir -p "${test_home}/.nvm/versions/node/v24.0.0/bin"
+cat > "${test_home}/.nvm/versions/node/v24.0.0/bin/npm" <<EOF
+#!/usr/bin/env bash
+printf '11.0.0\n'
+touch "${test_home}/npm-ran"
+EOF
+chmod +x "${test_home}/.nvm/versions/node/v24.0.0/bin/npm"
+if HOME="$test_home" NVM_DIR='' PATH=/usr/bin:/bin bootstrap_verify_node_toolchain \
+    && [[ -f "${test_home}/npm-ran" ]]; then
+  pass_case 'node verifier finds nvm npm outside parent PATH'
+else
+  fail_case 'node verifier finds nvm npm outside parent PATH'
 fi
 
 test_summary
