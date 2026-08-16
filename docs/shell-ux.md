@@ -257,7 +257,7 @@ On **modern macOS** and **Linux**, `provision_init_files` may offer optional `ba
 - **Alt-C** previews directory trees the same way
 - **`fif <query>`** — live ripgrep results in fzf; `bat` preview when available; Enter opens `$EDITOR` / vim at the line
 
-Older macOS keeps plain fzf binds (no brew offers for bat/lsd/rg). `fif` still works wherever `rg` + `fzf` exist. Listing aliases (`ll` / `dir` / `lld` / `llm`) prefer `lsd` when available.
+Older macOS keeps plain fzf binds (no brew offers for bat/lsd/rg). `fif` still works wherever `rg` + `fzf` exist. Listing aliases (`ll` / `dir` / `lld` / `llm`) prefer `lsd` when available. When `aria2c` is installed, `aria` provides resumable, persistent, segmented downloads without file preallocation or post-download seeding.
 
 Install hints from `./provision_init_files`:
 

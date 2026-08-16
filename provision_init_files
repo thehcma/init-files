@@ -433,7 +433,7 @@ fi
 
 # Bump when the record_tool set changes so refresh_init_files can detect drift.
 # Keep in sync with INIT_FILES_TOOLS_REVISION in bashrc.
-INIT_FILES_TOOLS_REVISION=10
+INIT_FILES_TOOLS_REVISION=11
 
 declare -a REQUIRED_MISSING=()
 declare -a OPTIONAL_MISSING=()
@@ -925,6 +925,7 @@ fi
 log
 
 if is_modern_macos; then
+    hint_aria2="brew install aria2"
     hint_gpg="brew install gnupg"
     hint_vim="brew install vim"
     hint_git="brew install git"
@@ -951,6 +952,7 @@ if is_modern_macos; then
     # Discover-only: niche hardware CLI; do not offer brew install to every host.
     hint_litra=""
 elif is_darwin; then
+    hint_aria2="install aria2 from a release or source into ~/.local (do not use Homebrew on this macOS)"
     hint_gpg="install GnuPG via system/Xcode tooling or MacGPG2 (brew often infeasible on this macOS)"
     hint_vim="use /usr/bin/vim or install without Homebrew"
     hint_git="use Xcode CLT git (/usr/bin/git); brew often infeasible on this macOS"
@@ -976,6 +978,7 @@ elif is_darwin; then
     hint_et="install Eternal Terminal without Homebrew (build into ~/.local; brew often infeasible on this macOS)"
     hint_litra=""
 else
+    hint_aria2="sudo dnf install aria2   # or: sudo apt install aria2"
     hint_gpg="sudo dnf install gnupg2   # or: sudo apt install gnupg"
     hint_vim="sudo dnf install vim-enhanced   # or: sudo apt install vim"
     hint_git="sudo dnf install git   # or: sudo apt install git"
@@ -1243,6 +1246,12 @@ record_tool cmp required "diffutils package" \
     ${brew_prefix:+"$brew_prefix/bin/cmp"}
 
 # --- optional / nice-to-have ---
+record_tool aria2c optional "$hint_aria2" \
+    ${brew_prefix:+"$brew_prefix/bin/aria2c"} \
+    "$HOME/.local/bin/aria2c" \
+    /usr/bin/aria2c \
+    /usr/local/bin/aria2c
+
 record_tool make optional "$hint_make" \
     ${brew_prefix:+"$brew_prefix/opt/make/libexec/gnubin/make"} \
     ${brew_prefix:+"$brew_prefix/bin/gmake"} \

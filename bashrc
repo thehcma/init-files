@@ -22,7 +22,7 @@
 # Absolute tool paths from `provision_init_files` (see ~/.config/init-files/tools.<hostname>).
 # Host scope matches PS1: macOS ComputerName (not Bonjour LocalHostName / hostname -s).
 # Bump when provision's record_tool set changes (keep in sync with provision_init_files).
-INIT_FILES_TOOLS_REVISION=10
+INIT_FILES_TOOLS_REVISION=11
 # Defined before tools load so we do not depend on init_tool_scutil.
 _init_files_raw_host_label()
 {
@@ -146,6 +146,7 @@ if [[ -d "${init_files_dir:-${XDG_DATA_HOME:-$HOME/.local/share}/init-files}/.gi
     )
 fi
 
+: "${init_tool_aria2c:=}"
 : "${init_tool_bash:=}"
 : "${init_tool_bat:=}"
 : "${init_tool_bc:=}"
@@ -10064,6 +10065,9 @@ tool_version_max_age_seconds=86400
 # shellcheck disable=SC2139
 {
 
+if [[ -n "$init_tool_aria2c" ]]; then
+    alias aria="$init_tool_aria2c --continue=true --max-tries=0 --retry-wait=5 --timeout=60 --split=16 --max-connection-per-server=16 --min-split-size=10M --file-allocation=none --enable-dht=true --seed-time=0"
+fi
 [[ -n "$init_tool_bc" ]] && alias bc="$init_tool_bc -l"
 alias brpmoff='printf "\e[?2004l"'
 [[ -n "$init_tool_clear" ]] && alias cls="$init_tool_clear"
