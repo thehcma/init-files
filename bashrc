@@ -2354,14 +2354,15 @@ function createpatch()
 function cryptcat()
 {
     local target
+    local target_base
 
     case "${1:-}" in
         -h|--help|"")
             cat <<'EOF'
 Usage: cryptcat <name>
 
-Decrypt <name>.crypt to stdout (no extract).
-Example: cryptcat /tmp/foo   # reads /tmp/foo.crypt
+Decrypt <name>.crypt to stdout (untar main member).
+Example: cryptcat /tmp/foo   # prints contents of /tmp/foo member
 EOF
             [[ -n "${1:-}" ]]
             return
@@ -2373,7 +2374,12 @@ EOF
     esac
 
     target="${1%.crypt}"
-    gpg_symmetric --decrypt -- "${target}.crypt"
+    target_base="$(basename -- "$target")"
+
+    # encrypt() in this repo tar'ring uses "$target_base" as the archive member,
+    # so extract that member to stdout on the fly.
+    gpg_symmetric --quiet --decrypt -- "${target}.crypt" \
+        | tar -xOf - "$target_base"
 }
 
 # ssh with automatic destination-key re-cache when the agent lifetime has expired.
