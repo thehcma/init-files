@@ -1007,6 +1007,35 @@ function _init_path_remove()
     PATH="${PATH%:}"
 }
 
+function _init_remove_path()
+{
+    local path="${1:-}" quiet=0
+    if [[ "$path" == "--quiet" ]]; then
+        quiet=1
+        path="${2:-}"
+    fi
+
+    [[ -n "$path" && -e "$path" ]] || return 0
+
+    # Bypass interactive `rm -i` alias; retry after clearing immutable bits.
+    if type chattr > /dev/null 2>&1; then
+        chattr -R -f -i -- "$path" 2> /dev/null || true
+    fi
+    if command rm -rf -- "$path" 2> /dev/null; then
+        return 0
+    fi
+    if type find > /dev/null 2>&1; then
+        find "$path" -depth -mindepth 1 -exec command rm -rf {} + 2> /dev/null || true
+        command rm -rf -- "$path" 2> /dev/null && return 0
+    fi
+
+    [[ -e "$path" ]] || return 0
+    if (( quiet == 0 )); then
+        printf 'warning: could not remove %s\n' "$path" >&2
+    fi
+    return 1
+}
+
 function _init_relative_age()
 {
     local epoch="$1" now delta
@@ -8911,46 +8940,46 @@ with urllib.request.urlopen(url, timeout=60) as response:
     pathlib.Path(archive).write_bytes(response.read())
 PY
     then
-        rm -rf "$tmp_dir"
+        _init_remove_path --quiet "$tmp_dir"
         return
     fi
 
     mkdir -p "$HOME/.local/bin" "$HOME/.local/opt" || {
-        rm -rf "$tmp_dir"
+        _init_remove_path --quiet "$tmp_dir"
         return
     }
 
     if _init_is_darwin; then
         unzip -q "$archive" -d "$tmp_dir" || {
-            rm -rf "$tmp_dir"
+            _init_remove_path --quiet "$tmp_dir"
             return
         }
         extracted_dir="$tmp_dir/gh_${version}_macOS_${arch}"
     else
         tar -xzf "$archive" -C "$tmp_dir" || {
-            rm -rf "$tmp_dir"
+            _init_remove_path --quiet "$tmp_dir"
             return
         }
         extracted_dir="$tmp_dir/gh_${version}_linux_${arch}"
     fi
 
-    rm -rf "$install_dir"
+    _init_remove_path --quiet "$install_dir"
     mv "$extracted_dir" "$install_dir" || {
-        rm -rf "$tmp_dir"
+        _init_remove_path --quiet "$tmp_dir"
         return
     }
 
     ln -sfn "$install_dir/bin/gh" "$HOME/.local/bin/gh" || {
-        rm -rf "$tmp_dir"
+        _init_remove_path --quiet "$tmp_dir"
         return
     }
 
     for old_install in "$HOME"/.local/opt/gh-*; do
         [[ -d "$old_install" && "$old_install" != "$install_dir" ]] || continue
-        rm -rf "$old_install"
+        _init_remove_path "$old_install" || true
     done
 
-    rm -rf "$tmp_dir"
+    _init_remove_path --quiet "$tmp_dir"
     hash -r
     # Prefer the freshly installed binary when brew/gh still shadows PATH.
     if [[ -x "$HOME/.local/bin/gh" ]]; then
