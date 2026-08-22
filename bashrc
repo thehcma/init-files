@@ -2539,9 +2539,6 @@ function detect_gh_cleanup_notice()
 {
     local gh_path package_name local_gh
 
-    # macOS installs via Homebrew; local ~/.local/bin/gh is a Linux fallback only.
-    [[ "$OSTYPE" == "darwin"* ]] && return 0
-
     local_gh="$HOME/.local/bin/gh"
     [[ -x "$local_gh" ]] || return 0
 
@@ -2571,6 +2568,13 @@ function detect_gh_cleanup_notice()
                 fi
                 return
             fi
+        fi
+
+        if [[ "$OSTYPE" == "darwin"* ]] && command -v brew > /dev/null 2>&1 \
+            && _init_brew_formula_present gh 2> /dev/null; then
+            printf '  gh cleanup: Homebrew gh is still installed at %s\n' "$gh_path"
+            printf '    cleanup: brew uninstall gh   # ~/.local/bin/gh is the preferred install\n'
+            return
         fi
 
         printf '  gh cleanup: non-local gh still present at %s\n' "$gh_path"
@@ -8851,27 +8855,6 @@ function update_gh()
 
     invalidate_tool_version_cache
 
-    # Modern macOS: Homebrew owns gh.
-    if _init_is_darwin && type _init_is_modern_macos > /dev/null 2>&1 && _init_is_modern_macos; then
-        _init_brew_admin_or_handoff gh || return 1
-        if ! command -v brew > /dev/null 2>&1; then
-            printf 'Homebrew is required to install gh on modern macOS\n' >&2
-            return 1
-        fi
-        if _init_brew_formula_present gh; then
-            brew upgrade gh || return
-        else
-            brew install gh || return
-        fi
-        hash -r
-        command -v gh > /dev/null 2>&1 || {
-            printf 'gh installed but not on PATH; check Homebrew bin is in PATH\n' >&2
-            return 1
-        }
-        gh --version
-        return
-    fi
-
     case "$(uname -m)" in
         x86_64)
             arch="amd64"
@@ -10238,6 +10221,10 @@ fi
 
 # Activate fnm/nvm when present (preferred over Homebrew node on all tiers).
 _init_load_node_toolchain || true
+
+# User-local installs (gh, starship, pipx shims) must beat Homebrew after the
+# GNU-toolchain prepend above.
+_init_path_prepend "${HOME}/.local/bin"
 
 computer_name=$(_init_host_label)
 export INIT_FILES_HOST_LABEL="$computer_name"
