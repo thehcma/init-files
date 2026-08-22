@@ -18,7 +18,7 @@ Shell functions are Darwin-only (fail on Linux). Scripts stay runnable under `~/
 ## What is tracked
 
 - Profiles (`New Bookmarks`): fonts, ANSI/UI colors, `Keyboard Map`, mouse reporting, Option-key sends, etc.
-  - **Default grid** preferred `300×80` when the main display’s usable area is at least as large as the authoring monitor (~3008×1662 points); otherwise ~¼ of usable area (½×½), derived from the profile font. **Normal Font** Meslo LGS Nerd Font Mono **15**. Export always stores the preferred max; install/merge applies the host-adaptive size.
+  - **Default grid** preferred `300×80` when the largest display’s usable area is at least as large as the authoring monitor (~3008×1662 points); otherwise a grid that **fits the usable area** (capped at preferred), derived from the profile font. **Normal Font** Meslo LGS Nerd Font Mono **15**. Export always stores the preferred max; install/merge applies the host-adaptive size.
   - **`RememberWindowPositions` off** so new windows use that profile grid instead of the last-closed window’s pixel size. **New tabs** still inherit the current window (iTerm behavior). Profile changes need a full **Cmd-Q** quit — `defaults import` alone does not reload bookmarks in a running iTerm.
   - **Left Option = Esc+** (so bash/fzf `Alt-C` / `\ec` works). **Right Option = Normal** (keep Option-C → `ç` on the right key).
   - **Shift+Enter** / **Option+Enter** → CSI-u (`[13;2u` / `[13;3u`) so Cursor Agent (and similar TUIs) insert a newline instead of submitting. Without these, iTerm often sends plain Return for Shift+Enter.

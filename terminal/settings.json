@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "profiles": {
+    "Basic": {
+      "font": {
+        "name": "MesloLGSNFM-Regular",
+        "size": 15
+      },
+      "FontAntialias": true
+    }
+  }
+}

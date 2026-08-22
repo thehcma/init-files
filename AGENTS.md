@@ -31,6 +31,7 @@ Tracked content is shared. Host-specific absolute tool paths are **generated on 
 | `README.md` | Install / refresh process for humans. |
 | `docs/shell-ux.md` | Interactive shell UX: history, completion, shopt, fzf, bash version. |
 | `iterm2/` | Curated iTerm2 prefs (font/colors/keys/mouse); macOS-only export/install — see [iterm2/README.md](iterm2/README.md). Applied by default on Darwin provision / `refresh_init_files` (`--no-iterm` to skip). |
+| `terminal/` | Curated Terminal.app profile font (Meslo Nerd Font); macOS-only install — see [terminal/README.md](terminal/README.md). Applied by default on Darwin provision / `refresh_init_files` (`--no-iterm` skips iTerm and Terminal). |
 | `vim/` | Canonical Vim 9 + vim-plug config; `~/.vimrc` symlink; `refresh_vimrc` — see [vim/README.md](vim/README.md). |
 | `cursor/` | Agent CLI statusline + session-id recorder; `agent_sessions` / `resume_agent_session` — see [cursor/README.md](cursor/README.md). |
 | `lib/tool_path` | Sole `init_files_verify_tool_path` (provision + bashrc). Clean break — no legacy dual validators. |

@@ -13,8 +13,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# Preferred new-window grid when the main display is at least as large as the
-# authoring monitor (visibleFrame points). Smaller displays get ~1/4 usable area.
+# Preferred new-window grid when the largest display is at least as large as the
+# authoring monitor (visibleFrame points). Smaller displays get a grid that
+# fits usable area (capped at preferred).
 PREFERRED_COLUMNS = 300
 PREFERRED_ROWS = 80
 # Authoring Mac visibleFrame (points), from NSScreen.mainScreen.visibleFrame.
@@ -142,25 +143,31 @@ def font_point_size(font_spec: str) -> float:
     return 12.0
 
 
-def visible_frame_points() -> tuple[float, float] | None:
-    """Main-screen usable size in points (excludes menu bar / Dock)."""
+def all_visible_frames_points() -> list[tuple[float, float]]:
+    """Usable visibleFrame sizes in points for each connected display."""
     override = (os.environ.get("INIT_FILES_ITERM_VISIBLE_FRAME") or "").strip()
     if override:
         try:
             width_s, height_s = override.lower().split("x", 1)
             width, height = float(width_s), float(height_s)
             if width > 0 and height > 0:
-                return width, height
+                return [(width, height)]
         except ValueError:
-            pass
-        return None
+            return []
+        return []
     if sys.platform != "darwin":
-        return None
+        return []
     script = (
         'ObjC.import("AppKit");'
-        "var f=$.NSScreen.mainScreen.visibleFrame;"
-        'f.size.width+" "+f.size.height;'
+        "var screens=$.NSScreen.screens;"
+        "var parts=[];"
+        "for (var i=0;i<screens.length;i++){"
+        "var vf=screens[i].visibleFrame;"
+        'parts.push(vf.size.width+"x"+vf.size.height);'
+        "}"
+        'parts.join("\\n");'
     )
+    frames: list[tuple[float, float]] = []
     try:
         out = subprocess.check_output(
             ["osascript", "-l", "JavaScript", "-e", script],
@@ -168,13 +175,47 @@ def visible_frame_points() -> tuple[float, float] | None:
             timeout=5,
             stderr=subprocess.DEVNULL,
         ).strip()
-        width_s, height_s = out.split()
+        for line in out.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            width_s, height_s = line.split("x", 1)
+            width, height = float(width_s), float(height_s)
+            if width > 0 and height > 0:
+                frames.append((width, height))
+    except (OSError, subprocess.SubprocessError, ValueError):
+        frames = []
+    if frames:
+        return frames
+
+    # Some automation contexts expose mainScreen but not NSScreen.screens.
+    fallback = (
+        'ObjC.import("AppKit");'
+        "var f=$.NSScreen.mainScreen.visibleFrame;"
+        'f.size.width+"x"+f.size.height;'
+    )
+    try:
+        out = subprocess.check_output(
+            ["osascript", "-l", "JavaScript", "-e", fallback],
+            text=True,
+            timeout=5,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        width_s, height_s = out.split("x", 1)
         width, height = float(width_s), float(height_s)
         if width > 0 and height > 0:
-            return width, height
+            return [(width, height)]
     except (OSError, subprocess.SubprocessError, ValueError):
+        return []
+    return []
+
+
+def visible_frame_points() -> tuple[float, float] | None:
+    """Largest connected display usable size in points (excludes menu bar / Dock)."""
+    frames = all_visible_frames_points()
+    if not frames:
         return None
-    return None
+    return max(frames, key=lambda wh: wh[0] * wh[1])
 
 
 def _jxa_cell_metrics(postscript_name: str, point_size: float) -> tuple[float, float] | None:
@@ -251,9 +292,9 @@ def compute_adaptive_grid(
 ) -> tuple[int, int, str]:
     """Return (columns, rows, mode) for a new iTerm window on this display.
 
-    mode is ``preferred`` when the main screen is at least MIN_PREFERRED_VISIBLE,
-    ``quarter`` when sized to ~1/4 usable area, or ``preferred-fallback`` when
-    the screen size cannot be probed.
+    mode is ``preferred`` when the largest screen is at least MIN_PREFERRED_VISIBLE,
+    ``fit`` when sized to the usable area (capped at preferred), or
+    ``preferred-fallback`` when the screen size cannot be probed.
     """
     pref_c = max(1, int(preferred_cols))
     pref_r = max(1, int(preferred_rows))
@@ -275,16 +316,11 @@ def compute_adaptive_grid(
     if cell_w <= 0 or cell_h <= 0:
         return pref_c, pref_r, "preferred-fallback"
 
-    # Half width × half height ≈ one quarter of usable area.
-    target_w = usable_w * 0.5
-    target_h = usable_h * 0.5
-    cols = int(math.floor((target_w - GEOMETRY_CHROME_WIDTH) / cell_w))
-    rows = int(math.floor((target_h - GEOMETRY_CHROME_HEIGHT) / cell_h))
     max_cols = int(math.floor((usable_w - GEOMETRY_CHROME_WIDTH) / cell_w))
     max_rows = int(math.floor((usable_h - GEOMETRY_CHROME_HEIGHT) / cell_h))
-    cols = max(GEOMETRY_MIN_COLUMNS, min(pref_c, cols, max_cols))
-    rows = max(GEOMETRY_MIN_ROWS, min(pref_r, rows, max_rows))
-    return cols, rows, "quarter"
+    cols = max(GEOMETRY_MIN_COLUMNS, min(pref_c, max_cols))
+    rows = max(GEOMETRY_MIN_ROWS, min(pref_r, max_rows))
+    return cols, rows, "fit"
 
 
 def apply_adaptive_geometry(prefs: dict[str, Any]) -> None:

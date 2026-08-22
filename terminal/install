@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# Merge curated Terminal.app profile settings from this repo onto the current Mac.
+set -euo pipefail
+
+repo_terminal="$(cd "$(dirname "$0")" && pwd)"
+prefs_py="$repo_terminal/_prefs.py"
+settings_json="$repo_terminal/settings.json"
+domain="com.apple.Terminal"
+prefs_file="${HOME}/Library/Preferences/${domain}.plist"
+no_backup=0
+ensure_fonts_only=0
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --no-backup)
+            no_backup=1
+            shift
+            ;;
+        --ensure-fonts)
+            ensure_fonts_only=1
+            shift
+            ;;
+        -h|--help)
+            cat <<'EOF'
+Usage: terminal/install [--no-backup] [--ensure-fonts] [SETTINGS.json]
+
+  Default: merge curated Terminal profile settings into com.apple.Terminal.
+  --ensure-fonts: only check/offer missing fonts (Meslo Nerd Font).
+EOF
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -*)
+            printf 'terminal/install: unknown option: %s\n' "$1" >&2
+            exit 1
+            ;;
+        *)
+            settings_json="$1"
+            shift
+            break
+            ;;
+    esac
+done
+
+_terminal_prompt_yn()
+{
+    local prompt="$1"
+    local reply
+
+    if [[ ! -t 0 || ! -t 2 ]]; then
+        return 1
+    fi
+    printf '%s ' "$prompt" >&2
+    read -r reply || reply=n
+    case "$reply" in
+        ''|y|Y|yes|YES) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+_terminal_check_and_offer_fonts()
+{
+    local font_status=0
+    local helper="$repo_terminal/../iterm2/install_meslo_nerd_font"
+
+    set +e
+    "$python3_bin" "$prefs_py" check-fonts "$settings_json" >&2
+    font_status=$?
+    set -e
+
+    if [[ "$font_status" -ne 0 && -x "$helper" ]] \
+        && _terminal_prompt_yn \
+            "Install Meslo LGS Nerd Font into ~/Library/Fonts (no sudo)? [Y/n]"; then
+        if "$helper" -y; then
+            set +e
+            "$python3_bin" "$prefs_py" check-fonts "$settings_json" >&2
+            font_status=$?
+            set -e
+        else
+            printf 'terminal/install: WARNING: install_meslo_nerd_font failed\n' >&2
+        fi
+    fi
+    return "$font_status"
+}
+
+if [[ "${OSTYPE:-}" != darwin* ]]; then
+    printf 'terminal/install: macOS only\n' >&2
+    exit 1
+fi
+
+if [[ ! -f "$settings_json" ]]; then
+    printf 'terminal/install: missing %s\n' "$settings_json" >&2
+    exit 1
+fi
+
+python3_bin="$(command -v python3 2>/dev/null || true)"
+if [[ -z "$python3_bin" ]]; then
+    printf 'terminal/install: python3 required\n' >&2
+    exit 1
+fi
+
+if [[ $ensure_fonts_only -eq 1 ]]; then
+    set +e
+    _terminal_check_and_offer_fonts
+    font_status=$?
+    set -e
+    if [[ "$font_status" -eq 0 ]]; then
+        printf 'terminal/install: required profile fonts present\n'
+    fi
+    exit 0
+fi
+
+if ! command -v defaults >/dev/null 2>&1; then
+    printf 'terminal/install: defaults(1) not found\n' >&2
+    exit 1
+fi
+
+if [[ $no_backup -eq 0 && -f "$prefs_file" ]]; then
+    backup="${prefs_file}.bak.$(date +%Y%m%d%H%M%S)"
+    cp -p "$prefs_file" "$backup"
+    printf 'Backed up existing prefs to %s\n' "$backup"
+fi
+
+tmp_existing="$(mktemp -t terminal-existing.XXXXXX)"
+tmp_merged="$(mktemp -t terminal-merged.XXXXXX)"
+cleanup() {
+    rm -f "$tmp_existing" "$tmp_merged"
+}
+trap cleanup EXIT
+
+if ! defaults export "$domain" "$tmp_existing" 2>/dev/null; then
+    "$python3_bin" -c 'import plistlib,sys; plistlib.dump({}, open(sys.argv[1],"wb"), fmt=plistlib.FMT_XML)' \
+        "$tmp_existing"
+fi
+
+"$python3_bin" "$prefs_py" merge "$tmp_existing" "$settings_json" "$tmp_merged"
+defaults import "$domain" "$tmp_merged"
+
+set +e
+_terminal_check_and_offer_fonts
+set -e
+
+printf 'Merged curated Terminal profile settings into %s\n' "$domain"
+
+if ps -ax -o command= 2>/dev/null \
+        | awk '$0 ~ /\/Terminal\.app\/Contents\/MacOS\/Terminal$/ { found=1; exit } END { exit !found }'
+then
+    printf 'Terminal is running — quit and reopen for font changes to apply.\n' >&2
+else
+    printf 'Open a new Terminal window for font changes to apply.\n'
+fi

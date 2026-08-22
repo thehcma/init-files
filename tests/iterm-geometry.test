@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Adaptive iTerm Columns/Rows (preferred vs quarter of usable area).
+# Adaptive iTerm Columns/Rows (preferred vs fit to usable area).
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -60,7 +60,7 @@ PY
 )"
 _assert_str_eq 'larger display keeps preferred' "$got" '300x80:preferred'
 
-printf '\n=== smaller display uses quarter mode ===\n'
+printf '\n=== smaller display uses fit mode ===\n'
 got="$(
     python3 - <<'PY' "$prefs_py"
 import importlib.util, sys
@@ -74,7 +74,7 @@ cols, rows, mode = m.compute_adaptive_grid(
     visible=(1440.0, 900.0),
 )
 print(f"{mode}:{cols}:{rows}")
-assert mode == "quarter", mode
+assert mode == "fit", mode
 assert cols < m.PREFERRED_COLUMNS, cols
 assert rows < m.PREFERRED_ROWS, rows
 assert cols >= m.GEOMETRY_MIN_COLUMNS, cols
@@ -82,7 +82,7 @@ assert rows >= m.GEOMETRY_MIN_ROWS, rows
 print("ok")
 PY
 )"
-_assert_str_eq 'laptop-sized display quarters' "$(printf '%s\n' "$got" | tail -n1)" 'ok'
+_assert_str_eq 'laptop-sized display fits usable area' "$(printf '%s\n' "$got" | tail -n1)" 'ok'
 
 printf '\n=== curate restores preferred grid ===\n'
 got="$(
@@ -141,9 +141,9 @@ print(f"{prof['Columns']}x{prof['Rows']}")
 PY
 )"
 if [[ "$got" =~ ^[0-9]+x[0-9]+$ ]]; then
-    pass_case "merge writes quarter grid ($got)"
+    pass_case "merge writes fit grid ($got)"
 else
-    fail_case "merge quarter grid (got '$got')"
+    fail_case "merge fit grid (got '$got')"
 fi
 
 printf '\n=== merge clears remembered window frames ===\n'

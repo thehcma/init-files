@@ -2569,6 +2569,28 @@ maybe_install_iterm_prefs()
     log "OK       iTerm2 prefs merged — quit and reopen iTerm2 (Cmd-Q) to see fonts/colors"
 }
 
+maybe_install_terminal_prefs()
+{
+    local install_bin settings
+
+    [[ $quiet -eq 1 || $skip_iterm -eq 1 ]] && return 0
+    is_darwin || return 0
+
+    install_bin="${repo_dir}/terminal/install"
+    settings="${repo_dir}/terminal/settings.json"
+    [[ -x "$install_bin" && -f "$settings" ]] || {
+        log "Note: curated Terminal prefs not available under ${repo_dir}/terminal/"
+        return 0
+    }
+
+    log "Merging curated Terminal.app profile font…"
+    if ! "$install_bin" "$settings"; then
+        log "WARN     terminal/install failed (re-run terminal/install after fixing fonts)"
+        return 0
+    fi
+    log "OK       Terminal.app font merged — quit and reopen Terminal to see Meslo Nerd Font"
+}
+
 # Resolve recorded init_tool_bash from TOOL_EXPORTS (absolute brew path when present).
 provision_recorded_bash()
 {
@@ -2640,4 +2662,5 @@ EOF
 }
 
 maybe_install_iterm_prefs
+maybe_install_terminal_prefs
 print_brew_bash_login_shell_tip

@@ -44,6 +44,7 @@ Glyphs (`❯`, ``) need a **Nerd Font** in the terminal that draws them:
 | Where you type | Font |
 | --- | --- |
 | SSH from Mac iTerm | Already Meslo LGS Nerd Font on the Mac — nothing to do on Ubuntu |
+| macOS Terminal.app | Install Meslo into `~/Library/Fonts`, run `terminal/install` (or `refresh_init_files`) — sets **Basic** profile to Meslo LGS Nerd Font Mono 15 |
 | Ubuntu GUI terminal (GNOME Terminal, Terminator, …) | Install Meslo into `~/.local/share/fonts`, `fc-cache -f`, then pick **MesloLGS Nerd Font Mono** in the profile |
 | Raw Linux VT (`Ctrl+Alt+F*`) | Limited PSF fonts — Nerd glyphs will not render reliably; use a GUI terminal or SSH from iTerm |
 
