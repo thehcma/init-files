@@ -19,15 +19,35 @@ assert_contains 'defines pending note helper' "$text" '_tool_version_note_pendin
 assert_contains 'defines live version probe' "$text" 'tool_live_installed_version()'
 assert_contains 'defines drift check' "$text" 'tool_version_pending_drifted()'
 assert_contains 'defines update_tools' "$text" 'function update_tools'
+assert_contains 'defines update action classifier' "$text" '_tool_version_record_update_action()'
+assert_contains 'defines update footer helper' "$text" '_tool_version_append_update_footer()'
+assert_contains 'defines cached report usable helper' "$text" '_tool_version_cached_report_usable()'
+assert_contains 'uses rebuild lock' "$text" '.rebuild.lock'
+assert_contains 'offers batch upgrade prompt' "$text" 'Upgrade outdated tools now'
 assert_contains 'writes pending-updates' "$text" 'pending-updates'
 # Needle is a literal bashrc snippet (includes "$pending_file").
 # shellcheck disable=SC2016
 assert_contains 'fast path checks drift' "$text" 'tool_version_pending_drifted "$pending_file"'
 # GNU `stat -f` is --file-system and prints to stdout on failure; BSD-first breaks Linux.
+# Needles are literal bashrc snippets (include "$cache_file" / "$report_file").
+# shellcheck disable=SC2016
 assert_contains 'prefers GNU stat -c for cache mtime' "$text" \
     'cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null || echo 0)'
+# shellcheck disable=SC2016
 assert_contains 'prefers GNU stat -c for report mtime' "$text" \
     'report_mtime=$(stat -c %Y "$report_file" 2>/dev/null || stat -f %m "$report_file" 2>/dev/null || echo 0)'
+assert_contains 'batch footer mentions update_tools' "$text" 'upgrade all (this account): update_tools'
+# add_tool_update_notice / tool_status_line must not emit per-tool suggested commands.
+if sed -n '/^function add_tool_update_notice()$/,/^}$/p' "$bashrc" | grep -q 'suggested command:'; then
+    fail_case 'add_tool_update_notice has no suggested-command line'
+else
+    pass_case 'add_tool_update_notice has no suggested-command line'
+fi
+if sed -n '/^function tool_status_line()$/,/^}$/p' "$bashrc" | grep -q 'suggested command:'; then
+    fail_case 'tool_status_line has no suggested-command line'
+else
+    pass_case 'tool_status_line has no suggested-command line'
+fi
 
 printf '\n=== behavioral: drift detection ===\n'
 normalize_version()
@@ -123,6 +143,39 @@ if [[ "$rows" -eq 1 && "$tool_pending_updates_tsv" == "$expected" ]]; then
 else
     fail_case "note pending dedupes (rows=$rows got=$(printf '%q' "$tool_pending_updates_tsv"))"
 fi
+
+printf '\n=== behavioral: update action classify + footer ===\n'
+# shellcheck disable=SC1090
+eval "$(sed -n \
+    '/^_tool_version_record_update_action()$/,/^}$/p; /^_tool_version_append_update_footer()$/,/^}$/p' \
+    "$bashrc")"
+
+tool_update_self_names=
+tool_update_admin_hints=
+# Read by _tool_version_append_update_footer (color off in tests).
+# shellcheck disable=SC2034
+tool_status_use_color=
+_tool_version_record_update_action pnpm update_pnpm
+_tool_version_record_update_action pnpm update_pnpm
+_tool_version_record_update_action gh update_gh
+_tool_version_record_update_action git 'ask an admin: sudo apt install --only-upgrade git'
+_tool_version_record_update_action git 'ask an admin: sudo apt install --only-upgrade git'
+if [[ "$tool_update_self_names" == 'pnpm, gh' ]]; then
+    pass_case 'self-service names accumulate and dedupe'
+else
+    fail_case "self-service names accumulate and dedupe (got=$(printf '%q' "$tool_update_self_names"))"
+fi
+if [[ "$tool_update_admin_hints" == $'  git: ask an admin: sudo apt install --only-upgrade git\n' ]]; then
+    pass_case 'admin hints accumulate and dedupe'
+else
+    fail_case "admin hints accumulate and dedupe (got=$(printf '%q' "$tool_update_admin_hints"))"
+fi
+footer="$(_tool_version_append_update_footer)"
+assert_contains 'footer lists update_tools' "$footer" 'upgrade all (this account): update_tools'
+assert_contains 'footer lists self tools' "$footer" 'tools: pnpm, gh'
+assert_contains 'footer lists needs admin' "$footer" 'needs admin:'
+assert_contains 'footer lists git admin handoff' "$footer" \
+    'git: ask an admin: sudo apt install --only-upgrade git'
 
 printf '\n=== behavioral: update_tools control flow ===\n'
 # Extract update_tools; stub per-tool updaters + invalidate + tool_update_command.

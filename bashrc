@@ -1183,6 +1183,89 @@ function add_pipx_tool_update_notice()
     esac
 }
 
+# Classify an actionable update into self-service vs admin-handoff lists.
+# Globals: tool_update_self_names (comma-separated), tool_update_admin_hints (lines).
+_tool_version_record_update_action()
+{
+    local tool_name="$1"
+    local update_command="${2:-}"
+    local _admin_row
+
+    [[ -n "$update_command" ]] || return 0
+    if [[ "$update_command" == ask\ an\ admin* ]]; then
+        case $'\n'"${tool_update_admin_hints:-}" in
+            *$'\n'"  ${tool_name}: "*) return 0 ;;
+        esac
+        # printf -v keeps the trailing newline (command substitution would strip it).
+        printf -v _admin_row '  %s: %s\n' "$tool_name" "$update_command"
+        tool_update_admin_hints+="$_admin_row"
+        return 0
+    fi
+    case ", ${tool_update_self_names:-}, " in
+        *", ${tool_name}, "*) return 0 ;;
+    esac
+    if [[ -n "${tool_update_self_names:-}" ]]; then
+        tool_update_self_names+=", ${tool_name}"
+    else
+        tool_update_self_names="$tool_name"
+    fi
+}
+
+# Footer for [tool updates]: batch self-service hint + per-tool admin handoffs.
+_tool_version_append_update_footer()
+{
+    local red reset _hint
+
+    red=
+    reset=
+    if [[ -n "${tool_status_use_color:-}" ]]; then
+        red=$'\033[31m'
+        reset=$'\033[0m'
+    fi
+    if [[ -n "${tool_update_self_names:-}" ]]; then
+        printf '%s  upgrade all (this account): update_tools%s\n' "$red" "$reset"
+        printf '%s    tools: %s%s\n' "$red" "$tool_update_self_names" "$reset"
+    fi
+    if [[ -n "${tool_update_admin_hints:-}" ]]; then
+        printf '%s  needs admin:%s\n' "$red" "$reset"
+        while IFS= read -r _hint; do
+            [[ -n "$_hint" ]] || continue
+            printf '%s%s%s\n' "$red" "$_hint" "$reset"
+        done <<< "$tool_update_admin_hints"
+    fi
+}
+
+# True when last-report / last-check are fresh enough to reuse (no rebuild).
+_tool_version_cached_report_usable()
+{
+    local report_file="$1"
+    local check_stamp="$2"
+    local cache_file="$3"
+    local pending_file="$4"
+    local current_time="$5"
+    local checked_at cache_mtime report_mtime
+
+    [[ -r "$report_file" && -r "$check_stamp" ]] || return 1
+    checked_at=$(cat "$check_stamp" 2>/dev/null || echo 0)
+    [[ "$checked_at" =~ ^[0-9]+$ ]] || return 1
+    (( current_time - checked_at < tool_version_max_age_seconds )) || return 1
+    grep -a -F $'\033[' "$report_file" >/dev/null 2>&1 || return 1
+    grep -a -E $'^(\033\\[[0-9;]*m)?[[:space:]]*bash:' "$report_file" >/dev/null 2>&1 || return 1
+    tool_version_cache_is_complete "$cache_file" || return 1
+    if [[ -r "$cache_file" ]]; then
+        cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null || echo 0)
+        report_mtime=$(stat -c %Y "$report_file" 2>/dev/null || stat -f %m "$report_file" 2>/dev/null || echo 0)
+        if [[ "$cache_mtime" =~ ^[0-9]+$ && "$report_mtime" =~ ^[0-9]+$ ]] \
+            && (( cache_mtime > report_mtime )); then
+            return 1
+        fi
+    fi
+    if [[ -r "$pending_file" ]] && tool_version_pending_drifted "$pending_file"; then
+        return 1
+    fi
+    return 0
+}
+
 function add_tool_update_notice()
 {
     local red reset tool_name tool_path current_version latest_version update_command upgrade_tier
@@ -1202,11 +1285,9 @@ function add_tool_update_notice()
         fi
         update_command="$(tool_update_command "$tool_name" "$tool_path")" || update_command=
         tool_update_messages+=$(printf '%s  %s: installed %s, latest %s%s' "$red" "$tool_name" "$current_version" "$latest_version" "$reset")
-        if [[ -n "$update_command" ]]; then
-            tool_update_messages+=$(printf '\n%s    suggested command: %s%s' "$red" "$update_command" "$reset")
-        fi
         tool_update_messages+=$'\n'
         _tool_version_note_pending "$tool_name" "$current_version" "$latest_version" "$tool_path"
+        _tool_version_record_update_action "$tool_name" "$update_command"
     elif [[ -n "$tool_path" && -z "$(normalize_version "$current_version")" && -n "$(normalize_version "$latest_version")" ]]; then
         red=
         reset=
@@ -1216,10 +1297,8 @@ function add_tool_update_notice()
         fi
         update_command="$(tool_update_command "$tool_name" "$tool_path")" || update_command=
         tool_update_messages+=$(printf '%s  %s: installed (unknown), latest %s%s' "$red" "$tool_name" "$latest_version" "$reset")
-        if [[ -n "$update_command" ]]; then
-            tool_update_messages+=$(printf '\n%s    suggested command: %s%s' "$red" "$update_command" "$reset")
-        fi
         tool_update_messages+=$'\n'
+        _tool_version_record_update_action "$tool_name" "$update_command"
     fi
 }
 
@@ -1783,6 +1862,8 @@ function check_tool_versions()
     local no_dev_flag check_stamp report_file rebuild report
     local cache_mtime report_mtime
     local pending_file
+    local rebuild_lock acquired_rebuild_lock offer_updates wait_i
+    local _footer
 
     [[ $- == *i* ]] || return
 
@@ -1801,6 +1882,7 @@ function check_tool_versions()
     check_stamp="${tool_version_state_dir}/last-check"
     report_file="${tool_version_state_dir}/last-report"
     pending_file="${tool_version_state_dir}/pending-updates"
+    rebuild_lock="${tool_version_state_dir}.rebuild.lock"
     checked_at=
     bash_latest=
     gh_latest=
@@ -1815,8 +1897,12 @@ function check_tool_versions()
     tool_update_messages=
     tool_status_messages=
     tool_pending_updates_tsv=
+    tool_update_self_names=
+    tool_update_admin_hints=
     pending_tool_count=0
     rebuild=0
+    acquired_rebuild_lock=0
+    offer_updates=0
     report=
 
     mkdir -p "$tool_version_state_dir" 2>/dev/null || true
@@ -1880,6 +1966,48 @@ function check_tool_versions()
             _init_files_warn_tools_reinstall_if_needed broken
         fi
         return 0
+    fi
+
+    # Serialize rebuilds across concurrent interactive shells (iTerm multi-pane
+    # startup). Only the lock holder rebuilds / offers update_tools; peers wait
+    # then reuse the published report (no second network-ish probe pass).
+    if declare -F init_files_mkdir_lock > /dev/null 2>&1 \
+        && declare -F init_files_mkdir_unlock > /dev/null 2>&1; then
+        if init_files_mkdir_lock "$rebuild_lock" 120; then
+            acquired_rebuild_lock=1
+        else
+            wait_i=0
+            while (( wait_i < 60 )); do
+                sleep 0.5
+                wait_i=$((wait_i + 1))
+                if init_files_mkdir_lock "$rebuild_lock" 120; then
+                    acquired_rebuild_lock=1
+                    break
+                fi
+            done
+        fi
+        if [[ $acquired_rebuild_lock -eq 1 ]] \
+            && _tool_version_cached_report_usable \
+                "$report_file" "$check_stamp" "$cache_file" "$pending_file" "$current_time"
+        then
+            init_files_mkdir_unlock "$rebuild_lock"
+            acquired_rebuild_lock=0
+            cat "$report_file"
+            tool_version_check_schedule_lines
+            if type _init_files_warn_tools_reinstall_if_needed > /dev/null 2>&1; then
+                _init_files_warn_tools_reinstall_if_needed broken
+            fi
+            return 0
+        fi
+        if [[ $acquired_rebuild_lock -eq 0 && -r "$report_file" ]]; then
+            # Timed out waiting; prefer any existing report over a stacked rebuild.
+            cat "$report_file"
+            tool_version_check_schedule_lines
+            if type _init_files_warn_tools_reinstall_if_needed > /dev/null 2>&1; then
+                _init_files_warn_tools_reinstall_if_needed broken
+            fi
+            return 0
+        fi
     fi
 
     checked_at=
@@ -2055,6 +2183,9 @@ function check_tool_versions()
         report+=$'\n'"[tool versions]"$'\n'"$tool_status_messages"$'\n'
     fi
     if [[ -n "$tool_update_messages" ]]; then
+        # Preserve trailing newlines from the footer helper.
+        _footer="$(_tool_version_append_update_footer; printf x)"
+        tool_update_messages+="${_footer%x}"
         report+=$'\n'"[tool updates]"$'\n'"$tool_update_messages"$'\n'
     fi
 
@@ -2083,10 +2214,32 @@ function check_tool_versions()
         fi
         init_files_mkdir_unlock "$lock_dir"
     fi
+
+    # Release rebuild lock before printing / prompting so peer shells can reuse
+    # the cached report while this session offers update_tools.
+    if [[ $acquired_rebuild_lock -eq 1 ]]; then
+        offer_updates=1
+        init_files_mkdir_unlock "$rebuild_lock"
+        acquired_rebuild_lock=0
+    elif ! declare -F init_files_mkdir_lock > /dev/null 2>&1; then
+        offer_updates=1
+    fi
+
     printf '%s' "$report"
     tool_version_check_schedule_lines "$pending_tool_count"
     if type _init_files_warn_tools_reinstall_if_needed > /dev/null 2>&1; then
         _init_files_warn_tools_reinstall_if_needed broken
+    fi
+
+    # One interactive offer per rebuild (not on cached reprints). Admin-only
+    # updates are listed in the report footer; update_tools still prints handoffs.
+    if [[ $offer_updates -eq 1 && -n "${tool_update_self_names:-}" ]] \
+        && declare -F _init_prompt_yn > /dev/null 2>&1 \
+        && declare -F update_tools > /dev/null 2>&1 \
+        && _init_prompt_yn "Upgrade outdated tools now (${tool_update_self_names})? [Y/n]"
+    then
+        # shellcheck disable=SC2119
+        update_tools || true
     fi
 }
 
@@ -8635,7 +8788,7 @@ function tool_install_command()
 
 function tool_status_line()
 {
-    local green install_command red reset tool_name tool_path tone upgrade_tier update_command yellow
+    local green install_command red reset tool_name tool_path tone upgrade_tier yellow
     local current_version latest_version admin_steps
 
     tool_name="$1"
@@ -8693,12 +8846,10 @@ function tool_status_line()
                 "$tone" "$tool_name" "$current_version" "$latest_version" "$tool_path" "$reset"
         else
             tone="$red"
-            update_command="$(tool_update_command "$tool_name" "$tool_path" 2> /dev/null || true)"
             printf '%s  %s: installed %s, latest %s, status: update available, path: %s%s' \
                 "$tone" "$tool_name" "$current_version" "$latest_version" "$tool_path" "$reset"
-            if [[ -n "$update_command" ]]; then
-                printf '\n%s    suggested command: %s%s' "$tone" "$update_command" "$reset"
-            fi
+            # Per-tool suggested commands live in [tool updates] as a batch
+            # update_tools offer (admin handoffs listed separately).
         fi
     else
         # current > tracked latest (distro Candidate truncated, or newer than
@@ -8754,6 +8905,8 @@ function tool_update_command()
 # Upgrade all tools listed in pending-updates (or reprint hints). Single entry
 # point for issue #40 — runs the same update_* / admin-handoff paths as per-tool
 # helpers, then invalidates the daily report so out-of-band upgrades clear nags.
+# Optional -h/--help; interactive callers invoke with no args (SC2120).
+# shellcheck disable=SC2120
 function update_tools()
 {
     local pending_file tool ver path live rc=0 ran=0 skipped=0 tool_rc hint

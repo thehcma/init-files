@@ -299,13 +299,15 @@ Implementation pointers in [`bashrc`](../bashrc): `_init_load_fzf` (prefer `fzf 
 | Older macOS + Homebrew/other bash | GNU upstream (manual) | Never suggest `brew upgrade`; report the shell in use |
 | Linux | Distro candidate when newer; else GNU upstream is **manual / upstream-only**. If upstream fetch fails, cache/report fall back to the distro candidate (no perpetual “pending”). | `update_bash` only when the package manager can apply |
 
-On Linux, `update_git` / `update_bash` package-manager paths need `sudo`. If this account is **not** a sudoer (not in `sudo`/`wheel`, and no NOPASSWD), those helpers print a **forwardable admin command** instead of prompting for a password that cannot succeed. Real sudoers (group membership or `sudo -n`) still get the normal interactive upgrade. `check_tool_versions` suggests `ask an admin: sudo …` in the same situation.
+On Linux, `update_git` / `update_bash` package-manager paths need `sudo`. If this account is **not** a sudoer (not in `sudo`/`wheel`, and no NOPASSWD), those helpers print a **forwardable admin command** instead of prompting for a password that cannot succeed. Real sudoers (group membership or `sudo -n`) still get the normal interactive upgrade. `check_tool_versions` lists those under **needs admin** in the `[tool updates]` footer (same `ask an admin: sudo …` text).
 
 On **modern macOS** only: if this shell’s `$BASH` differs from preferred `init_tool_bash` (typically a stale Cellar path after `brew upgrade bash`), the tool report prints the Cellar `/etc/shells` + `chsh` steps. Older macOS never nags toward Apple `/bin/bash` or prints brew tips for a Homebrew login shell.
 
 After adding newly tracked tools, an incomplete `latest` cache or a report missing the `bash:` line forces a rebuild (so you are not stuck on a day-old report).
 
 When the report has outdated tools, `check_tool_versions` also writes a small **`pending-updates`** TSV sidecar (`tool`, `installed`, `path`). On later shells the fast path cheaply re-probes those installed versions; if any drifted (admin apt/brew, etc.), the report rebuilds immediately — no 24h wait and no manual `invalidate_tool_version_cache`.
+
+The `[tool updates]` section lists each outdated tool once (no per-tool `suggested command`). At the bottom it splits **this account** (`update_tools`) vs **needs admin** (`ask an admin: …`). On a TTY, the shell that rebuilt the report offers `Upgrade outdated tools now (…)? [Y/n]` once; cached reprints only show the footer. Concurrent interactive shells share a **rebuild lock** so only one session runs the check.
 
 ```bash
 invalidate_tool_version_cache   # optional nudge
@@ -315,7 +317,7 @@ update_tools                    # upgrade all currently pending tools this accou
 
 `update_tools` runs the same per-tool helpers (`update_git`, `update_bash`, …) and admin-handoff rules, then invalidates the daily report. Tools already upgraded out-of-band are skipped.
 
-Implementation: `refresh_tool_version_cache` in [`bashrc`](../bashrc) fetches unlocked then publishes under `lib/tool_version_cache` lock/atomic write (#26). Distro fallbacks avoid perpetual “pending” when upstream APIs fail.
+Implementation: `refresh_tool_version_cache` in [`bashrc`](../bashrc) fetches unlocked then publishes under `lib/tool_version_cache` lock/atomic write (#26). Distro fallbacks avoid perpetual “pending” when upstream APIs fail. Rebuild serialization uses `${tool_version_state_dir}.rebuild.lock`.
 
 ---
 
