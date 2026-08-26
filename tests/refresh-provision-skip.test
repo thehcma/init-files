@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Tests for refresh_init_files last-provisioned SHA skip helpers.
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+bashrc="${root}/bashrc"
+
+printf '\n=== static: helpers + skip call sites ===\n'
+text="$(<"$bashrc")"
+assert_contains 'defines last-provisioned path' "$text" '_init_files_last_provisioned_path()'
+assert_contains 'defines read last-provisioned' "$text" '_init_files_read_last_provisioned()'
+assert_contains 'defines write last-provisioned' "$text" '_init_files_write_last_provisioned()'
+assert_contains 'defines already-current check' "$text" '_init_files_provision_already_current()'
+assert_contains 'default force is off' "$text" 'local force=0'
+assert_contains 'skip message mentions -f' "$text" 'use -f to force'
+# Needle is a literal bashrc snippet (includes "$new_head").
+# shellcheck disable=SC2016
+assert_contains 'writes stamp after provision' "$text" '_init_files_write_last_provisioned "$new_head"'
+
+printf '\n=== behavioral: stamp read/write + already-current ===\n'
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
+# shellcheck disable=SC1090
+eval "$(sed -n \
+    '/^_init_files_last_provisioned_path()$/,/^}$/p; /^_init_files_read_last_provisioned()$/,/^}$/p; /^_init_files_write_last_provisioned()$/,/^}$/p; /^_init_files_provision_already_current()$/,/^}$/p' \
+    "$bashrc")"
+
+# shellcheck disable=SC2034
+init_files_state_dir="$tmpdir/state"
+# shellcheck disable=SC2034
+init_files_host="testhost"
+mkdir -p "$init_files_state_dir"
+
+path="$(_init_files_last_provisioned_path)"
+assert_contains 'stamp path is per-host' "$path" 'last-provisioned.testhost'
+
+if _init_files_read_last_provisioned; then
+    fail_case 'missing stamp is not readable'
+else
+    pass_case 'missing stamp is not readable'
+fi
+
+sha='abcdef0123456789abcdef0123456789abcdef01'
+_init_files_write_last_provisioned "$sha"
+got="$(_init_files_read_last_provisioned)"
+if [[ "$got" == "$sha" ]]; then
+    pass_case 'round-trip last-provisioned sha'
+else
+    fail_case "round-trip last-provisioned sha (got=$got)"
+fi
+
+# Invoked indirectly by _init_files_provision_already_current.
+# shellcheck disable=SC2317
+_init_files_deploy_drift_reasons() { :; }
+if _init_files_provision_already_current "$sha"; then
+    pass_case 'already-current when stamp matches and no drift'
+else
+    fail_case 'already-current when stamp matches and no drift'
+fi
+if _init_files_provision_already_current 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'; then
+    fail_case 'not current when stamp differs'
+else
+    pass_case 'not current when stamp differs'
+fi
+
+# shellcheck disable=SC2317
+_init_files_deploy_drift_reasons() { printf 'bashrc symlink is wrong\n'; }
+if _init_files_provision_already_current "$sha"; then
+    fail_case 'not current when deploy drifted'
+else
+    pass_case 'not current when deploy drifted'
+fi
+
+test_summary

@@ -330,31 +330,32 @@ Optional: `check_tool_versions` (runs automatically in interactive shells on **f
 
 ## Process: refreshing from GitHub
 
-Use this whenever you want the latest `main` (bashrc / provision / rules). Full refresh **always** re-runs `provision_init_files` (tools, ssh, vimrc).
+Use this whenever you want the latest `main` (bashrc / provision / rules). Full refresh provisions when the clone HEAD is new for this host (or deploy drifted); use `-f` to always re-run `provision_init_files`.
 
 ### Manual refresh
 
 ```bash
 refresh_init_config             # preview private overlay changes, confirm, pull + provision
-refresh_init_files              # pull + provision + reload this shell
+refresh_init_files              # pull; provision if needed; reload this shell
+refresh_init_files -f           # pull + always provision + reload
 refresh_init_files -q           # daily: offer pull if main / private config moved; repair deploy drift
 refresh_init_files --no-dev     # pull, then provision --no-dev (persist non-dev mode)
 refresh_init_files --dev        # pull, then full provision (clear non-dev mode)
 refresh_init_files --github-https  # pull, remember HTTPS GitHub for this host
 refresh_init_files --github-ssh    # pull, remember SSH (insteadOf) for this host
-refresh_init_files --no-iterm      # skip curated iTerm2 prefs merge (macOS default: apply)
+refresh_init_files --no-iterm      # skip curated iTerm2 prefs merge (macOS default: apply when provisioning)
 ```
 
-What `refresh_init_files` does (default / `-f`):
+What `refresh_init_files` does (default):
 
 1. Clones `init_files_repo` into `init_files_dir` if the clone is missing.
 2. Otherwise `git fetch origin main`, then ff-only merge (falls back to `reset --hard origin/main`).
 3. Ensures `~/.bashrc` is still a symlink to `$init_files_dir/bashrc` (migrates leftover copies from the old copy-based install).
 4. Updates the daily-check stamp under `~/.local/state/init-files/`.
 5. Prints `updated … <old> → <new>` (short SHAs) when the clone moved, or `already current` with the HEAD short SHA.
-6. **Always** runs `./provision_init_files` with remembered `--no-dev`/`--dev` and GitHub transport flags (tools, ssh materials, vimrc symlink/plugins, login-shell hook; on macOS also iTerm prefs + brew-bash tip when needed).
-7. On macOS (not `-q`): runs `refresh_iterm_settings` by default (`--no-iterm` to skip).
-8. Reloads `~/.bashrc` in the current interactive shell (no manual `source` needed after refresh).
+6. Runs `./provision_init_files` unless this host’s `last-provisioned.<hostname>` already matches HEAD and deploy has not drifted (`-f` / `--dev` / `--no-dev` / `--github-*` / `--iterm` / `--no-iterm` always provision). On success, records that HEAD in the stamp.
+7. On macOS when provisioning (not `-q`): runs `refresh_iterm_settings` by default (`--no-iterm` to skip).
+8. Reloads `~/.bashrc` in the current interactive shell when HEAD or the sourced revision changed.
 9. Applies remembered GitHub transport (clears or sets `insteadOf`) before fetch.
 
 On **modern macOS**, interactive `./provision_init_files` (including when started from refresh) may ask:
@@ -402,7 +403,7 @@ Interactive shells, about once per day (`init_files_max_age_seconds` / `tool_ver
 
 ## When to re-run `provision_init_files` vs `refresh_init_files`
 
-**`refresh_init_files` always provisions** after pull (tools, ssh, vimrc). Use bare `./provision_init_files` when you only need to rewrite tool paths / ssh / vim without a git pull (e.g. right after a Homebrew move on an already-current clone).
+**`refresh_init_files` provisions after pull when needed** (new HEAD for this host, deploy drift, or `-f` / mode / transport / iterm flags). Use bare `./provision_init_files` when you only need to rewrite tool paths / ssh / vim without a git pull (e.g. right after a Homebrew move on an already-current clone).
 
 | Situation | Command |
 | --- | --- |
@@ -519,7 +520,7 @@ Overrides: `INIT_FILES_SSH_KEY` (absolute path), `INIT_FILES_SSH_KEY_BASENAME` (
 | --- | --- |
 | `./provision_init_files` | Always merges/installs overlay SSH materials when present |
 | `refresh_init_config` | Fetches and previews incoming commits/files, confirms, fast-forwards the overlay (or initializes a clean clone with an unborn `HEAD` from `origin/main`), provisions it, and reloads the current shell |
-| `refresh_init_files` (full) | Always re-runs `provision_init_files` after pull |
+| `refresh_init_files` (full) | Provisions after pull when HEAD is new / drifted / forced; records `last-provisioned.<hostname>` |
 | `refresh_init_files -q` (daily) | When the private overlay moved, invokes the same `refresh_init_config` preview/confirm/update flow |
 | `bootstrap_host` | May prompt for overlay git URL, clone it, then provision |
 

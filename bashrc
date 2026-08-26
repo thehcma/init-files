@@ -7054,9 +7054,63 @@ function refresh_init_config()
     return 0
 }
 
+# Per-host stamp: last clone SHA for which provision_init_files succeeded.
+_init_files_last_provisioned_path()
+{
+    local state_dir host
+
+    state_dir="${init_files_state_dir:-${XDG_STATE_HOME:-$HOME/.local/state}/init-files}"
+    host="${init_files_host:-$(_init_files_sanitize_host "$(_init_files_raw_host_label)" 2>/dev/null || hostname -s 2>/dev/null || echo host)}"
+    printf '%s/last-provisioned.%s' "$state_dir" "$host"
+}
+
+_init_files_read_last_provisioned()
+{
+    local path sha
+
+    path="$(_init_files_last_provisioned_path)"
+    [[ -r "$path" ]] || return 1
+    sha=$(tr -d '[:space:]' <"$path" 2>/dev/null || true)
+    [[ "$sha" =~ ^[0-9a-fA-F]{7,40}$ ]] || return 1
+    printf '%s\n' "$sha"
+}
+
+_init_files_write_last_provisioned()
+{
+    local sha="$1"
+    local path dir
+
+    [[ "$sha" =~ ^[0-9a-fA-F]{7,40}$ ]] || return 1
+    path="$(_init_files_last_provisioned_path)"
+    dir=$(dirname -- "$path")
+    mkdir -p "$dir" 2>/dev/null || true
+    if declare -F init_files_atomic_write > /dev/null 2>&1; then
+        printf '%s\n' "$sha" | init_files_atomic_write "$path" || return 1
+    else
+        printf '%s\n' "$sha" >"$path" || return 1
+    fi
+}
+
+# True when full refresh can skip provision_init_files for clone SHA $1.
+# Skip only when that SHA was already provisioned and deploy has not drifted.
+_init_files_provision_already_current()
+{
+    local head_sha="${1:-}"
+    local last drift
+
+    [[ -n "$head_sha" ]] || return 1
+    last="$(_init_files_read_last_provisioned 2>/dev/null || true)"
+    [[ -n "$last" && "$last" == "$head_sha" ]] || return 1
+    if declare -F _init_files_deploy_drift_reasons > /dev/null 2>&1; then
+        drift="$(_init_files_deploy_drift_reasons 2>/dev/null || true)"
+        [[ -z "$drift" ]] || return 1
+    fi
+    return 0
+}
+
 function refresh_init_files()
 {
-    local force=1
+    local force=0
     local quiet=0
     local no_dev=0
     local dev_mode_explicit=0
@@ -7071,7 +7125,7 @@ function refresh_init_files()
     local needs_reload=0
     local remote_head local_short remote_short
     local reply fetch_err fetch_err_file fetch_ok
-
+    local skip_provision=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -f|--force) force=1; shift ;;
@@ -7085,10 +7139,13 @@ function refresh_init_files()
             -h|--help)
                 echo "Usage: refresh_init_files [-f|--force] [-q|--quiet] [--no-dev|--dev]" >&2
                 echo "                     [--github-https|--github-ssh] [--iterm|--no-iterm]" >&2
-                echo "  Default / -f: pull init-files main into $init_files_dir," >&2
-                echo "  ensure ~/.bashrc is a symlink, always run provision_init_files" >&2
-                echo "  (tools, ssh, vimrc), merge curated iTerm2 prefs on macOS," >&2
-                echo "  and reload ~/.bashrc in this shell." >&2
+                echo "  Default: pull init-files main into $init_files_dir," >&2
+                echo "  ensure ~/.bashrc is a symlink, run provision_init_files" >&2
+                echo "  when HEAD is new or deploy drifted (tools/ssh/vimrc/iTerm)," >&2
+                echo "  merge curated iTerm2 prefs on macOS when provisioning," >&2
+                echo "  and reload ~/.bashrc in this shell when needed." >&2
+                echo "  -f        always re-run provision_init_files (even if HEAD" >&2
+                echo "            was already provisioned on this host)." >&2
                 echo "  -q        daily check: if origin/main moved, offer to update;" >&2
                 echo "            also private config overlay (URL drift / main moved);" >&2
                 echo "            also detect local deploy drift (bashrc/vim/iTerm/" >&2
@@ -7104,7 +7161,7 @@ function refresh_init_files()
                 echo "  --github-ssh    remember SSH (insteadOf) for THIS host; re-run" >&2
                 echo "            provision. Without this, gh auth auto-prefers HTTPS." >&2
                 echo "  --iterm   after provision, merge curated iTerm2 prefs (macOS;" >&2
-                echo "            default on Darwin when not -q)." >&2
+                echo "            default on Darwin when provisioning and not -q)." >&2
                 echo "  --no-iterm  skip curated iTerm2 prefs merge on macOS." >&2
                 echo "  Plain refresh keeps remembered non-dev / transport prefs." >&2
                 return 0
@@ -7416,7 +7473,8 @@ function refresh_init_files()
         fi
     fi
 
-    # Always provision after pull/clone: tools, ssh materials, vimrc, login hook.
+    # Provision after pull/clone unless this host already provisioned this HEAD
+    # and deploy has not drifted. -f / mode / transport / iterm flags force it.
     needs_reload=0
     if [[ -n "$previous_head" && -n "$new_head" && "$previous_head" != "$new_head" ]]; then
         needs_reload=1
@@ -7425,6 +7483,33 @@ function refresh_init_files()
     # clone was updated in-place by a commit/push on the same host).
     if [[ -n "$new_head" && "$new_head" != "${INIT_FILES_BASHRC_LOADED_SHA:-}" ]]; then
         needs_reload=1
+    fi
+
+    skip_provision=0
+    if [[ $force -eq 0 \
+        && $dev_mode_explicit -eq 0 \
+        && $github_transport_explicit -eq 0 \
+        && $iterm_flag_explicit -eq 0 \
+        && -n "$new_head" ]] \
+        && _init_files_provision_already_current "$new_head"
+    then
+        skip_provision=1
+    fi
+
+    if [[ $skip_provision -eq 1 ]]; then
+        [[ $quiet -eq 1 ]] || printf 'refresh_init_files: provision skipped (already provisioned at %s; use -f to force)\n' \
+            "${new_head_short:-$new_head}"
+        if [[ $needs_reload -eq 1 && $- == *i* && -z "${_init_files_in_refresh_reload:-}" ]]; then
+            _init_files_in_refresh_reload=1
+            INIT_FILES_BASHRC_FORCE=1
+            # The deployed bashrc path is runtime-generated.
+            # shellcheck disable=SC1091
+            if . "${HOME}/.bashrc"; then
+                [[ $quiet -eq 1 ]] || echo "refresh_init_files: reloaded ~/.bashrc in this shell"
+            fi
+            unset _init_files_in_refresh_reload
+        fi
+        return 0
     fi
 
     provision_cmd="$init_files_dir/provision_init_files"
@@ -7492,6 +7577,10 @@ function refresh_init_files()
         else
             echo "refresh_init_files: iTerm refresh skipped (refresh_iterm_settings unavailable)" >&2
         fi
+    fi
+
+    if [[ -n "$new_head" ]]; then
+        _init_files_write_last_provisioned "$new_head" || true
     fi
 
     # Pick up new bashrc / tools in this shell (avoids a manual source after

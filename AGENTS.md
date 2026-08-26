@@ -87,7 +87,7 @@ Do **not** commit:
 ```
 
 - Editing `~/.bashrc` edits `bashrc` in the clone.
-- `refresh_init_files` pulls `main`, repairs the bashrc symlink, **always** re-runs `provision_init_files` (tools, ssh, vimrc), merges curated iTerm2 prefs on macOS by default (`--no-iterm` to skip; `-q` never applies prefs), then reloads `~/.bashrc` in the current shell.
+- `refresh_init_files` pulls `main`, repairs the bashrc symlink, and runs `provision_init_files` when HEAD is new for this host (or deploy drifted / `-f` / mode-transport-iterm flags). Skips provision when `last-provisioned.<hostname>` already matches HEAD. Merges curated iTerm2 prefs on macOS when provisioning (`--no-iterm` to skip; `-q` never applies prefs), then reloads `~/.bashrc` in the current shell when needed.
 - Daily quiet check (`refresh_init_files -q`): when `origin/main` has moved, **offer** to update (`Update now? [Y/n]` on a TTY); otherwise print a hint. Also checks the **private config overlay** (remembered URL vs clone origin; `main` moved → offer `git pull --ff-only` then provision). Also detects **local deploy drift** (bashrc/vimrc symlinks, login bashrc hook, broken tools paths, macOS curated iTerm prefs) and offers a repair (`refresh_init_files` / `refresh_vimrc` / `refresh_iterm_settings`) without auto-applying. Does not auto-pull without confirmation. Failed `ls-remote` (offline/auth) is **flagged** with a hint; interactive shells offer retry (may run `cache_ssh` on SSH hosts) and still continue to overlay + deploy-drift checks.
 - `check_tool_versions` reprints a cached diagnostic every interactive shell; rebuilds at most once/day (no blocking network), or sooner when the `pending-updates` sidecar detects an out-of-band install drift. Outdated tools are listed in `[tool updates]` with a batch `update_tools` footer (admin handoffs separate); the rebuilding shell may offer a Y/n upgrade on a TTY. Concurrent shells share a rebuild lock so only one runs the check. Use `update_tools` to apply all currently outdated upgrades this account can. Skipped on `--no-dev` hosts.
 - Clone belongs under **`~/.local/share/init-files`** (XDG data), not under `~/.config/`.
@@ -194,7 +194,7 @@ source ~/.bashrc
 
 | Need | Command |
 | --- | --- |
-| New git commits on `main` | `refresh_init_files` (always provisions) |
+| New git commits on `main` | `refresh_init_files` (provisions when HEAD is new) |
 | New/moved binaries only | `provision_init_files` (or `refresh_init_files`) |
 | Broken / non-symlink `~/.bashrc` | `provision_init_files` or `refresh_init_files` |
 | Full install → non-dev host | `refresh_init_files --no-dev` (persists) |
@@ -286,7 +286,7 @@ Conventions:
 9. On Darwin (not `-q`): merge curated iTerm2 prefs via `iterm2/install` when the plist is present (warn-only on failure).
 10. On modern macOS (not `-q`): if preferred Homebrew bash is present and UserShell is not that Cellar binary, print `/etc/shells` + `chsh` setup steps.
 
-`refresh_init_files` detects tools revision mismatch / broken paths at shell startup (doctor / warn tip). Full `refresh_init_files` **always** runs `provision_init_files` after pull. Bump `INIT_FILES_TOOLS_REVISION` in both `provision_init_files` and `bashrc` when the `record_tool` set changes.
+`refresh_init_files` detects tools revision mismatch / broken paths at shell startup (doctor / warn tip). Full `refresh_init_files` provisions after pull when HEAD is not yet recorded in `last-provisioned.<hostname>`, deploy has drifted, or you pass `-f` / mode / transport / iterm flags. Bump `INIT_FILES_TOOLS_REVISION` in both `provision_init_files` and `bashrc` when the `record_tool` set changes.
 
 Flags: `-f` / `--force`, `-q` / `--quiet`, `--no-dev` / `--dev`, `--github-https` / `--github-ssh` (per-host GitHub transport; also on `refresh_init_files`). See [README — Where the flags are available](README.md#where-the-flags-are-available).
 
