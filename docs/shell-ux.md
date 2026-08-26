@@ -317,7 +317,7 @@ update_tools                    # upgrade all currently pending tools this accou
 
 `update_tools` runs the same per-tool helpers (`update_git`, `update_bash`, …) and admin-handoff rules, then invalidates the daily report. Tools already upgraded out-of-band are skipped.
 
-Implementation: `refresh_tool_version_cache` in [`bashrc`](../bashrc) fetches unlocked then publishes under `lib/tool_version_cache` lock/atomic write (#26). Distro fallbacks avoid perpetual “pending” when upstream APIs fail. Rebuild serialization uses `${tool_version_state_dir}.rebuild.lock`.
+Implementation: `refresh_tool_version_cache` in [`bashrc`](../bashrc) fetches unlocked then publishes under `lib/tool_version_cache` lock/atomic write (#26). Distro fallbacks avoid perpetual “pending” when upstream APIs fail. Rebuild serialization uses `${tool_version_state_dir}/rebuild.lock` (waiters reuse a just-published report even when a background `latest` refresh bumps cache mtime).
 
 ---
 

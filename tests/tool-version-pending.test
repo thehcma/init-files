@@ -22,7 +22,8 @@ assert_contains 'defines update_tools' "$text" 'function update_tools'
 assert_contains 'defines update action classifier' "$text" '_tool_version_record_update_action()'
 assert_contains 'defines update footer helper' "$text" '_tool_version_append_update_footer()'
 assert_contains 'defines cached report usable helper' "$text" '_tool_version_cached_report_usable()'
-assert_contains 'uses rebuild lock' "$text" '.rebuild.lock'
+assert_contains 'defines after-wait report reuse helper' "$text" '_tool_version_report_reusable_after_wait()'
+assert_contains 'uses rebuild lock' "$text" '/rebuild.lock'
 assert_contains 'offers batch upgrade prompt' "$text" 'Upgrade outdated tools now'
 assert_contains 'writes pending-updates' "$text" 'pending-updates'
 # Needle is a literal bashrc snippet (includes "$pending_file").
@@ -176,6 +177,31 @@ assert_contains 'footer lists self tools' "$footer" 'tools: pnpm, gh'
 assert_contains 'footer lists needs admin' "$footer" 'needs admin:'
 assert_contains 'footer lists git admin handoff' "$footer" \
     'git: ask an admin: sudo apt install --only-upgrade git'
+
+printf '\n=== behavioral: after-wait report reuse ignores cache mtime ===\n'
+# shellcheck disable=SC1090
+eval "$(sed -n '/^_tool_version_report_reusable_after_wait()$/,/^}$/p' "$bashrc")"
+peer_dir="${tmpdir}/peer-report"
+mkdir -p "$peer_dir"
+# Minimal colored report with a bash: line (same shape as a real last-report).
+printf '\n[tool versions]\n\033[32m  bash: installed 5.2.0, latest 5.2.0\033[0m\n' >"${peer_dir}/last-report"
+now=$(date +%s)
+printf '%s\n' "$now" >"${peer_dir}/last-check"
+if _tool_version_report_reusable_after_wait \
+    "${peer_dir}/last-report" "${peer_dir}/last-check" "$now"
+then
+    pass_case 'after-wait reuses fresh peer report'
+else
+    fail_case 'after-wait reuses fresh peer report'
+fi
+printf '%s\n' "$((now - 400))" >"${peer_dir}/last-check"
+if _tool_version_report_reusable_after_wait \
+    "${peer_dir}/last-report" "${peer_dir}/last-check" "$now"
+then
+    fail_case 'after-wait rejects stale peer stamp'
+else
+    pass_case 'after-wait rejects stale peer stamp'
+fi
 
 printf '\n=== behavioral: update_tools control flow ===\n'
 # Extract update_tools; stub per-tool updaters + invalidate + tool_update_command.

@@ -1266,6 +1266,27 @@ _tool_version_cached_report_usable()
     return 0
 }
 
+# After waiting on the rebuild lock, reuse a peer's just-published report.
+# Skips cache-mtime (background latest refresh often bumps latest immediately
+# after last-report, which would falsely force a second rebuild).
+_tool_version_report_reusable_after_wait()
+{
+    local report_file="$1"
+    local check_stamp="$2"
+    local current_time="$3"
+    local checked_at
+    local max_peer_age="${4:-300}"
+
+    [[ -r "$report_file" && -r "$check_stamp" ]] || return 1
+    checked_at=$(cat "$check_stamp" 2>/dev/null || echo 0)
+    [[ "$checked_at" =~ ^[0-9]+$ ]] || return 1
+    # Peer stamp may be captured at rebuild start; allow a few minutes of skew.
+    (( current_time - checked_at < max_peer_age )) || return 1
+    grep -a -F $'\033[' "$report_file" >/dev/null 2>&1 || return 1
+    grep -a -E $'^(\033\\[[0-9;]*m)?[[:space:]]*bash:' "$report_file" >/dev/null 2>&1 || return 1
+    return 0
+}
+
 function add_tool_update_notice()
 {
     local red reset tool_name tool_path current_version latest_version update_command upgrade_tier
@@ -1863,7 +1884,7 @@ function check_tool_versions()
     local cache_mtime report_mtime
     local pending_file
     local rebuild_lock acquired_rebuild_lock offer_updates wait_i
-    local _footer
+    local _footer waited_for_rebuild reuse_report
 
     [[ $- == *i* ]] || return
 
@@ -1882,7 +1903,7 @@ function check_tool_versions()
     check_stamp="${tool_version_state_dir}/last-check"
     report_file="${tool_version_state_dir}/last-report"
     pending_file="${tool_version_state_dir}/pending-updates"
-    rebuild_lock="${tool_version_state_dir}.rebuild.lock"
+    rebuild_lock="${tool_version_state_dir}/rebuild.lock"
     checked_at=
     bash_latest=
     gh_latest=
@@ -1903,6 +1924,8 @@ function check_tool_versions()
     rebuild=0
     acquired_rebuild_lock=0
     offer_updates=0
+    waited_for_rebuild=0
+    reuse_report=0
     report=
 
     mkdir -p "$tool_version_state_dir" 2>/dev/null || true
@@ -1970,34 +1993,61 @@ function check_tool_versions()
 
     # Serialize rebuilds across concurrent interactive shells (iTerm multi-pane
     # startup). Only the lock holder rebuilds / offers update_tools; peers wait
-    # then reuse the published report (no second network-ish probe pass).
+    # then reuse the published report (no second probe pass).
     if declare -F init_files_mkdir_lock > /dev/null 2>&1 \
         && declare -F init_files_mkdir_unlock > /dev/null 2>&1; then
         if init_files_mkdir_lock "$rebuild_lock" 120; then
             acquired_rebuild_lock=1
         else
+            waited_for_rebuild=1
             wait_i=0
-            while (( wait_i < 60 )); do
-                sleep 0.5
+            while (( wait_i < 120 )); do
+                sleep 0.25
                 wait_i=$((wait_i + 1))
                 if init_files_mkdir_lock "$rebuild_lock" 120; then
                     acquired_rebuild_lock=1
                     break
                 fi
+                # Peer may have published before releasing; bail early once the
+                # stamp looks like a just-finished rebuild.
+                if _tool_version_report_reusable_after_wait \
+                    "$report_file" "$check_stamp" "$current_time"
+                then
+                    cat "$report_file"
+                    tool_version_check_schedule_lines
+                    if type _init_files_warn_tools_reinstall_if_needed > /dev/null 2>&1; then
+                        _init_files_warn_tools_reinstall_if_needed broken
+                    fi
+                    return 0
+                fi
             done
         fi
-        if [[ $acquired_rebuild_lock -eq 1 ]] \
-            && _tool_version_cached_report_usable \
+        if [[ $acquired_rebuild_lock -eq 1 ]]; then
+            reuse_report=0
+            if [[ $waited_for_rebuild -eq 1 ]]; then
+                # Do not use full usable() here: peer's background latest refresh
+                # often makes cache mtime > report mtime and would force us to
+                # rebuild again (looks like the lock failed).
+                if _tool_version_report_reusable_after_wait \
+                    "$report_file" "$check_stamp" "$current_time"
+                then
+                    reuse_report=1
+                fi
+            elif _tool_version_cached_report_usable \
                 "$report_file" "$check_stamp" "$cache_file" "$pending_file" "$current_time"
-        then
-            init_files_mkdir_unlock "$rebuild_lock"
-            acquired_rebuild_lock=0
-            cat "$report_file"
-            tool_version_check_schedule_lines
-            if type _init_files_warn_tools_reinstall_if_needed > /dev/null 2>&1; then
-                _init_files_warn_tools_reinstall_if_needed broken
+            then
+                reuse_report=1
             fi
-            return 0
+            if [[ $reuse_report -eq 1 ]]; then
+                init_files_mkdir_unlock "$rebuild_lock"
+                acquired_rebuild_lock=0
+                cat "$report_file"
+                tool_version_check_schedule_lines
+                if type _init_files_warn_tools_reinstall_if_needed > /dev/null 2>&1; then
+                    _init_files_warn_tools_reinstall_if_needed broken
+                fi
+                return 0
+            fi
         fi
         if [[ $acquired_rebuild_lock -eq 0 && -r "$report_file" ]]; then
             # Timed out waiting; prefer any existing report over a stacked rebuild.
@@ -2200,7 +2250,8 @@ function check_tool_versions()
         && init_files_mkdir_lock "$lock_dir"; then
         if [[ $pending_tool_count -eq 0 ]]; then
             printf '%s' "$report" | init_files_atomic_write "$report_file" || true
-            printf '%s\n' "$current_time" | init_files_atomic_write "$check_stamp" || true
+            # Stamp publish time (not rebuild-start) so waiters see a fresh peer.
+            printf '%s\n' "$(date +%s)" | init_files_atomic_write "$check_stamp" || true
             if [[ -n "${tool_pending_updates_tsv:-}" ]]; then
                 {
                     printf '# tool\tinstalled\tpath\n'
