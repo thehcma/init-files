@@ -127,4 +127,45 @@ PY
 )"
 _assert_str_eq 'fzf fixed column widths' "$got" 'ok'
 
+printf '\n=== cwd display is home-relative and keeps basename ===\n'
+got="$(
+    python3 - <<'PY' "$py"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("asess", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+home = "/Users/Henrique.Andrade"
+assert m.format_cwd(home, home=home) == "~"
+assert m.format_cwd(home + "/", home=home) == "~"
+assert m.format_cwd(home + "/work/ai/deep", home=home) == "~/work/ai/deep"
+assert m.format_cwd("/tmp/x", home=home) == "/tmp/x"
+assert m.format_cwd("", home=home) == "-"
+
+w = m.FZF_CWD_W
+long_home = home + "/work/ai/repository-helpers/deep"
+fitted = m.fit_cwd(long_home, w, home=home)
+assert len(fitted) == w, (len(fitted), fitted)
+assert fitted.startswith("~/…") or fitted.startswith("~/"), fitted
+assert fitted.rstrip().endswith("deep"), fitted
+# Basename preferred over earlier segments when space is tight.
+tight = m.fit_cwd(long_home, 12, home=home)
+assert len(tight) == 12
+assert tight.startswith("~/…"), tight
+assert tight.rstrip().endswith("deep"), tight
+
+outside = m.fit_cwd("/var/log/very/long/path/to/service", 20, home=home)
+assert len(outside) == 20
+assert outside.startswith("…"), outside
+assert outside.rstrip().endswith("service"), outside
+assert not outside.startswith("~/"), outside
+
+short = m.fit_cwd(home + "/src", w, home=home)
+assert short.startswith("~/src"), short
+assert len(short) == w
+print("ok")
+PY
+)"
+_assert_str_eq 'cwd home-relative + basename ellipsis' "$got" 'ok'
+
 test_summary

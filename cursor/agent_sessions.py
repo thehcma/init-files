@@ -63,6 +63,57 @@ def fit(text: str, width: int) -> str:
     return text.ljust(width)
 
 
+def format_cwd(cwd: str, home: str | None = None) -> str:
+    """Prefer ~/relative when cwd is under $HOME; otherwise keep absolute."""
+    text = (cwd or "").strip()
+    if not text:
+        return "-"
+    home = (home if home is not None else str(Path.home())).rstrip("/")
+    if not home:
+        return text
+    if text == home or text == home + "/":
+        return "~"
+    prefix = home + "/"
+    if text.startswith(prefix):
+        return "~/" + text[len(prefix) :]
+    return text
+
+
+def fit_cwd(cwd: str, width: int, home: str | None = None) -> str:
+    """Fit cwd to width: home-relative, left-ellipsis, basename preserved."""
+    text = format_cwd(cwd, home=home)
+    if width <= 0:
+        return ""
+    if len(text) <= width:
+        return text.ljust(width)
+    if width == 1:
+        return "…"
+
+    base = Path(text.rstrip("/")).name or text
+
+    def _right_suffix(src: str, available: int) -> str:
+        """Rightmost path suffix of at most `available` chars (prefer / boundary)."""
+        if available <= 0:
+            return ""
+        if len(base) >= available:
+            return base[-available:]
+        raw = src[-available:]
+        if not raw.startswith(("/", "~")):
+            slash = raw.find("/")
+            if slash != -1 and slash + 1 < len(raw):
+                raw = raw[slash:]
+        return raw
+
+    # Keep a ~/… cue when the display path is under home.
+    if text.startswith("~/") and width >= 4:
+        prefix = "~/…"
+        suffix = _right_suffix(text[2:], width - len(prefix))
+        return (prefix + suffix).ljust(width)
+
+    suffix = _right_suffix(text, width - 1)
+    return ("…" + suffix).ljust(width)
+
+
 # Fixed fzf column widths (pane label · time · cwd · last prompt).
 FZF_LABEL_W = 36
 FZF_TIME_W = 16
@@ -204,7 +255,7 @@ def cmd_list(argv: list[str]) -> int:
             f"{idx:3d}  {fmt_time(r['updated_ms'])}  {pane_style_label(r)}\n"
             f"     id:   {r['id']}\n"
             f"     name: {label}\n"
-            f"     cwd:  {r['cwd'] or '-'}\n"
+            f"     cwd:  {format_cwd(r['cwd'] or '')}\n"
             f"     last: {clip(r['latest'], 88) or '-'}"
         )
         extra = []
@@ -225,7 +276,7 @@ def fzf_display(row: dict) -> str:
     parts = [
         fit(pane_style_label(row), FZF_LABEL_W),
         fit(fmt_time(int(row.get("updated_ms") or 0)), FZF_TIME_W),
-        fit(row.get("cwd") or "-", FZF_CWD_W),
+        fit_cwd(row.get("cwd") or "-", FZF_CWD_W),
         fit(row.get("latest") or "-", FZF_PROMPT_W),
     ]
     return "  ".join(parts).replace("\t", " ")
