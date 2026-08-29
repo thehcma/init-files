@@ -21,11 +21,18 @@ assert_contains 'defines drift check' "$text" 'tool_version_pending_drifted()'
 assert_contains 'defines update_tools' "$text" 'function update_tools'
 assert_contains 'defines update action classifier' "$text" '_tool_version_record_update_action()'
 assert_contains 'defines update footer helper' "$text" '_tool_version_append_update_footer()'
+assert_contains 'defines self-names for offer helper' "$text" '_tool_version_self_names_for_offer()'
+assert_contains 'defines maybe-offer helper' "$text" '_tool_version_maybe_offer_update_tools()'
+assert_contains 'defines finish-report helper' "$text" '_tool_version_finish_report_print()'
 assert_contains 'defines cached report usable helper' "$text" '_tool_version_cached_report_usable()'
 assert_contains 'defines after-wait report reuse helper' "$text" '_tool_version_report_reusable_after_wait()'
 assert_contains 'uses rebuild lock' "$text" '/rebuild.lock'
+assert_contains 'uses offer lock' "$text" 'update-offer.lock'
 assert_contains 'offers batch upgrade prompt' "$text" 'Upgrade outdated tools now'
 assert_contains 'writes pending-updates' "$text" 'pending-updates'
+assert_contains 'writes pending-self-names' "$text" 'pending-self-names'
+assert_contains 'stamps update-offer-done' "$text" 'update-offer-done'
+assert_contains 'finish path offers on cache and rebuild' "$text" '_tool_version_finish_report_print'
 # Needle is a literal bashrc snippet (includes "$pending_file").
 # shellcheck disable=SC2016
 assert_contains 'fast path checks drift' "$text" 'tool_version_pending_drifted "$pending_file"'
@@ -284,5 +291,101 @@ if [[ "$ran_tools" == *'git '* ]]; then
 else
     fail_case "update_tools upgrades on downgrade/PATH switch (ran=${ran_tools})"
 fi
+
+printf '\n=== behavioral: offer self-names + stamp ===\n'
+# shellcheck disable=SC1090
+eval "$(sed -n \
+    '/^_tool_version_self_names_for_offer()$/,/^}$/p; /^_tool_version_can_prompt_yn()$/,/^}$/p; /^_tool_version_maybe_offer_update_tools()$/,/^}$/p' \
+    "$bashrc")"
+
+offer_dir="${tmpdir}/offer"
+mkdir -p "$offer_dir"
+# shellcheck disable=SC2034
+tool_version_state_dir="$offer_dir"
+printf 'pnpm, uv\n' >"${offer_dir}/pending-self-names"
+names="$(_tool_version_self_names_for_offer)"
+if [[ "$names" == 'pnpm, uv' ]]; then
+    pass_case 'self-names for offer reads sidecar'
+else
+    fail_case "self-names for offer reads sidecar (got=$(printf '%q' "$names"))"
+fi
+rm -f "${offer_dir}/pending-self-names"
+cat >"${offer_dir}/pending-updates" <<'EOF'
+# tool	installed	path
+pnpm	11.0.0	/tmp/pnpm
+git	2.54.0	/usr/bin/git
+uv	0.1.0	/tmp/uv
+EOF
+# Classify in a subshell so stubs do not shadow earlier update_tools doubles (SC2317).
+names="$(
+    # Invoked from eval'd _tool_version_self_names_for_offer (SC2317).
+    # shellcheck disable=SC2317
+    tool_update_command()
+    {
+        case "$1" in
+            git) printf 'ask an admin: sudo apt install --only-upgrade git\n' ;;
+            pnpm) printf 'update_pnpm\n' ;;
+            uv) printf 'update_uv\n' ;;
+            *) return 1 ;;
+        esac
+    }
+    _tool_version_self_names_for_offer
+)"
+if [[ "$names" == 'pnpm, uv' ]]; then
+    pass_case 'self-names for offer classifies pending-updates'
+else
+    fail_case "self-names for offer classifies pending-updates (got=$(printf '%q' "$names"))"
+fi
+
+# Non-promptable environment: must not stamp update-offer-done.
+# Stubs are only referenced from the eval'd helper (SC2317).
+# shellcheck disable=SC2317
+{
+    rm -f "${offer_dir}/update-offer-done" "${offer_dir}/offered.log"
+    printf '%s\n' '100' >"${offer_dir}/last-check"
+    update_tools() { printf 'updated\n' >>"${offer_dir}/offered.log"; }
+    _init_prompt_yn() { return 1; }
+    _tool_version_can_prompt_yn() { return 1; }
+    _tool_version_maybe_offer_update_tools 'pnpm'
+    if [[ ! -e "${offer_dir}/update-offer-done" && ! -e "${offer_dir}/offered.log" ]]; then
+        pass_case 'maybe-offer skips without stamp when cannot prompt'
+    else
+        fail_case 'maybe-offer skips without stamp when cannot prompt'
+    fi
+
+    # Promptable decline: stamp once; second call no re-prompt.
+    _tool_version_can_prompt_yn() { return 0; }
+    prompt_count=0
+    _init_prompt_yn()
+    {
+        prompt_count=$((prompt_count + 1))
+        return 1
+    }
+    _tool_version_maybe_offer_update_tools 'pnpm'
+    _tool_version_maybe_offer_update_tools 'pnpm'
+    if [[ $prompt_count -eq 1 && -r "${offer_dir}/update-offer-done" ]] \
+        && [[ "$(tr -d '[:space:]' <"${offer_dir}/update-offer-done")" == '100' ]] \
+        && [[ ! -e "${offer_dir}/offered.log" ]]
+    then
+        pass_case 'maybe-offer stamps decline once per last-check'
+    else
+        fail_case "maybe-offer stamps decline once per last-check (prompts=${prompt_count})"
+    fi
+
+    # Accept path runs update_tools.
+    rm -f "${offer_dir}/update-offer-done" "${offer_dir}/offered.log"
+    prompt_count=0
+    _init_prompt_yn()
+    {
+        prompt_count=$((prompt_count + 1))
+        return 0
+    }
+    _tool_version_maybe_offer_update_tools 'pnpm'
+    if [[ $prompt_count -eq 1 && -r "${offer_dir}/offered.log" ]]; then
+        pass_case 'maybe-offer runs update_tools on yes'
+    else
+        fail_case "maybe-offer runs update_tools on yes (prompts=${prompt_count})"
+    fi
+}
 
 test_summary

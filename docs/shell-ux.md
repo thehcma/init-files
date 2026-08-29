@@ -307,7 +307,7 @@ After adding newly tracked tools, an incomplete `latest` cache or a report missi
 
 When the report has outdated tools, `check_tool_versions` also writes a small **`pending-updates`** TSV sidecar (`tool`, `installed`, `path`). On later shells the fast path cheaply re-probes those installed versions; if any drifted (admin apt/brew, etc.), the report rebuilds immediately — no 24h wait and no manual `invalidate_tool_version_cache`.
 
-The `[tool updates]` section lists each outdated tool once (no per-tool `suggested command`). At the bottom it splits **this account** (`update_tools`) vs **needs admin** (`ask an admin: …`). On a TTY, the shell that rebuilt the report offers `Upgrade outdated tools now (…)? [Y/n]` once; cached reprints only show the footer. Concurrent interactive shells share a **rebuild lock** so only one session runs the check.
+The `[tool updates]` section lists each outdated tool once (no per-tool `suggested command`). At the bottom it splits **this account** (`update_tools`) vs **needs admin** (`ask an admin: …`). On a TTY, the first shell that prints that report offers `Upgrade outdated tools now (…)? [Y/n]` once per daily `last-check` (rebuild **or** cached reprint); further shells only show the footer. Concurrent interactive shells share a **rebuild lock** so only one session runs the check, and an **offer lock** so only one prompts.
 
 ```bash
 invalidate_tool_version_cache   # optional nudge
@@ -317,7 +317,7 @@ update_tools                    # upgrade all currently pending tools this accou
 
 `update_tools` runs the same per-tool helpers (`update_git`, `update_bash`, …) and admin-handoff rules, then invalidates the daily report. Tools already upgraded out-of-band are skipped.
 
-Implementation: `refresh_tool_version_cache` in [`bashrc`](../bashrc) fetches unlocked then publishes under `lib/tool_version_cache` lock/atomic write (#26). Distro fallbacks avoid perpetual “pending” when upstream APIs fail. Rebuild serialization uses `${tool_version_state_dir}/rebuild.lock` (waiters reuse a just-published report even when a background `latest` refresh bumps cache mtime).
+Implementation: `refresh_tool_version_cache` in [`bashrc`](../bashrc) fetches unlocked then publishes under `lib/tool_version_cache` lock/atomic write (#26). Distro fallbacks avoid perpetual “pending” when upstream APIs fail. Rebuild serialization uses `${tool_version_state_dir}/rebuild.lock` (waiters reuse a just-published report even when a background `latest` refresh bumps cache mtime). The Y/n offer is `_tool_version_maybe_offer_update_tools` (stamp `update-offer-done` keyed to `last-check`; sidecar `pending-self-names` for cached reprints).
 
 ---
 

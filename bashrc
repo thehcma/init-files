@@ -1235,6 +1235,124 @@ _tool_version_append_update_footer()
     fi
 }
 
+# Resolve comma-separated self-service tool names for the update_tools offer.
+# Prefers the rebuild-time sidecar; falls back to classifying pending-updates.
+_tool_version_self_names_for_offer()
+{
+    local names_file pending_file tool ver path update_command names=
+
+    names_file="${tool_version_state_dir:-}/pending-self-names"
+    pending_file="${tool_version_state_dir:-}/pending-updates"
+    if [[ -r "$names_file" ]]; then
+        names=$(tr -d '\r\n' <"$names_file" 2>/dev/null || true)
+        if [[ -n "$names" ]]; then
+            printf '%s' "$names"
+            return 0
+        fi
+    fi
+    [[ -r "$pending_file" ]] || return 0
+    declare -F tool_update_command > /dev/null 2>&1 || return 0
+    while IFS=$'\t' read -r tool ver path || [[ -n "$tool" ]]; do
+        [[ -z "$tool" || "$tool" == \#* ]] && continue
+        update_command="$(tool_update_command "$tool" "${path:-}" 2>/dev/null || true)"
+        [[ -n "$update_command" ]] || continue
+        [[ "$update_command" == ask\ an\ admin* ]] && continue
+        case ", ${names}, " in
+            *", ${tool}, "*) ;;
+            *)
+                if [[ -n "$names" ]]; then
+                    names+=", ${tool}"
+                else
+                    names="$tool"
+                fi
+                ;;
+        esac
+    done <"$pending_file"
+    printf '%s' "$names"
+}
+
+# True when _init_prompt_yn can ask (stderr TTY + stdin TTY or /dev/tty).
+_tool_version_can_prompt_yn()
+{
+    [[ -t 2 ]] || return 1
+    [[ -t 0 ]] && return 0
+    [[ -r /dev/tty && -w /dev/tty ]]
+}
+
+# After printing a report with self-service outdated tools, offer update_tools
+# once per last-check generation on a TTY. Cached reprints and rebuilds share
+# this path so a non-TTY lock-holder cannot swallow the only offer.
+# Globals: tool_version_state_dir. Optional arg: precomputed self names.
+_tool_version_maybe_offer_update_tools()
+{
+    local self_names="${1:-}"
+    local check_stamp offer_stamp offer_lock stamped_at checked_at
+    local acquired_offer_lock=0
+
+    [[ -n "${tool_version_state_dir:-}" ]] || return 0
+    if [[ -z "$self_names" ]]; then
+        self_names="$(_tool_version_self_names_for_offer)"
+    fi
+    [[ -n "$self_names" ]] || return 0
+    declare -F _init_prompt_yn > /dev/null 2>&1 || return 0
+    declare -F update_tools > /dev/null 2>&1 || return 0
+    # Do not stamp when we cannot prompt — another shell may have a TTY.
+    _tool_version_can_prompt_yn || return 0
+
+    check_stamp="${tool_version_state_dir}/last-check"
+    offer_stamp="${tool_version_state_dir}/update-offer-done"
+    offer_lock="${tool_version_state_dir}/update-offer.lock"
+    checked_at=
+    [[ -r "$check_stamp" ]] && checked_at=$(tr -d '[:space:]' <"$check_stamp" 2>/dev/null || true)
+    [[ "$checked_at" =~ ^[0-9]+$ ]] || return 0
+
+    if [[ -r "$offer_stamp" ]]; then
+        stamped_at=$(tr -d '[:space:]' <"$offer_stamp" 2>/dev/null || true)
+        [[ "$stamped_at" == "$checked_at" ]] && return 0
+    fi
+
+    if declare -F init_files_mkdir_lock > /dev/null 2>&1 \
+        && declare -F init_files_mkdir_unlock > /dev/null 2>&1
+    then
+        # Busy → peer is offering (or about to); leave unstamped.
+        init_files_mkdir_lock "$offer_lock" 120 || return 0
+        acquired_offer_lock=1
+        if [[ -r "$offer_stamp" ]]; then
+            stamped_at=$(tr -d '[:space:]' <"$offer_stamp" 2>/dev/null || true)
+            if [[ "$stamped_at" == "$checked_at" ]]; then
+                init_files_mkdir_unlock "$offer_lock"
+                return 0
+            fi
+        fi
+    fi
+
+    if ! _init_prompt_yn "Upgrade outdated tools now (${self_names})? [Y/n]"; then
+        # User declined (we already verified we can prompt).
+        printf '%s\n' "$checked_at" >"$offer_stamp" 2>/dev/null || true
+        [[ $acquired_offer_lock -eq 1 ]] && init_files_mkdir_unlock "$offer_lock"
+        return 0
+    fi
+    printf '%s\n' "$checked_at" >"$offer_stamp" 2>/dev/null || true
+    [[ $acquired_offer_lock -eq 1 ]] && init_files_mkdir_unlock "$offer_lock"
+
+    # shellcheck disable=SC2119
+    update_tools || true
+}
+
+# Print schedule/warn lines, then maybe offer update_tools (rebuild + cache).
+_tool_version_finish_report_print()
+{
+    if [[ $# -ge 1 ]]; then
+        tool_version_check_schedule_lines "$1"
+    else
+        tool_version_check_schedule_lines
+    fi
+    if type _init_files_warn_tools_reinstall_if_needed > /dev/null 2>&1; then
+        _init_files_warn_tools_reinstall_if_needed broken
+    fi
+    _tool_version_maybe_offer_update_tools "${tool_update_self_names:-}"
+}
+
 # True when last-report / last-check are fresh enough to reuse (no rebuild).
 _tool_version_cached_report_usable()
 {
@@ -1882,8 +2000,8 @@ function check_tool_versions()
     local pending_tool_count
     local no_dev_flag check_stamp report_file rebuild report
     local cache_mtime report_mtime
-    local pending_file
-    local rebuild_lock acquired_rebuild_lock offer_updates wait_i
+    local pending_file self_names_file
+    local rebuild_lock acquired_rebuild_lock wait_i
     local _footer waited_for_rebuild reuse_report
 
     [[ $- == *i* ]] || return
@@ -1903,6 +2021,7 @@ function check_tool_versions()
     check_stamp="${tool_version_state_dir}/last-check"
     report_file="${tool_version_state_dir}/last-report"
     pending_file="${tool_version_state_dir}/pending-updates"
+    self_names_file="${tool_version_state_dir}/pending-self-names"
     rebuild_lock="${tool_version_state_dir}/rebuild.lock"
     checked_at=
     bash_latest=
@@ -1923,7 +2042,6 @@ function check_tool_versions()
     pending_tool_count=0
     rebuild=0
     acquired_rebuild_lock=0
-    offer_updates=0
     waited_for_rebuild=0
     reuse_report=0
     report=
@@ -1984,16 +2102,14 @@ function check_tool_versions()
 
     if [[ $rebuild -eq 0 ]]; then
         cat "$report_file"
-        tool_version_check_schedule_lines
-        if type _init_files_warn_tools_reinstall_if_needed > /dev/null 2>&1; then
-            _init_files_warn_tools_reinstall_if_needed broken
-        fi
+        _tool_version_finish_report_print
         return 0
     fi
 
     # Serialize rebuilds across concurrent interactive shells (iTerm multi-pane
-    # startup). Only the lock holder rebuilds / offers update_tools; peers wait
-    # then reuse the published report (no second probe pass).
+    # startup). Only the lock holder rebuilds; peers wait then reuse the
+    # published report (no second probe pass). update_tools is offered from
+    # finish_report_print on whichever TTY prints first (once per last-check).
     if declare -F init_files_mkdir_lock > /dev/null 2>&1 \
         && declare -F init_files_mkdir_unlock > /dev/null 2>&1; then
         if init_files_mkdir_lock "$rebuild_lock" 120; then
@@ -2014,10 +2130,7 @@ function check_tool_versions()
                     "$report_file" "$check_stamp" "$current_time"
                 then
                     cat "$report_file"
-                    tool_version_check_schedule_lines
-                    if type _init_files_warn_tools_reinstall_if_needed > /dev/null 2>&1; then
-                        _init_files_warn_tools_reinstall_if_needed broken
-                    fi
+                    _tool_version_finish_report_print
                     return 0
                 fi
             done
@@ -2042,20 +2155,14 @@ function check_tool_versions()
                 init_files_mkdir_unlock "$rebuild_lock"
                 acquired_rebuild_lock=0
                 cat "$report_file"
-                tool_version_check_schedule_lines
-                if type _init_files_warn_tools_reinstall_if_needed > /dev/null 2>&1; then
-                    _init_files_warn_tools_reinstall_if_needed broken
-                fi
+                _tool_version_finish_report_print
                 return 0
             fi
         fi
         if [[ $acquired_rebuild_lock -eq 0 && -r "$report_file" ]]; then
             # Timed out waiting; prefer any existing report over a stacked rebuild.
             cat "$report_file"
-            tool_version_check_schedule_lines
-            if type _init_files_warn_tools_reinstall_if_needed > /dev/null 2>&1; then
-                _init_files_warn_tools_reinstall_if_needed broken
-            fi
+            _tool_version_finish_report_print
             return 0
         fi
     fi
@@ -2260,38 +2367,27 @@ function check_tool_versions()
             else
                 rm -f "$pending_file" 2>/dev/null || true
             fi
+            if [[ -n "${tool_update_self_names:-}" ]]; then
+                printf '%s\n' "$tool_update_self_names" \
+                    | init_files_atomic_write "$self_names_file" || true
+            else
+                rm -f "$self_names_file" 2>/dev/null || true
+            fi
         else
-            rm -f "$report_file" "$pending_file" 2>/dev/null || true
+            rm -f "$report_file" "$pending_file" "$self_names_file" 2>/dev/null || true
         fi
         init_files_mkdir_unlock "$lock_dir"
     fi
 
     # Release rebuild lock before printing / prompting so peer shells can reuse
-    # the cached report while this session offers update_tools.
+    # the cached report while this session (or the next TTY) offers update_tools.
     if [[ $acquired_rebuild_lock -eq 1 ]]; then
-        offer_updates=1
         init_files_mkdir_unlock "$rebuild_lock"
         acquired_rebuild_lock=0
-    elif ! declare -F init_files_mkdir_lock > /dev/null 2>&1; then
-        offer_updates=1
     fi
 
     printf '%s' "$report"
-    tool_version_check_schedule_lines "$pending_tool_count"
-    if type _init_files_warn_tools_reinstall_if_needed > /dev/null 2>&1; then
-        _init_files_warn_tools_reinstall_if_needed broken
-    fi
-
-    # One interactive offer per rebuild (not on cached reprints). Admin-only
-    # updates are listed in the report footer; update_tools still prints handoffs.
-    if [[ $offer_updates -eq 1 && -n "${tool_update_self_names:-}" ]] \
-        && declare -F _init_prompt_yn > /dev/null 2>&1 \
-        && declare -F update_tools > /dev/null 2>&1 \
-        && _init_prompt_yn "Upgrade outdated tools now (${tool_update_self_names})? [Y/n]"
-    then
-        # shellcheck disable=SC2119
-        update_tools || true
-    fi
+    _tool_version_finish_report_print "$pending_tool_count"
 }
 
 # Unique SSH destinations: Host aliases from ~/.ssh/config (+ config.d) and
@@ -5260,16 +5356,30 @@ function install_starship()
 }
 
 # Y/n for interactive helpers (default yes). No prompt when non-TTY → no.
+# Prefer stdin when it is a TTY; otherwise fall back to /dev/tty (common when
+# stdout/stdin are redirected during shell init but a controlling tty exists).
 function _init_prompt_yn()
 {
     local prompt="$1"
     local reply
+    local use_dev_tty=0
 
-    if [[ ! -t 0 || ! -t 2 ]]; then
+    if [[ ! -t 2 ]]; then
+        return 1
+    fi
+    if [[ -t 0 ]]; then
+        use_dev_tty=0
+    elif [[ -r /dev/tty && -w /dev/tty ]]; then
+        use_dev_tty=1
+    else
         return 1
     fi
     printf '%s ' "$prompt" >&2
-    read -r reply || reply=n
+    if [[ $use_dev_tty -eq 1 ]]; then
+        read -r reply </dev/tty || reply=n
+    else
+        read -r reply || reply=n
+    fi
     case "$reply" in
         ''|y|Y|yes|YES) return 0 ;;
         *) return 1 ;;
@@ -8654,6 +8764,8 @@ function invalidate_tool_version_cache()
             "${tool_version_state_dir}/last-check" \
             "${tool_version_state_dir}/last-report" \
             "${tool_version_state_dir}/pending-updates" \
+            "${tool_version_state_dir}/pending-self-names" \
+            "${tool_version_state_dir}/update-offer-done" \
             2>/dev/null || true
         init_files_mkdir_unlock "$lock_dir"
     else
@@ -8661,6 +8773,8 @@ function invalidate_tool_version_cache()
             "${tool_version_state_dir}/last-check" \
             "${tool_version_state_dir}/last-report" \
             "${tool_version_state_dir}/pending-updates" \
+            "${tool_version_state_dir}/pending-self-names" \
+            "${tool_version_state_dir}/update-offer-done" \
             2>/dev/null || true
     fi
 }
