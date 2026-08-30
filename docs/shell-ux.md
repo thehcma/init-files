@@ -39,6 +39,8 @@ INIT_FILES_SKIP_DAILY_REFRESH=1 source ~/.bashrc
 
 `prompt_fancy -q` (login restore) never prompts; it prints a short hint instead. Disable with `prompt_plain`.
 
+When **starship is already on PATH** (or otherwise resolvable) but fancy is off for this host, interactive TTYs **explain** `prompt_fancy` and offer to enable it about weekly (`last-fancy-prompt-offer`). Skip with `INIT_FILES_SKIP_FANCY_PROMPT_OFFER=1`. Missing starship is not nagged here — run `prompt_fancy` yourself to get the install offer.
+
 Glyphs (`❯`, ``) need a **Nerd Font** in the terminal that draws them:
 
 | Where you type | Font |

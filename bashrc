@@ -5120,6 +5120,54 @@ function _init_maybe_offer_orphan_cleanup()
     return 0
 }
 
+# Interactive: about weekly, if starship is already usable but fancy is off,
+# explain prompt_fancy and offer to enable (remembered per host).
+function _init_maybe_offer_prompt_fancy()
+{
+    local state_dir stamp now age starship_bin
+
+    [[ $- == *i* ]] || return 0
+    [[ -z "${_init_files_in_refresh_reload:-}" ]] || return 0
+    [[ -z "${INIT_FILES_SKIP_FANCY_PROMPT_OFFER:-}" ]] || return 0
+    [[ -t 0 && -t 2 ]] || return 0
+    declare -F _init_resolve_starship > /dev/null 2>&1 || return 0
+    declare -F prompt_fancy > /dev/null 2>&1 || return 0
+    declare -F _init_prompt_yn > /dev/null 2>&1 || return 0
+
+    # Already preferred or active — nothing to suggest.
+    [[ ! -f "${init_files_fancy_prompt_flag:-}" ]] || return 0
+    [[ "${_init_prompt_mode:-}" != fancy ]] || return 0
+
+    # Prerequisites: starship must already be resolvable (no install nag here).
+    starship_bin="$(_init_resolve_starship 2>/dev/null || true)"
+    [[ -n "$starship_bin" ]] || return 0
+
+    state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/init-files"
+    stamp="${state_dir}/last-fancy-prompt-offer"
+    mkdir -p "$state_dir" 2>/dev/null || true
+
+    now=$(date +%s 2>/dev/null || echo 0)
+    [[ "$now" =~ ^[0-9]+$ ]] || return 0
+    if [[ -f "$stamp" ]]; then
+        age=$(tr -d '[:space:]' < "$stamp" 2>/dev/null || echo 0)
+        # ~7 days between offers.
+        if [[ "$age" =~ ^[0-9]+$ ]] && (( now >= age && (now - age) < 604800 )); then
+            return 0
+        fi
+    fi
+
+    printf 'init-files: prompt_fancy is available (Starship) but not enabled on this host.\n' >&2
+    printf '  Richer prompt: time, host, cwd, git branch/SHA/status (Nerd Font glyphs).\n' >&2
+    printf '  Enable with: prompt_fancy   (remembered; disable: prompt_plain)\n' >&2
+    if _init_prompt_yn "Enable fancy prompt for this host now? [Y/n]"; then
+        prompt_fancy || true
+    else
+        printf 'Skipped. Enable later with: prompt_fancy\n' >&2
+    fi
+    date +%s > "$stamp" 2>/dev/null || true
+    return 0
+}
+
 # Deploy sanity check (read-only unless noted). See GitHub issue #15.
 function init_files_doctor()
 {
@@ -10872,6 +10920,9 @@ fi
 # Preference: ~/.config/init-files/fancy-prompt.<hostname> (set/cleared by the toggles).
 if [[ $- == *i* && -f "${init_files_fancy_prompt_flag:-}" ]]; then
     prompt_fancy -q || printf 'init-files: fancy prompt preferred for this host but could not enable\n' >&2
+elif [[ $- == *i* ]] && declare -F _init_maybe_offer_prompt_fancy > /dev/null 2>&1; then
+    # Starship already present + fancy off → explain and offer (weekly; no install nag).
+    _init_maybe_offer_prompt_fancy || true
 fi
 
 if [[ $- == *i* ]]; then

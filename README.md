@@ -398,6 +398,7 @@ Interactive shells, about once per day (`init_files_max_age_seconds` / `tool_ver
 | `INIT_FILES_SKIP_TOOL_CHECK=1` | Emergency: skip `check_tool_versions` on interactive load (e.g. hung package-manager probe) |
 | `INIT_FILES_SKIP_DAILY_REFRESH=1` | Emergency: skip daily `refresh_init_files -q` on interactive load |
 | `INIT_FILES_SKIP_ORPHAN_CLEANUP_OFFER=1` | Emergency: skip weekly leftover prefs/pipx cleanup offer |
+| `INIT_FILES_SKIP_FANCY_PROMPT_OFFER=1` | Emergency: skip weekly `prompt_fancy` offer when starship is present but fancy is off |
 
 ---
 
