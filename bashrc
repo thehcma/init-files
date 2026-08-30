@@ -641,7 +641,7 @@ function _init_fzf_tool_bin()
 # as batcat. See docs/shell-ux.md (fzf).
 function _init_configure_fzf_env()
 {
-    local bat_bin lsd_bin dir_preview file_preview
+    local bat_bin lsd_bin dir_preview file_preview fzf_bin fzf_ver
 
     : "${FZF_DEFAULT_OPTS:=--height 40% --layout=reverse --border --info=inline}"
 
@@ -660,6 +660,19 @@ function _init_configure_fzf_env()
         file_preview="${bat_bin} --style=numbers --color=always --line-range :500 -- {}"
     else
         file_preview='head -n 200 {}'
+    fi
+
+    # Ctrl-R: when nothing matches, paste the typed query onto the command line
+    # so it can be edited or submitted (fzf ≥0.45). Skip on older fzf — an
+    # unknown bind breaks Enter entirely. (--help does not list this action.)
+    if [[ -z "${FZF_CTRL_R_OPTS:-}" ]]; then
+        fzf_bin="$(_init_fzf_tool_bin fzf)"
+        fzf_ver=
+        [[ -n "$fzf_bin" ]] && fzf_ver="$("$fzf_bin" --version 2>/dev/null | awk '{ print $1 }')"
+        if [[ -n "$fzf_ver" && "$(printf '%s\n' '0.45.0' "$fzf_ver" | sort -V | head -n 1)" == '0.45.0' ]]; then
+            FZF_CTRL_R_OPTS='--bind enter:accept-or-print-query'
+            export FZF_CTRL_R_OPTS
+        fi
     fi
 
     if [[ -z "${FZF_CTRL_T_OPTS:-}" ]]; then
