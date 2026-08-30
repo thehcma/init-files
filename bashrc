@@ -662,14 +662,16 @@ function _init_configure_fzf_env()
         file_preview='head -n 200 {}'
     fi
 
-    # Ctrl-R: emit the typed query when Enter finds no history match (paired with
-    # _init_fzf_wrap_history_keep_query, which drops the query line on a real hit).
-    # Also replace the prior soft default (accept-or-print-query) which broke
-    # selecting real history matches under --multi.
-    if [[ -z "${FZF_CTRL_R_OPTS:-}" || "${FZF_CTRL_R_OPTS}" == '--bind enter:accept-or-print-query' ]]; then
-        FZF_CTRL_R_OPTS='--print-query'
-        export FZF_CTRL_R_OPTS
-    fi
+    # Ctrl-R history: exact substring match (not character-fuzzy), prefer hits
+    # nearer the start of the command, and on zero hits keep the typed query
+    # for edit/submit (_init_fzf_wrap_history_keep_query). Replace prior soft
+    # defaults we shipped so existing shells pick up the ranking/exact change.
+    case "${FZF_CTRL_R_OPTS-}" in
+        '' | '--bind enter:accept-or-print-query' | '--print-query')
+            FZF_CTRL_R_OPTS='--print-query --exact --tiebreak=begin,index'
+            export FZF_CTRL_R_OPTS
+            ;;
+    esac
 
     if [[ -z "${FZF_CTRL_T_OPTS:-}" ]]; then
         # fzf requires this preview as one shell command string.

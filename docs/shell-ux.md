@@ -115,9 +115,11 @@ ssh mee<Tab>        # hostnames from known_hosts / config
 ### Fuzzy find history and files (`fzf`)
 
 ```bash
-# Ctrl-R — fuzzy search across loaded history (includes history.all bootstrap)
-#   type: docker compose   → pick the exact old invocation, Enter to place it
-#   no match               → Enter leaves the typed query on the line to edit/run
+# Ctrl-R — substring search across loaded history (includes history.all bootstrap)
+#   prefers matches at the start of a command, then elsewhere in the line
+#   type: docker compose   → pick an old invocation that contains that text
+#   no substring match     → Enter leaves what you typed on the line to edit/run
+#   (character-fuzzy hits are disabled so random letter matches do not win)
 
 # Ctrl-T — insert file paths on the command line
 #   vim <Ctrl-T>   → fuzzy-pick a file under cwd
@@ -138,7 +140,7 @@ ssh mee<Tab>        # hostnames from known_hosts / config
 # Tab completion mirrors ssh (cssh/cesh) / mosh (cmsh) when those completers exist
 ```
 
-Soft defaults (only if unset): `FZF_DEFAULT_OPTS` height/layout/border; `FZF_CTRL_R_OPTS=--print-query` (unmatched Ctrl-R query stays on the line); Ctrl-T / Alt-C previews when `bat`/`lsd` exist. Override in your environment anytime.
+Soft defaults (only if unset / prior init-files Ctrl-R soft defaults): `FZF_DEFAULT_OPTS` height/layout/border; `FZF_CTRL_R_OPTS=--print-query --exact --tiebreak=begin,index` (substring history; unmatched query stays on the line); Ctrl-T / Alt-C previews when `bat`/`lsd` exist. Override in your environment anytime.
 
 ### Shared history across tabs
 
@@ -213,7 +215,7 @@ Failures append to `…/bash/rotate.log`. Implementation: [`lib/history_rotate`]
 ### Searching history
 
 - Built-in: reverse search (`Ctrl-R` in emacs mode; vi mode uses vi search bindings).
-- With **fzf** installed: fuzzy history via fzf’s bash integration (typically `Ctrl-R`), searching **in-memory** history (already seeded from `history.all` at bootstrap).
+- With **fzf** installed: substring history search via fzf’s bash integration (typically `Ctrl-R`), searching **in-memory** history (already seeded from `history.all` at bootstrap). Ranking prefers a match at the start of the command, then elsewhere; with no substring hit, Enter keeps what you typed.
 
 ---
 
