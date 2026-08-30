@@ -117,7 +117,7 @@ ssh mee<Tab>        # hostnames from known_hosts / config
 ```bash
 # Ctrl-R — fuzzy search across loaded history (includes history.all bootstrap)
 #   type: docker compose   → pick the exact old invocation, Enter to place it
-#   no match (fzf ≥0.45)   → Enter pastes the typed query so you can edit/run it
+#   no match               → Enter leaves the typed query on the line to edit/run
 
 # Ctrl-T — insert file paths on the command line
 #   vim <Ctrl-T>   → fuzzy-pick a file under cwd
@@ -138,7 +138,7 @@ ssh mee<Tab>        # hostnames from known_hosts / config
 # Tab completion mirrors ssh (cssh/cesh) / mosh (cmsh) when those completers exist
 ```
 
-Soft defaults (only if unset): `FZF_DEFAULT_OPTS` height/layout/border; `FZF_CTRL_R_OPTS` Enter→paste query when no match (fzf ≥0.45); Ctrl-T / Alt-C previews when `bat`/`lsd` exist. Override in your environment anytime.
+Soft defaults (only if unset): `FZF_DEFAULT_OPTS` height/layout/border; `FZF_CTRL_R_OPTS=--print-query` (unmatched Ctrl-R query stays on the line); Ctrl-T / Alt-C previews when `bat`/`lsd` exist. Override in your environment anytime.
 
 ### Shared history across tabs
 
@@ -271,7 +271,7 @@ Install hints from `./provision_init_files`:
 | Older macOS | fzf via GitHub release → `~/.local` (**no brew**); bat/lsd/rg not offered |
 | Linux | `sudo apt install fzf bat lsd ripgrep` (or dnf); Debian/Ubuntu may provide `bat` as `batcat` |
 
-Implementation pointers in [`bashrc`](../bashrc): `_init_load_fzf` (prefer `fzf --bash`, else distro key-bindings), `_init_fzf_bindings_ready` (Ctrl-R must actually be bound), `_init_configure_fzf_env` (Ctrl-R no-match paste, preview strings + `batcat`).
+Implementation pointers in [`bashrc`](../bashrc): `_init_load_fzf` (prefer `fzf --bash`, else distro key-bindings), `_init_fzf_bindings_ready` (Ctrl-R must actually be bound), `_init_configure_fzf_env` / `_init_fzf_wrap_history_keep_query` (Ctrl-R keeps unmatched query), preview strings + `batcat`.
 
 ---
 

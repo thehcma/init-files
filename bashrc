@@ -641,7 +641,7 @@ function _init_fzf_tool_bin()
 # as batcat. See docs/shell-ux.md (fzf).
 function _init_configure_fzf_env()
 {
-    local bat_bin lsd_bin dir_preview file_preview fzf_bin fzf_ver
+    local bat_bin lsd_bin dir_preview file_preview
 
     : "${FZF_DEFAULT_OPTS:=--height 40% --layout=reverse --border --info=inline}"
 
@@ -662,17 +662,13 @@ function _init_configure_fzf_env()
         file_preview='head -n 200 {}'
     fi
 
-    # Ctrl-R: when nothing matches, paste the typed query onto the command line
-    # so it can be edited or submitted (fzf ≥0.45). Skip on older fzf — an
-    # unknown bind breaks Enter entirely. (--help does not list this action.)
-    if [[ -z "${FZF_CTRL_R_OPTS:-}" ]]; then
-        fzf_bin="$(_init_fzf_tool_bin fzf)"
-        fzf_ver=
-        [[ -n "$fzf_bin" ]] && fzf_ver="$("$fzf_bin" --version 2>/dev/null | awk '{ print $1 }')"
-        if [[ -n "$fzf_ver" && "$(printf '%s\n' '0.45.0' "$fzf_ver" | sort -V | head -n 1)" == '0.45.0' ]]; then
-            FZF_CTRL_R_OPTS='--bind enter:accept-or-print-query'
-            export FZF_CTRL_R_OPTS
-        fi
+    # Ctrl-R: emit the typed query when Enter finds no history match (paired with
+    # _init_fzf_wrap_history_keep_query, which drops the query line on a real hit).
+    # Also replace the prior soft default (accept-or-print-query) which broke
+    # selecting real history matches under --multi.
+    if [[ -z "${FZF_CTRL_R_OPTS:-}" || "${FZF_CTRL_R_OPTS}" == '--bind enter:accept-or-print-query' ]]; then
+        FZF_CTRL_R_OPTS='--print-query'
+        export FZF_CTRL_R_OPTS
     fi
 
     if [[ -z "${FZF_CTRL_T_OPTS:-}" ]]; then
@@ -691,6 +687,36 @@ function _init_configure_fzf_env()
         # shellcheck disable=SC2090
         export FZF_ALT_C_OPTS
     fi
+}
+
+# Make Ctrl-R leave an unmatched query on the command line for edit/submit.
+# fzf --print-query prints "query" alone on no match, or "query\nselection" on a
+# hit; stock __fzf_history__ would keep both lines — drop the query line on hit.
+function _init_fzf_wrap_history_keep_query()
+{
+    local def
+
+    type __fzf_history__ > /dev/null 2>&1 || return 0
+    type __fzf_history_unwrapped__ > /dev/null 2>&1 && return 0
+
+    case " ${FZF_CTRL_R_OPTS-} " in
+        *' --print-query '* | *' --print-query') ;;
+        *) return 0 ;;
+    esac
+
+    def="$(declare -f __fzf_history__)" || return 0
+    # shellcheck disable=SC2178
+    eval "${def/__fzf_history__/__fzf_history_unwrapped__}" || return 0
+
+    __fzf_history__()
+    {
+        __fzf_history_unwrapped__ || true
+        # Match: query\ncommand → keep command. No match: bare query → keep as-is.
+        if [[ ${READLINE_LINE-} == *$'\n'* ]]; then
+            READLINE_LINE="${READLINE_LINE#*$'\n'}"
+            [[ -n ${READLINE_POINT+x} ]] && READLINE_POINT=0x7fffffff
+        fi
+    }
 }
 
 # Optional fzf keybindings/completion. Fail closed when fzf is missing.
@@ -723,7 +749,10 @@ function _init_load_fzf()
         hook="$("$fzf_bin" --bash 2> /dev/null)" || hook=
         if [[ -n "$hook" ]]; then
             eval "$hook" 2> /dev/null || true
-            _init_fzf_bindings_ready && return 0
+            if _init_fzf_bindings_ready; then
+                _init_fzf_wrap_history_keep_query
+                return 0
+            fi
         fi
     fi
 
@@ -758,6 +787,7 @@ function _init_load_fzf()
             # shellcheck disable=SC1090
             . "$candidate" || true
         fi
+        _init_fzf_wrap_history_keep_query
         return 0
     done
     return 1
