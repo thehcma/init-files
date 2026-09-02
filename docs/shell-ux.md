@@ -120,6 +120,7 @@ ssh mee<Tab>        # hostnames from known_hosts / config
 #   type: docker compose   → pick an old invocation that contains that text
 #   no substring match     → Enter leaves what you typed on the line to edit/run
 #   (character-fuzzy hits are disabled so random letter matches do not win)
+#   syntax-error / command-not-found lines are not kept, so they never show up here
 
 # Ctrl-T — insert file paths on the command line
 #   vim <Ctrl-T>   → fuzzy-pick a file under cwd
@@ -176,11 +177,13 @@ On Linux, if GNU upstream is unreachable, bash “latest” falls back to the **
 
 ### Flow
 
-1. **`history_bootstrap`** — once per shell, loads legacy then `history.all` into memory (`history -r`), then sets byte offsets to EOF (so sync only appends new session bytes).
-2. **`history_sync`** (via `PROMPT_COMMAND`) — `history -a` into the **session** `HISTFILE`, then byte-offset append of new bytes into `history.all`.
+1. **`history_bootstrap`** — once per shell, loads legacy then `history.all` into memory (`history -r`), then sets the copy offsets to the current **session `HISTFILE`** size (≈ 0 for a fresh file), so sync only ever appends this session's own new bytes.
+2. **`history_sync`** (via `PROMPT_COMMAND`, after `_init_history_scrub`) — `history -a` into the **session** `HISTFILE`, then byte-offset append of new bytes into `history.all`.
 3. **`history_finalize`** (EXIT trap) — final sync, then append new session bytes into `~/.bash_history`.
 
 `HISTFILE` is always a new file under `…/bash/history.<host>.<pid>.<timestamp>` (or the same file across a FORCE reload). Bash’s default `~/.bash_history` is never used as `HISTFILE` — using it caused `history_sync` to `tail` multi‑GB files into `history.all` and hang new shells.
+
+The copy offsets (`bash_history_{archive,legacy}_bytes`) are positions **in the session `HISTFILE`**. An earlier bashrc mis-typed them as `history.all` / `~/.bash_history` *file sizes*; once a session's `HISTFILE` grew past that number, `history_append_since` started `tail`-ing from **mid-line** and spliced command fragments (`make insta1782398107`, bare `EOF`) into `history.all`. Fixed; `_init_history_sanitize_offsets` runs once at startup to clamp/snap any stale offset a long-lived shell carried over, and `init_files_history_rewrite_bounded` strips the fragments already in the archives on the next rotate.
 
 Guards in `history_append_since` refuse to copy when `HISTFILE` is the archive/legacy file, equals the target, or is oversized.
 
@@ -191,9 +194,9 @@ Emergency trims after the HISTFILE hang left some hosts with multi‑tens‑of�
 | Mechanism | Behavior |
 | --- | --- |
 | Soft schedule | Archive (or `~/.bash_history`) &gt; **16 MiB** or &gt; **100k** lines |
-| Hard rewrite | Last **50k unique** commands or ≤ **8 MiB** (last occurrence wins; only `#[0-9]+` HISTTIMEFORMAT lines stay paired) |
+| Hard rewrite | Last **50k unique** commands or ≤ **8 MiB** (last occurrence wins; only `#[0-9]+` HISTTIMEFORMAT lines stay paired); also drops mid-line corruption — `word`+epoch mashes, bare epoch lines, orphan `EOF` / `done` / `}` |
 | When | At most once per day (`…/bash/last-rotate`): background `rotate_bash_history -q` after interactive init / on EXIT schedule — **never** inside `history_sync` |
-| Live shells | Skip archive appends while `rotate.lock` exists; refresh EOF offsets when `last-rotate` changes so sync keeps working after a shrink |
+| Live shells | Skip archive appends while `rotate.lock` exists; on `last-rotate` change, clamp the session-`HISTFILE` copy offset to `[0, HISTFILE size]` so a later shrink cannot desync it |
 | Sessions | Delete `history.<host>.<pid>.*` older than **14** days; keep at most **100** session files |
 | Manual | `rotate_bash_history` (progress on stderr); then open a **new tab** or `source ~/.bashrc` so in-memory history reloads the shrunk archive |
 
@@ -207,10 +210,20 @@ Failures append to `…/bash/rotate.log`. Implementation: [`lib/history_rotate`]
 | `cmdhist` | Multi-line commands stored as one history entry |
 | `lithist` | Multi-line entries keep embedded newlines |
 | `HISTCONTROL=ignoredups` | Skip consecutive duplicates |
-| `HISTIGNORE=?:??` | Ignore one- and two-character commands |
+| `HISTIGNORE='?:??:EOF:done:esac:…'` | Ignore 1-2 char commands and bare block/heredoc terminators |
 | `HISTTIMEFORMAT='%F %T '` | Timestamp prefix in history listings |
 | `HISTFILESIZE=-1` | Unlimited history file size |
 | `HISTSIZE` | Empty on macOS/RHEL-family; `-1` elsewhere (unlimited where supported) |
+
+### Ctrl-R hygiene (`_init_history_scrub`)
+
+Bash adds an interactive line to the history list **before** it parses it, so a syntax error (`for x in`, an unbalanced quote) is remembered forever and `Ctrl-R` keeps surfacing it. `_init_history_scrub` runs as the **first** `PROMPT_COMMAND` hook — before `history_sync` writes anything out — and deletes the entry just added when:
+
+- exit status is **2** and nothing actually executed → shell syntax error (a `DEBUG` trap, `_init_history_preexec`, flags whether a real command ran; a genuine command that merely exited 2 is kept)
+- exit status is **127** → command not found (typo)
+- the entry is a bare block / heredoc terminator (`EOF`, `done`, `fi`, `}`, …) from a paste or an archive round-trip
+
+Set `INIT_FILES_HISTORY_SCRUB=0` to keep everything. Works in both plain and fancy (starship) prompts — under starship the real status comes from `STARSHIP_CMD_STATUS`, since starship's `eval "$STARSHIP_PROMPT_COMMAND"` has already reset `$?`.
 
 ### Searching history
 

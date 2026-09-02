@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# Tests for the Ctrl-R history hygiene helpers in bashrc:
+#   _init_history_line_is_junk  - pure drop/keep predicate
+#   _init_history_preexec       - DEBUG-trap "a real command ran" flag
+#   _init_prompt_ensure_history_sync - PROMPT_COMMAND hook order
+#   _init_history_sanitize_offsets   - repair stale HISTFILE copy offsets
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+
+# bashrc is not a lib; pull just the helpers so we do not run interactive init.
+# shellcheck disable=SC1090
+source <(sed -n \
+    -e '/^function _init_history_line_is_junk()/,/^}$/p' \
+    -e '/^function _init_history_sanitize_offsets()/,/^}$/p' \
+    -e '/^function _init_history_preexec()/,/^}$/p' \
+    -e '/^function _init_prompt_ensure_history_sync()/,/^}$/p' \
+    "${root}/bashrc")
+
+tmpdir=
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
+# junk? <label> <expect drop|keep> <rc> <ran> <alive> <cmd>
+junk_case() {
+    local label="$1" expect="$2" rc="$3" ran="$4" alive="$5" cmd="$6" got
+    if _init_history_line_is_junk "$rc" "$ran" "$alive" "$cmd"; then
+        got=drop
+    else
+        got=keep
+    fi
+    assert_eq "$label" "$got" "$expect"
+}
+
+printf '\n=== _init_history_line_is_junk: syntax errors ===\n'
+junk_case 'syntax error (rc2, nothing ran, trap live)' drop 2 0 1 'for x in'
+junk_case 'rc2 but a command actually ran -> keep'     keep 2 1 1 'grep -Z'
+junk_case 'rc2 with dead trap -> keep (safety)'        keep 2 0 0 'make thing'
+junk_case 'rc1 failure -> keep'                        keep 1 0 1 'false'
+
+printf '\n=== _init_history_line_is_junk: command not found ===\n'
+junk_case 'rc127 -> drop'                    drop 127 1 1 'sl -la'
+junk_case 'rc127 even with dead trap -> drop' drop 127 1 0 'gti status'
+
+printf '\n=== _init_history_line_is_junk: orphan terminators ===\n'
+junk_case 'bare EOF -> drop'    drop 0 1 1 'EOF'
+junk_case "quoted 'EOF' -> drop" drop 0 1 1 "'EOF'"
+junk_case 'bare done -> drop'   drop 0 1 1 'done'
+junk_case 'bare fi -> drop'     drop 0 1 1 'fi'
+junk_case 'lone } -> drop'      drop 0 1 1 '}'
+junk_case 'real heredoc start -> keep' keep 0 1 1 'cat <<EOF'
+junk_case 'normal command -> keep'     keep 0 1 1 'git commit -m done'
+
+printf '\n=== _init_history_line_is_junk: disabled path is caller responsibility ===\n'
+# (INIT_FILES_HISTORY_SCRUB is checked in _init_history_scrub, not the predicate.)
+junk_case 'predicate ignores the env toggle' drop 127 1 1 'typoo'
+
+printf '\n=== _init_history_preexec flags real commands, not prompt hooks ===\n'
+PROMPT_COMMAND='_init_history_scrub;history_sync;_iterm_server_prompt_hook;_init_iterm_report_host_label'
+unset _init_cmd_executed _init_preexec_alive
+BASH_COMMAND='history_sync' _init_history_preexec
+assert_eq 'prompt hook token: not flagged' "${_init_cmd_executed:-unset}" 'unset'
+# _init_preexec_alive is set by the call above.
+# shellcheck disable=SC2154
+assert_eq 'prompt hook token: trap marked alive' "${_init_preexec_alive}" '1'
+BASH_COMMAND='_iterm_server_prompt_hook' _init_history_preexec
+assert_eq 'user PROMPT_COMMAND hook: not flagged' "${_init_cmd_executed:-unset}" 'unset'
+BASH_COMMAND='ls -la' _init_history_preexec
+assert_eq 'real command: flagged' "${_init_cmd_executed:-unset}" '1'
+
+printf '\n=== _init_prompt_ensure_history_sync hook order ===\n'
+assert_eq 'empty -> scrub;sync' \
+    "$(_init_prompt_ensure_history_sync '')" '_init_history_scrub;history_sync'
+assert_eq 'adds both before a user hook' \
+    "$(_init_prompt_ensure_history_sync 'user_hook')" \
+    '_init_history_scrub;history_sync;user_hook'
+assert_eq 'scrub prepended when only sync present' \
+    "$(_init_prompt_ensure_history_sync 'history_sync;user_hook')" \
+    '_init_history_scrub;history_sync;user_hook'
+assert_eq 'idempotent when already wired' \
+    "$(_init_prompt_ensure_history_sync '_init_history_scrub;history_sync;user_hook')" \
+    '_init_history_scrub;history_sync;user_hook'
+
+printf '\n=== _init_history_sanitize_offsets clamps and snaps offsets ===\n'
+bash_history_dir="${tmpdir}/state"
+mkdir -p "$bash_history_dir"
+HISTFILE="${bash_history_dir}/history.host.$$.now"
+printf '#100\necho aaaa\n#101\necho bbbb\n' > "$HISTFILE"
+file_size=$(wc -c < "$HISTFILE")
+
+bash_history_archive_bytes=999999
+# shellcheck disable=SC2034  # read indirectly by _init_history_sanitize_offsets
+bash_history_legacy_bytes=0
+_init_history_sanitize_offsets
+assert_eq 'over-size offset clamped to file size' \
+    "${bash_history_archive_bytes}" "${file_size}"
+
+# Offset 8 sits inside "echo aaaa" (bytes 6-15, newline at byte 15). Sanitize
+# should snap forward to that newline boundary.
+bash_history_archive_bytes=8
+_init_history_sanitize_offsets
+assert_eq 'mid-line offset snapped to next newline' \
+    "${bash_history_archive_bytes}" '15'
+
+# An already-aligned offset is left untouched.
+bash_history_archive_bytes=5
+_init_history_sanitize_offsets
+assert_eq 'aligned offset unchanged' "${bash_history_archive_bytes}" '5'
+
+# Wrong HISTFILE shape (not under bash_history_dir/history.*) -> no-op.
+HISTFILE="${tmpdir}/random-file"
+printf 'junk\n' > "$HISTFILE"
+bash_history_archive_bytes=999999
+_init_history_sanitize_offsets
+assert_eq 'non-session HISTFILE left alone' "${bash_history_archive_bytes}" '999999'
+
+printf '\n=== static ===\n'
+bashrc_text="$(<"${root}/bashrc")"
+# shellcheck disable=SC2016  # matching a literal bashrc source line, not expanding
+assert_contains 'scrub wired first in PROMPT_COMMAND' "$bashrc_text" \
+    'pc="_init_history_scrub;${pc}"'
+assert_contains 'DEBUG trap installed for preexec' "$bashrc_text" \
+    "trap '_init_history_preexec' DEBUG"
+assert_contains 'sanitize called once at init' "$bashrc_text" \
+    '_init_history_sanitize_offsets'
+
+test_summary

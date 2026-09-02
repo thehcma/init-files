@@ -127,6 +127,55 @@ else
   pass_case 'prunes old session keeps new and archive (touch unsupported; skipped)'
 fi
 
+printf '\n=== strips mid-line corruption from an older bashrc ===\n'
+src_x="${tmpdir}/corrupt"
+dest_x="${tmpdir}/corrupt.out"
+cat >"$src_x" <<'__FIXTURE__'
+#1000000200
+git status
+#1000000201
+make insta1782398107
+#1000000202
+1782398108
+#1000000203
+EOF
+#1000000204
+../repository-helpers/scripts/dev/start-development --refresh779108500
+#1000000205
+brew install fzf
+__FIXTURE__
+init_files_history_rewrite_bounded "$src_x" "$dest_x"
+out_x="$(<"$dest_x")"
+assert_contains 'keeps clean git status' "$out_x" 'git status'
+assert_contains 'keeps clean brew install fzf' "$out_x" 'brew install fzf'
+assert_not_contains 'drops cmd+epoch mash' "$out_x" 'make insta1782398107'
+assert_not_contains 'drops bare epoch line' "$out_x" '1782398108'
+assert_not_contains 'drops orphan EOF' "$out_x" 'EOF'
+assert_not_contains 'drops truncated path+epoch' "$out_x" 'refresh779108500'
+clean_cmds=$(grep -c -v '^#' "$dest_x" || true)
+if [[ "$clean_cmds" -eq 2 ]]; then
+  pass_case 'only the two clean commands survive'
+else
+  fail_case "only the two clean commands survive (got $clean_cmds)"
+fi
+
+printf '\n=== keeps legit trailing numbers ===\n'
+src_n="${tmpdir}/nums"
+dest_n="${tmpdir}/nums.out"
+cat >"$src_n" <<'EOF'
+#1000000300
+sleep 5
+#1000000301
+kill -9 12345
+#1000000302
+docker run --rm alpine echo 2024
+EOF
+init_files_history_rewrite_bounded "$src_n" "$dest_n"
+out_n="$(<"$dest_n")"
+assert_contains 'keeps sleep 5' "$out_n" 'sleep 5'
+assert_contains 'keeps kill -9 12345' "$out_n" 'kill -9 12345'
+assert_contains 'keeps echo 2024' "$out_n" 'echo 2024'
+
 printf '\n=== static ===\n'
 lib_text="$(<"${root}/lib/history_rotate")"
 assert_contains 'defines soft_oversize' "$lib_text" 'init_files_history_soft_oversize()'

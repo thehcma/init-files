@@ -4718,12 +4718,18 @@ function gpg_symmetric()
     "$init_tool_gpg" --pinentry-mode ask --no-symkey-cache "$@"
 }
 
-# After background rotate rewrites archives smaller, refresh EOF offsets so
-# history_append_since does not bail forever on current_size > offset.
-# Also seeds bash_history_last_rotate_seen from last-rotate.
+# Track when a background rotate ran (last-rotate stamp) and keep the copy
+# offsets sane afterwards. bash_history_{archive,legacy}_bytes are byte offsets
+# into the *session* HISTFILE (how much of it we have already copied out) — NOT
+# sizes of history.all / ~/.bash_history. A rotate rewrites the archives but
+# never touches our session HISTFILE, so the offsets stay valid; we only clamp
+# to [0, HISTFILE size] to defend against a truncated/rotated session file.
+# (Historically this function reset the offsets to the *archive* size, which
+# made `tail -c +N "$HISTFILE"` slice mid-line once HISTFILE grew past N and
+# spliced command fragments into history.all — see docs/shell-ux.md.)
 function _init_history_maybe_refresh_rotate_offsets()
 {
-    local stamp seen
+    local stamp seen histsize
 
     stamp="${bash_history_dir:-${XDG_STATE_HOME:-$HOME/.local/state}/bash}/last-rotate"
     [[ -f "$stamp" ]] || return 0
@@ -4731,15 +4737,17 @@ function _init_history_maybe_refresh_rotate_offsets()
     [[ -n "$seen" ]] || return 0
     [[ "$seen" == "${bash_history_last_rotate_seen:-}" ]] && return 0
 
-    if [[ -n "${bash_history_archive:-}" && -r "$bash_history_archive" ]]; then
-        bash_history_archive_bytes=$(wc -c < "$bash_history_archive") || bash_history_archive_bytes=0
-    else
-        bash_history_archive_bytes=0
-    fi
-    if [[ -n "${bash_history_legacy_file:-}" && -r "$bash_history_legacy_file" ]]; then
-        bash_history_legacy_bytes=$(wc -c < "$bash_history_legacy_file") || bash_history_legacy_bytes=0
-    else
-        bash_history_legacy_bytes=0
+    if [[ -n "${HISTFILE:-}" && -r "$HISTFILE" ]]; then
+        histsize=$(wc -c < "$HISTFILE" 2>/dev/null || echo 0)
+        [[ "$histsize" =~ ^[0-9]+$ ]] || histsize=0
+        if [[ ! "${bash_history_archive_bytes:-0}" =~ ^[0-9]+$ ]] \
+            || (( bash_history_archive_bytes > histsize )); then
+            bash_history_archive_bytes=$histsize
+        fi
+        if [[ ! "${bash_history_legacy_bytes:-0}" =~ ^[0-9]+$ ]] \
+            || (( bash_history_legacy_bytes > histsize )); then
+            bash_history_legacy_bytes=$histsize
+        fi
     fi
     bash_history_last_rotate_seen="$seen"
 }
@@ -4797,14 +4805,20 @@ function history_bootstrap()
         builtin history -r "$bash_history_archive"
     fi
 
-    # New bytes only: offsets start at EOF so we never re-copy existing archives
-    # into themselves via a mis-set HISTFILE.
-    if [[ -r "$bash_history_archive" ]]; then
-        bash_history_archive_bytes=$(wc -c < "$bash_history_archive") || bash_history_archive_bytes=0
+    # New bytes only: the copy offsets are positions in the *session* HISTFILE
+    # (how much of it we have already appended to the archive / legacy file), so
+    # they start at the current HISTFILE size — normally 0 for a fresh session
+    # file. history -r above loads the archives into memory only; it does not
+    # grow HISTFILE, and does not count toward `history -a`. Setting these to the
+    # archive/legacy *file* sizes (the old behaviour) mis-typed the offset and
+    # made history_append_since tail mid-line — see docs/shell-ux.md.
+    local histsize=0
+    if [[ -n "${HISTFILE:-}" && -r "$HISTFILE" ]]; then
+        histsize=$(wc -c < "$HISTFILE" 2>/dev/null || echo 0)
+        [[ "$histsize" =~ ^[0-9]+$ ]] || histsize=0
     fi
-    if [[ -r "$bash_history_legacy_file" ]]; then
-        bash_history_legacy_bytes=$(wc -c < "$bash_history_legacy_file") || bash_history_legacy_bytes=0
-    fi
+    bash_history_archive_bytes=$histsize
+    bash_history_legacy_bytes=$histsize
     # Align with current last-rotate so the first history_sync does not treat an
     # existing stamp as a just-completed rewrite.
     if [[ -f "${bash_history_dir}/last-rotate" ]]; then
@@ -4830,6 +4844,124 @@ function history_sync()
     _init_history_maybe_refresh_rotate_offsets
     history_append_since "$bash_history_archive" "$bash_history_archive_bytes"
     bash_history_archive_bytes="$bash_history_append_result"
+}
+
+# Once per shell startup / reload: repair copy offsets left over from an older
+# bashrc that stored archive-file sizes here. Clamp to the HISTFILE size and, if
+# the offset lands mid-line, snap forward past that partial line so the next
+# history_sync cannot splice a command fragment into history.all. Not called per
+# prompt — the running offsets stay newline-aligned on their own.
+function _init_history_sanitize_offsets()
+{
+    [[ -n "${HISTFILE:-}" && -r "$HISTFILE" ]] || return 0
+    [[ "$HISTFILE" == "${bash_history_dir:-}"/history.* ]] || return 0
+
+    # LC_ALL=C: treat the file as bytes so string-length math is byte-accurate.
+    local LC_ALL=C content histsize
+    IFS= read -r -d '' content < "$HISTFILE" || true
+    histsize=${#content}
+    (( histsize > 0 )) || return 0
+
+    local varname val before after frag
+    for varname in bash_history_archive_bytes bash_history_legacy_bytes; do
+        val="${!varname:-0}"
+        [[ "$val" =~ ^[0-9]+$ ]] || val=0
+        (( val > histsize )) && val=$histsize
+        if (( val > 0 && val < histsize )); then
+            before=${content:0:val}
+            if [[ "${before: -1}" != $'\n' ]]; then
+                after=${content:val}
+                frag=${after%%$'\n'*}
+                (( val += ${#frag} + 1 ))
+                (( val > histsize )) && val=$histsize
+            fi
+        fi
+        printf -v "$varname" '%s' "$val"
+    done
+}
+
+# --- Ctrl-R hygiene: drop parser-rejected / not-found / orphan history lines ---
+# Bash adds an interactive line to the history list *before* it parses it, so a
+# syntax error (`for x in; done`, unbalanced quote) is remembered forever, then
+# fzf Ctrl-R surfaces it. _init_history_scrub runs as the first PROMPT_COMMAND
+# hook (before history_sync writes anything out) and deletes the just-added
+# entry when it was junk. Disable with INIT_FILES_HISTORY_SCRUB=0.
+#
+# _init_history_preexec (DEBUG trap) tells the scrub whether a real command
+# actually executed this cycle: it flags every command that is not a token of
+# $PROMPT_COMMAND (so starship_precmd and the iTerm prompt hook are ignored).
+function _init_history_preexec()
+{
+    _init_preexec_alive=1
+    local this="${BASH_COMMAND//[[:space:]]/}"
+    [[ -n "$this" ]] || return 0
+    case ";${PROMPT_COMMAND//[[:space:]]/};" in
+        *";${this};"*) return 0 ;;
+    esac
+    _init_cmd_executed=1
+}
+
+# Pure predicate — should the just-added history line be dropped?
+#   $1 exit status of the line   $2 "1" if a real command executed this cycle
+#   $3 "1" if the preexec DEBUG trap is live   $4 the command text
+# Returns 0 to drop, 1 to keep.
+function _init_history_line_is_junk()
+{
+    local rc="$1" ran="$2" alive="$3" cmd="$4"
+
+    # 1) Shell syntax error: bash records the line, then the parser rejects it
+    #    (nothing runs) and $? is 2. Gated on a live trap so a genuine command
+    #    that merely exited 2 is never dropped when the hook is missing.
+    (( rc == 2 )) && [[ "$ran" != 1 && "$alive" == 1 ]] && return 0
+    # 2) Command not found — almost always a typo.
+    (( rc == 127 )) && return 0
+    # 3) Orphan block / heredoc terminator left behind by a multi-line paste or
+    #    by an archive round-trip (the history file stores such lines per-line).
+    case "$cmd" in
+        'EOF' | "'EOF'" | '"EOF"' | 'done' | 'fi' | 'esac' | 'then' | 'else' \
+            | 'elif' | 'do' | '}' | '{' | ')' | '(' | ';;' | ');;')
+            return 0 ;;
+    esac
+    return 1
+}
+
+function _init_history_scrub()
+{
+    local rc=$?
+    local ran="${_init_cmd_executed:-0}"
+    _init_cmd_executed=0
+
+    # Fancy prompt: starship runs us via `eval "$STARSHIP_PROMPT_COMMAND"` after
+    # an `if [[ ... ]]` that has already reset $? to 0. STARSHIP_CMD_STATUS holds
+    # the real status (starship refreshes it at the top of every starship_precmd).
+    if [[ "${PROMPT_COMMAND:-}" == *starship_precmd* && -n "${STARSHIP_CMD_STATUS:-}" ]]; then
+        rc=$STARSHIP_CMD_STATUS
+    fi
+
+    [[ -o history ]] || return 0
+    [[ "${INIT_FILES_HISTORY_SCRUB:-1}" == 0 ]] && return 0
+
+    local hist_line n cmd
+    hist_line=$(HISTTIMEFORMAT='' builtin history 1 2>/dev/null) || return 0
+    hist_line="${hist_line#"${hist_line%%[![:space:]]*}"}"   # strip leading blanks
+    n="${hist_line%%[[:space:]]*}"                            # leading entry number
+    [[ "$n" =~ ^[0-9]+$ ]] || return 0
+    cmd="${hist_line#"$n"}"
+    cmd="${cmd#"${cmd%%[![:space:]]*}"}"                      # command text
+
+    # First prompt of the session: record the baseline, never scrub.
+    if [[ -z "${_init_hist_prev_n+x}" ]]; then
+        _init_hist_prev_n="$n"
+        return 0
+    fi
+    # Nothing new entered since the last prompt.
+    [[ "$n" == "$_init_hist_prev_n" ]] && return 0
+
+    if _init_history_line_is_junk "$rc" "$ran" "${_init_preexec_alive:-0}" "$cmd"; then
+        builtin history -d "$n" 2>/dev/null || true
+    else
+        _init_hist_prev_n="$n"
+    fi
 }
 
 # Manual or background: dedupe/cap history.all + ~/.bash_history; prune session files.
@@ -6445,13 +6577,18 @@ function _init_prompt_strip_starship_precmd()
 function _init_prompt_ensure_history_sync()
 {
     local pc="${1-}"
+    # history_sync must run before any user hook so `history -a` captures the
+    # line for this prompt; _init_history_scrub must run before history_sync so
+    # a scrubbed line is never written out. Add each only if absent (reload-safe).
     if [[ -z "$pc" ]]; then
-        printf 'history_sync'
-    elif [[ ";${pc};" == *";history_sync;"* ]]; then
-        printf '%s' "$pc"
-    else
-        printf 'history_sync;%s' "$pc"
+        pc='history_sync'
+    elif [[ ";${pc};" != *";history_sync;"* ]]; then
+        pc="history_sync;${pc}"
     fi
+    if [[ ";${pc};" != *";_init_history_scrub;"* ]]; then
+        pc="_init_history_scrub;${pc}"
+    fi
+    printf '%s' "$pc"
 }
 
 function _init_prompt_ensure_session_hooks()
@@ -10803,7 +10940,10 @@ fi
 
 HISTCONTROL=ignoredups
 HISTFILESIZE=-1
-HISTIGNORE='?:??'
+# ?/?? drop 1-2 char noise; the words are orphan block/heredoc terminators that
+# are never a useful Ctrl-R hit on their own (_init_history_scrub also removes
+# any that slip in from a paste or an archive round-trip).
+HISTIGNORE='?:??:EOF:done:esac:then:else:elif'
 HISTTIMEFORMAT='%F %T '
 if [[ -f /etc/redhat-release ]] || [[ "$OSTYPE" == "darwin"* ]]; then
     HISTSIZE=
@@ -10936,6 +11076,11 @@ else
     history_bootstrap
     bash_history_session_ready=1
 fi
+# Repair copy offsets carried over from an older bashrc (archive-size values that
+# tail mid-line). One-shot; running offsets stay newline-aligned by themselves.
+if declare -F _init_history_sanitize_offsets > /dev/null 2>&1; then
+    _init_history_sanitize_offsets
+fi
 # If a prior fancy session left starship_precmd in PROMPT_COMMAND (reload),
 # unwrap before installing history_sync so we never get history_sync;starship_precmd.
 if [[ "${PROMPT_COMMAND:-}" == *starship_precmd* ]]; then
@@ -10954,6 +11099,13 @@ if [[ $- == *i* ]] && declare -F _init_iterm_report_host_label > /dev/null 2>&1;
 fi
 # Re-install EXIT trap on reload (trap is not cleared by sourcing).
 trap 'history_finalize' EXIT
+
+# Ctrl-R hygiene: preexec flag for _init_history_scrub (see PROMPT_COMMAND).
+# Installed before prompt_fancy so `starship init bash` chains it rather than
+# clobbering it; prompt_plain restores it from _init_prompt_saved_debug_trap.
+if [[ $- == *i* ]] && declare -F _init_history_preexec > /dev/null 2>&1; then
+    trap '_init_history_preexec' DEBUG
+fi
 
 # Quiet daily history rotate/dedupe when archives are soft-oversize (issue #9).
 # Never blocks startup; history_sync stays append-only.
