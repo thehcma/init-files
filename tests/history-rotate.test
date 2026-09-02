@@ -135,6 +135,8 @@ cat >"$src_x" <<'__FIXTURE__'
 git status
 #1000000201
 make insta1782398107
+#1000000211
+cache_s38094
 #1000000202
 1782398108
 #1000000203
@@ -149,6 +151,7 @@ out_x="$(<"$dest_x")"
 assert_contains 'keeps clean git status' "$out_x" 'git status'
 assert_contains 'keeps clean brew install fzf' "$out_x" 'brew install fzf'
 assert_not_contains 'drops cmd+epoch mash' "$out_x" 'make insta1782398107'
+assert_not_contains 'drops short cmd+digits mash' "$out_x" 'cache_s38094'
 assert_not_contains 'drops bare epoch line' "$out_x" '1782398108'
 assert_not_contains 'drops orphan EOF' "$out_x" 'EOF'
 assert_not_contains 'drops truncated path+epoch' "$out_x" 'refresh779108500'

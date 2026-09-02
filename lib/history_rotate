@@ -77,10 +77,12 @@ _ts_re = re.compile(r"^#[0-9]+\r?\n?\Z")
 #   - a word glued to a 9-10 digit epoch:  "make insta1782398107"
 #   - a bare epoch that lost its "#":       "1782398107"
 #   - orphan block / heredoc terminators:   "EOF", "done", "fi", "}", ")"
-# A letter immediately followed by a 9-10 digit run at end of line is a command
-# tail glued to an epoch timestamp whose "#" (and sometimes leading "1") was
-# lost. Requiring a *letter* (not a digit/space) keeps legit trailing numbers.
-_mashed_epoch_re = re.compile(r"[A-Za-z]\d{9,10}\s*\Z")
+# A letter immediately followed (no space/punctuation) by a 4+ digit run at end
+# of line is a command tail glued to a spliced-in timestamp/counter: "make
+# ins9812641", "cache_s38094", "git p0938355". A real command separates a
+# trailing number with a space or punctuation, so requiring the letter to touch
+# the digits keeps legit "sleep 3600" / "kill 12345" / "curl host:8080".
+_mashed_epoch_re = re.compile(r"[A-Za-z]\d{4,}\s*\Z")
 _bare_epoch_re = re.compile(r"^\s*1?[78]\d{8}\s*\Z")
 _orphan_terms = {
     "EOF", "'EOF'", '"EOF"', "done", "fi", "esac", "then", "else", "elif",
