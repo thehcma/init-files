@@ -5066,6 +5066,132 @@ EOF
     return "$rc"
 }
 
+# One-shot recovery for a history.all shredded by the old mid-line-splice bug
+# (offset stored as an archive-file size — see docs/shell-ux.md). Rebuilds the
+# archive from the sources the bug never touched: the per-session HISTFILEs
+# (history_bootstrap never reads them) plus ~/.bash_history plus any command that
+# recurs in history.all itself. Everything runs through the same corruption
+# filter / dedupe / cap as the daily rotate.
+#
+#   rebuild_bash_history [--dry-run] [--freq N] [-q]
+#     --dry-run   report before/after counts, change nothing
+#     --freq N    keep an unrecurring history.all command only if seen >= N times
+#                 (default 2; use 1 to keep every archive line the filter passes)
+#
+# Backs up history.all + ~/.bash_history under
+# ${XDG_STATE_HOME:-~/.local/state}/bash-history-rescue/<timestamp>/ first
+# (a sibling of the history dir — the rotate/prune never scans it).
+# Run once per machine; each host has its own archive.
+function rebuild_bash_history()
+{
+    local quiet=0 dry=0 freq=2 hist_dir archive legacy lock_dir stamp
+    local rescue merged out_archive out_legacy rc=0
+    local before_a after_a before_l after_l
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -q|--quiet) quiet=1; shift ;;
+            --dry-run|-n) dry=1; shift ;;
+            --freq) freq="${2:-2}"; shift 2 ;;
+            --freq=*) freq="${1#*=}"; shift ;;
+            -h|--help)
+                cat <<'EOF' >&2
+Usage: rebuild_bash_history [--dry-run] [--freq N] [-q]
+
+Rebuild a history.all corrupted by the mid-line-splice bug from clean sources
+(per-session HISTFILEs + ~/.bash_history + commands that recur in history.all).
+Backs up first under ~/.local/state/bash-history-rescue/<timestamp>/.
+
+  --dry-run   report before/after counts, change nothing
+  --freq N    keep a non-recurring history.all command only if seen >= N times
+              (default 2)
+
+Open a new shell or `source ~/.bashrc` afterwards to reload the shrunk archive.
+EOF
+                return 0
+                ;;
+            *) echo "rebuild_bash_history: unknown option: $1" >&2; return 1 ;;
+        esac
+    done
+    [[ "$freq" =~ ^[0-9]+$ ]] || { echo "rebuild_bash_history: --freq needs a number" >&2; return 1; }
+
+    hist_dir="${bash_history_dir:-${XDG_STATE_HOME:-$HOME/.local/state}/bash}"
+    archive="${bash_history_archive:-$hist_dir/history.all}"
+    legacy="${bash_history_legacy_file:-$HOME/.bash_history}"
+    lock_dir="${hist_dir}/rotate.lock"
+    stamp="${hist_dir}/last-rotate"
+
+    if ! declare -F init_files_mkdir_lock > /dev/null 2>&1 \
+        || ! declare -F init_files_history_merge_sources > /dev/null 2>&1 \
+        || ! declare -F init_files_history_rewrite_bounded > /dev/null 2>&1; then
+        echo "rebuild_bash_history: helpers missing (refresh_init_files)" >&2
+        return 1
+    fi
+    if ! init_files_mkdir_lock "$lock_dir" 900; then
+        echo "rebuild_bash_history: lock busy; try later" >&2
+        return 1
+    fi
+
+    _rbh_count() {
+        local n=0
+        [[ -f "$1" ]] && n=$(command grep -cv '^#[0-9]' -- "$1" 2>/dev/null)
+        printf '%s' "${n:-0}"
+    }
+
+    before_a="$(_rbh_count "$archive")"
+    before_l="$(_rbh_count "$legacy")"
+
+    rescue="${XDG_STATE_HOME:-$HOME/.local/state}/bash-history-rescue/$(date +%Y%m%d-%H%M%S)"
+    if [[ $dry -eq 0 ]]; then
+        mkdir -p "$rescue" 2>/dev/null || true
+        [[ -f "$archive" ]] && cp -p "$archive" "$rescue/history.all" 2>/dev/null || true
+        [[ -f "$legacy" ]]  && cp -p "$legacy"  "$rescue/bash_history" 2>/dev/null || true
+    else
+        rescue='(dry run — not created)'
+    fi
+
+    merged="${archive}.rebuild.merge.$$"
+    out_archive="${archive}.rebuild.tmp.$$"
+    out_legacy="${legacy}.rebuild.tmp.$$"
+
+    if init_files_history_merge_sources "$hist_dir" "$archive" "$legacy" "$merged" "$freq" \
+        && init_files_history_rewrite_bounded "$merged" "$out_archive"; then
+        after_a="$(_rbh_count "$out_archive")"
+    else
+        rc=1
+    fi
+    if [[ $rc -eq 0 && -f "$legacy" ]]; then
+        if init_files_history_rewrite_bounded "$legacy" "$out_legacy"; then
+            after_l="$(_rbh_count "$out_legacy")"
+        else
+            rc=1
+        fi
+    fi
+
+    if [[ $rc -eq 0 && $dry -eq 0 ]]; then
+        mv -f "$out_archive" "$archive" || rc=1
+        [[ -f "$out_legacy" ]] && { mv -f "$out_legacy" "$legacy" || rc=1; }
+        [[ $rc -eq 0 ]] && date +%s > "$stamp" 2>/dev/null || true
+    fi
+    rm -f "$merged" "$out_archive" "$out_legacy" 2>/dev/null || true
+
+    init_files_mkdir_unlock "$lock_dir"
+    unset -f _rbh_count 2>/dev/null || true
+
+    if [[ $rc -ne 0 ]]; then
+        echo "rebuild_bash_history: failed (archive left untouched)" >&2
+        return 1
+    fi
+    if [[ $quiet -eq 0 ]]; then
+        printf 'rebuild_bash_history: %s\n' "$([[ $dry -eq 1 ]] && echo '(dry run)' || echo 'done')"
+        printf '  history.all    : %s -> %s commands\n' "$before_a" "${after_a:-?}"
+        printf '  ~/.bash_history: %s -> %s commands\n' "$before_l" "${after_l:-$before_l}"
+        printf '  backup         : %s\n' "$rescue"
+        [[ $dry -eq 0 ]] && printf '  open a new shell or run: source ~/.bashrc\n'
+    fi
+    return 0
+}
+
 # After interactive init (or EXIT): if daily stamp due and archive soft-oversize,
 # start a background quiet rotate. Never blocks; never runs on history_sync.
 function _init_maybe_schedule_history_rotate()

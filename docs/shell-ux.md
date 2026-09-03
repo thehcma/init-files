@@ -194,13 +194,23 @@ Emergency trims after the HISTFILE hang left some hosts with multi‑tens‑of�
 | Mechanism | Behavior |
 | --- | --- |
 | Soft schedule | Archive (or `~/.bash_history`) &gt; **16 MiB** or &gt; **100k** lines |
-| Hard rewrite | Last **50k unique** commands or ≤ **8 MiB** (last occurrence wins; only `#[0-9]+` HISTTIMEFORMAT lines stay paired); also drops mid-line corruption — `word`+epoch mashes, bare epoch lines, orphan `EOF` / `done` / `}` |
+| Hard rewrite | Last **50k unique** commands or ≤ **8 MiB** (last occurrence wins; only `#[0-9]+` HISTTIMEFORMAT lines stay paired); also drops corruption — `word`+digit mashes, bare epoch lines, mid-line `#epoch` splices, control chars, 15+ char runs, orphan `EOF` / `done` / `}` |
 | When | At most once per day (`…/bash/last-rotate`): background `rotate_bash_history -q` after interactive init / on EXIT schedule — **never** inside `history_sync` |
 | Live shells | Skip archive appends while `rotate.lock` exists; on `last-rotate` change, clamp the session-`HISTFILE` copy offset to `[0, HISTFILE size]` so a later shrink cannot desync it |
 | Sessions | Delete `history.<host>.<pid>.*` older than **14** days; keep at most **100** session files |
 | Manual | `rotate_bash_history` (progress on stderr); then open a **new tab** or `source ~/.bashrc` so in-memory history reloads the shrunk archive |
 
 Failures append to `…/bash/rotate.log`. Implementation: [`lib/history_rotate`](../lib/history_rotate) + `rotate_bash_history` in bashrc.
+
+### Rebuild a shredded archive (`rebuild_bash_history`)
+
+Hosts that ran the buggy pre-clamp bashrc for a while have a `history.all` where the mid-line `tail` splice hit **most** entries (`git configull --rebase`, `readlink -f …/bstart-development`) — too pervasive and varied to filter line-by-line. `rebuild_bash_history` reconstructs the archive from the sources the bug never reached:
+
+1. per-session `history.<host>.<pid>.<ts>` files — `history_bootstrap` never reads them, so `history -a` wrote them clean
+2. `~/.bash_history` — only lightly damaged
+3. any command that **recurs** in `history.all` itself (`--freq N`, default 2 — repeated ≈ real; recovers depth on archives not yet deduped)
+
+All of it runs through the same corruption filter + dedupe + cap. It backs up `history.all` and `~/.bash_history` to `${XDG_DATA_HOME:-~/.local/share}/init-files/history-rescue/<timestamp>/` first. `--dry-run` reports the before/after command counts and changes nothing. Run once per host; then open a new shell. Expect a large shrink (one host went 9.5k → ~430) — the lost lines are the shredded ones.
 
 ### `shopt` / `HIST*` related to history
 

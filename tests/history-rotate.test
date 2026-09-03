@@ -179,11 +179,71 @@ assert_contains 'keeps sleep 5' "$out_n" 'sleep 5'
 assert_contains 'keeps kill -9 12345' "$out_n" 'kill -9 12345'
 assert_contains 'keeps echo 2024' "$out_n" 'echo 2024'
 
+printf '\n=== strips control chars / runaway repeats / mid-line epoch splice ===\n'
+src_z="${tmpdir}/zap"
+dest_z="${tmpdir}/zap.out"
+{
+  printf '#1000000400\nreal command one\n'
+  printf '#1000000401\n%s\n' 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+  printf '#1000000402\n%s\n' '#17797git pull --rebase'
+  printf '#1000000403\nbad\tcmd\x01here\n'
+  printf '#1000000404\nreal command two\n'
+} >"$src_z"
+init_files_history_rewrite_bounded "$src_z" "$dest_z"
+out_z="$(<"$dest_z")"
+assert_contains 'keeps real command one' "$out_z" 'real command one'
+assert_contains 'keeps real command two' "$out_z" 'real command two'
+assert_not_contains 'drops runaway AAAA line' "$out_z" 'AAAAAAAAAA'
+assert_not_contains 'drops mid-line epoch splice' "$out_z" '17797git pull'
+zc=$(grep -c -v '^#' "$dest_z" || true)
+if [[ "$zc" -eq 2 ]]; then
+  pass_case 'only the two real commands survive'
+else
+  fail_case "only the two real commands survive (got $zc)"
+fi
+
+printf '\n=== merge_sources: session files + legacy + recurring archive lines ===\n'
+mdir="${tmpdir}/merge"
+mkdir -p "$mdir"
+# archive: "cargo build" recurs (keep), "one-off junk9999" appears once (drop by freq, also corrupt)
+cat >"${mdir}/history.all" <<'EOF'
+#1000001000
+cargo build
+#1000001001
+one-off junkx9999
+#1000001002
+cargo build
+EOF
+# legacy: lightly damaged
+printf '#1000001100\ngit fetch --all\n#1000001101\nkill g#1784409918\n' >"${mdir}/.bash_history"
+# two session files, oldest filename first
+printf '#1000001200\nssh prod-web\n' >"${mdir}/history.host.111.20260101000000"
+printf '#1000001300\nssh prod-web\n#1000001301\nmake release\n' >"${mdir}/history.host.222.20260201000000"
+
+merged="${tmpdir}/merge.stream"
+final="${tmpdir}/merge.final"
+init_files_history_merge_sources "$mdir" "${mdir}/history.all" "${mdir}/.bash_history" "$merged" 2
+init_files_history_rewrite_bounded "$merged" "$final"
+out_m="$(<"$final")"
+assert_contains 'recurring archive cmd kept' "$out_m" 'cargo build'
+assert_contains 'legacy cmd kept' "$out_m" 'git fetch --all'
+assert_contains 'session cmd kept' "$out_m" 'make release'
+assert_contains 'session cmd deduped once' "$out_m" 'ssh prod-web'
+assert_not_contains 'non-recurring corrupt archive line dropped' "$out_m" 'junkx9999'
+assert_not_contains 'spliced legacy line dropped' "$out_m" 'g#1784409918'
+sp=$(grep -c 'ssh prod-web' "$final" || true)
+if [[ "$sp" -eq 1 ]]; then
+  pass_case 'ssh prod-web appears exactly once after dedupe'
+else
+  fail_case "ssh prod-web appears exactly once (got $sp)"
+fi
+
 printf '\n=== static ===\n'
 lib_text="$(<"${root}/lib/history_rotate")"
 assert_contains 'defines soft_oversize' "$lib_text" 'init_files_history_soft_oversize()'
 assert_contains 'defines rewrite' "$lib_text" 'init_files_history_rewrite_bounded()'
 assert_contains 'defines prune' "$lib_text" 'init_files_history_prune_sessions()'
+assert_contains 'defines merge_sources' "$lib_text" 'init_files_history_merge_sources()'
 assert_contains 'verifies python via tool_path' "$lib_text" 'init_files_verify_tool_path'
 assert_contains 'timestamp regex' "$lib_text" '^#[0-9]+'
 

@@ -84,6 +84,13 @@ _ts_re = re.compile(r"^#[0-9]+\r?\n?\Z")
 # the digits keeps legit "sleep 3600" / "kill 12345" / "curl host:8080".
 _mashed_epoch_re = re.compile(r"[A-Za-z]\d{4,}\s*\Z")
 _bare_epoch_re = re.compile(r"^\s*1?[78]\d{8}\s*\Z")
+# A "#<4+ digits>" touching a non-space char is a HISTTIMEFORMAT stamp spliced
+# into the middle of a command line: "#17797git pull", "kill g#1784409918".
+_epoch_splice_re = re.compile(r"#\d{4,}\S|\S#\d{4,}")
+# Control chars (not \t \n \r) never belong in a history line.
+_ctrl_re = re.compile(r"[\x00-\x08\x0e-\x1f]")
+# 15+ of the same character in a row: a held key / botched paste ("AAAAA…").
+_runaway_re = re.compile(r"(.)\1{14,}")
 _orphan_terms = {
     "EOF", "'EOF'", '"EOF"', "done", "fi", "esac", "then", "else", "elif",
     "do", "}", "{", ")", "(", ";;", ");;",
@@ -95,6 +102,12 @@ def is_corrupt(cmd):
     if not stripped:
         return True
     if stripped in _orphan_terms:
+        return True
+    if _ctrl_re.search(cmd):
+        return True
+    if _runaway_re.search(cmd):
+        return True
+    if _epoch_splice_re.search(cmd):
         return True
     if _bare_epoch_re.match(cmd):
         return True
@@ -152,6 +165,89 @@ with open(dest, "w", encoding="utf-8", errors="replace") as out:
         if ts is not None:
             out.write(ts)
         out.write(cmd)
+PY
+}
+
+# Merge history sources into one #ts/command stream on stdout->dest, in ascending
+# trust order (least trusted first) so a later last-occurrence-wins dedupe in
+# init_files_history_rewrite_bounded keeps the most trusted / most recent copy:
+#
+#   1. history.all commands seen >= freq_min times   (repeated == probably real;
+#      recovers good history on machines whose archive is not yet deduped, and
+#      contributes ~nothing once it has been)
+#   2. ~/.bash_history                               (written by history -a; only
+#      lightly damaged)
+#   3. per-session history.<host>.<pid>.<ts> files, oldest filename first
+#      (pristine — history_bootstrap never reads these, so the mid-line splice
+#      bug never touched them)
+#
+# No filtering here: init_files_history_rewrite_bounded does corruption/dedupe.
+# Usage: init_files_history_merge_sources <hist_dir> <archive> <legacy> <dest> [freq_min]
+init_files_history_merge_sources()
+{
+    local hist_dir="$1" archive="$2" legacy="$3" dest="$4"
+    local freq_min="${5:-2}"
+    local py
+
+    [[ -n "$hist_dir" && -d "$hist_dir" && -n "$dest" ]] || return 1
+    py="$(_init_files_history_python)" || return 1
+
+    "$py" - "$hist_dir" "$archive" "$legacy" "$dest" "$freq_min" <<'PY'
+import glob
+import os
+import re
+import sys
+
+hist_dir, archive, legacy, dest, freq_min_s = sys.argv[1:6]
+freq_min = max(1, int(freq_min_s))
+
+_ts_re = re.compile(r"^#[0-9]+\r?\n?\Z")
+
+
+def read_pairs(path):
+    """Yield (ts_line_or_None, command_line) from a bash history file."""
+    if not path or not os.path.isfile(path):
+        return
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        pending = None
+        for line in fh:
+            if _ts_re.match(line):
+                pending = line
+                continue
+            yield (pending, line)
+            pending = None
+
+
+out = open(dest, "w", encoding="utf-8", errors="replace")
+
+
+def emit(pairs):
+    for ts, cmd in pairs:
+        if ts is not None:
+            out.write(ts)
+        out.write(cmd)
+
+
+# 1) archive commands that recur (frequency survives only pre-dedupe archives).
+if archive and os.path.isfile(archive):
+    counts = {}
+    for _ts, cmd in read_pairs(archive):
+        counts[cmd] = counts.get(cmd, 0) + 1
+    emit((ts, cmd) for ts, cmd in read_pairs(archive) if counts.get(cmd, 0) >= freq_min)
+
+# 2) legacy ~/.bash_history
+emit(read_pairs(legacy))
+
+# 3) per-session files, oldest filename (…<pid>.<YYYYmmddHHMMSS>) first
+sessions = [
+    p for p in glob.glob(os.path.join(hist_dir, "history.*"))
+    if re.search(r"\.\d+\.\d{8,}$", os.path.basename(p))
+]
+sessions.sort(key=lambda p: p.rsplit(".", 1)[-1])
+for s in sessions:
+    emit(read_pairs(s))
+
+out.close()
 PY
 }
 

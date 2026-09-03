@@ -40,7 +40,7 @@ Tracked content is shared. Host-specific absolute tool paths are **generated on 
 | `lib/interactive_input` | `bt` / `cache_ssh` path and timeout checks (sourced by bashrc). |
 | `lib/iterm_host_label` | Local vs ssh/et/mosh label for the iTerm pane status bar (`user.hostlabel`). |
 | `lib/orphan_cleanup` | MAC-gated leftover prefs / pipx detection for `init_files_cleanup_orphans`. |
-| `lib/history_rotate` | Soft/hard history archive bounds + session prune (issue #9). |
+| `lib/history_rotate` | Soft/hard history archive bounds + session prune (issue #9); corruption filter + `init_files_history_merge_sources` behind `rebuild_bash_history`. |
 | `lib/github_bootstrap` | Guided GitHub bootstrap for `bootstrap_host` (gh HTTPS + SSH confirm/retry; issue #18 UX). |
 | `lib/tool_version_cache` | Atomic write + mkdir lock helpers for tool-version `latest` / `last-report` / `last-check`. |
 | `tests/*.test` | Bash unit tests (repository-helpers layout). Run via `bash tests/<name>.test` or CI. |
