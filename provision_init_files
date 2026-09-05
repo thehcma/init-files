@@ -215,9 +215,10 @@ Usage: provision_init_files [-f|--force] [-q|--quiet] [--no-dev|--dev]
   --github-ssh  use SSH for GitHub (insteadOf https→ssh). Remembers THIS
                 host (~/.config/init-files/github-ssh.<hostname>) so gh
                 auth does not auto-switch back to HTTPS.
-  --no-iterm    on macOS, skip merging curated iTerm2 prefs (default: merge
+  --no-iterm    on macOS, skip merging curated terminal prefs — iTerm2,
+                Terminal.app font, and Mos scroll overrides (default: merge
                 when not -q).
-  --iterm       merge curated iTerm2 prefs on macOS (default when not -q;
+  --iterm       merge curated terminal prefs on macOS (default when not -q;
                 kept for compatibility).
 EOF
 }
@@ -2640,6 +2641,30 @@ maybe_install_terminal_prefs()
     log "OK       Terminal.app font merged — quit and reopen Terminal to see Meslo Nerd Font"
 }
 
+maybe_install_mos_prefs()
+{
+    local install_bin settings
+
+    [[ $quiet -eq 1 || $skip_iterm -eq 1 ]] && return 0
+    is_darwin || return 0
+
+    install_bin="${repo_dir}/mos/install"
+    settings="${repo_dir}/mos/settings.json"
+    [[ -x "$install_bin" && -f "$settings" ]] || {
+        log "Note: curated Mos prefs not available under ${repo_dir}/mos/"
+        return 0
+    }
+
+    # No-op (and silent past the first line) when Mos is not installed or the
+    # curated overrides are already applied.
+    log "Merging curated Mos scroll overrides (terminal emulators)…"
+    if ! "$install_bin" "$settings"; then
+        log "WARN     mos/install failed (re-run mos/install to disable Mos smoothing for iTerm)"
+        return 0
+    fi
+    log "OK       Mos scroll overrides merged"
+}
+
 # Resolve recorded init_tool_bash from TOOL_EXPORTS (absolute brew path when present).
 provision_recorded_bash()
 {
@@ -2712,4 +2737,5 @@ EOF
 
 maybe_install_iterm_prefs
 maybe_install_terminal_prefs
+maybe_install_mos_prefs
 print_brew_bash_login_shell_tip

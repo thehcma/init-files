@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# Merge curated Mos (com.caldis.Mos) per-app scroll overrides onto this Mac.
+set -euo pipefail
+
+repo_mos="$(cd "$(dirname "$0")" && pwd)"
+prefs_py="$repo_mos/_prefs.py"
+settings_json="$repo_mos/settings.json"
+domain="com.caldis.Mos"
+prefs_file="${HOME}/Library/Preferences/${domain}.plist"
+no_backup=0
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --no-backup)
+            no_backup=1
+            shift
+            ;;
+        -h|--help)
+            cat <<'EOF'
+Usage: mos/install [--no-backup] [SETTINGS.json]
+
+  Merge curated per-app scroll overrides into com.caldis.Mos so terminal
+  emulators (iTerm) stop getting Mos smooth-scroll — their own scroll
+  accumulator handles line motion, which avoids jerky multi-line jumps in
+  alt-screen apps. No-op when Mos is not installed, or when already applied.
+EOF
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -*)
+            printf 'mos/install: unknown option: %s\n' "$1" >&2
+            exit 1
+            ;;
+        *)
+            settings_json="$1"
+            shift
+            break
+            ;;
+    esac
+done
+
+if [[ "${OSTYPE:-}" != darwin* ]]; then
+    printf 'mos/install: macOS only\n' >&2
+    exit 1
+fi
+
+if [[ ! -f "$settings_json" ]]; then
+    printf 'mos/install: missing %s\n' "$settings_json" >&2
+    exit 1
+fi
+
+if ! command -v defaults >/dev/null 2>&1; then
+    printf 'mos/install: defaults(1) not found\n' >&2
+    exit 1
+fi
+
+python3_bin="$(command -v python3 2>/dev/null || true)"
+if [[ -z "$python3_bin" ]]; then
+    printf 'mos/install: python3 required\n' >&2
+    exit 1
+fi
+
+# Mos present? (app bundle or an existing prefs domain)
+if [[ ! -d /Applications/Mos.app ]] \
+    && ! defaults read "$domain" >/dev/null 2>&1; then
+    printf 'mos/install: Mos not installed (no /Applications/Mos.app, no %s prefs) — skipping\n' \
+        "$domain"
+    exit 0
+fi
+
+tmp_existing="$(mktemp -t mos-existing.XXXXXX)"
+tmp_merged="$(mktemp -t mos-merged.XXXXXX)"
+cleanup() {
+    rm -f "$tmp_existing" "$tmp_merged"
+}
+trap cleanup EXIT
+
+if ! defaults export "$domain" "$tmp_existing" 2>/dev/null; then
+    "$python3_bin" -c 'import plistlib,sys; plistlib.dump({}, open(sys.argv[1],"wb"), fmt=plistlib.FMT_XML)' \
+        "$tmp_existing"
+fi
+
+if "$python3_bin" "$prefs_py" equal "$tmp_existing" "$settings_json"; then
+    printf 'mos/install: curated scroll overrides already applied\n'
+    exit 0
+fi
+
+"$python3_bin" "$prefs_py" merge "$tmp_existing" "$settings_json" "$tmp_merged"
+
+if [[ $no_backup -eq 0 && -f "$prefs_file" ]]; then
+    backup="${prefs_file}.bak.$(date +%Y%m%d%H%M%S)"
+    cp -p "$prefs_file" "$backup"
+    printf 'Backed up existing prefs to %s\n' "$backup"
+fi
+
+# Mos rewrites com.caldis.Mos from its in-memory state on quit and on internal
+# edits, which would clobber a live `defaults import`. Quit it first, import,
+# then relaunch so the merged list is what Mos loads.
+mos_was_running=0
+if pgrep -x Mos >/dev/null 2>&1; then
+    mos_was_running=1
+    osascript -e 'tell application "Mos" to quit' >/dev/null 2>&1 \
+        || killall Mos >/dev/null 2>&1 || true
+    "$python3_bin" - <<'PY'
+import subprocess, time
+for _ in range(50):
+    if subprocess.run(["pgrep", "-x", "Mos"],
+                      capture_output=True).returncode != 0:
+        break
+    time.sleep(0.1)
+PY
+fi
+
+defaults import "$domain" "$tmp_merged"
+killall cfprefsd >/dev/null 2>&1 || true
+
+if [[ $mos_was_running -eq 1 ]]; then
+    open -a Mos >/dev/null 2>&1 || true
+    printf 'mos/install: merged curated scroll overrides into %s (Mos relaunched)\n' "$domain"
+else
+    printf 'mos/install: merged curated scroll overrides into %s\n' "$domain"
+fi
+
+"$python3_bin" "$prefs_py" paths "$settings_json" | while IFS= read -r p; do
+    printf '  no Mos smoothing: %s\n' "$p"
+done

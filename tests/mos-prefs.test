@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# Curated Mos per-app scroll overrides (mos/_prefs.py merge / equal / paths).
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+prefs_py="${root}/mos/_prefs.py"
+settings_json="${root}/mos/settings.json"
+readonly prefs_py settings_json
+
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
+# Fake live com.caldis.Mos domain: global scroll fields + one unrelated app.
+python3 - "$tmpdir/existing.plist" <<'PY'
+import plistlib, sys
+plistlib.dump(
+    {
+        "smooth": True, "reverse": False,
+        "reverseVertical": True, "reverseHorizontal": True,
+        "step": 9.5, "speed": 2.0, "duration": 3.9, "deadZone": 1.0,
+        "smoothSimTrackpad": False,
+        "smoothVertical": True, "smoothHorizontal": True,
+        "applications": b'[{"path":"/Applications/Xcode.app","inherit":true}]',
+    },
+    open(sys.argv[1], "wb"),
+    fmt=plistlib.FMT_XML,
+)
+PY
+
+printf '\n=== paths ===\n'
+got="$(python3 "$prefs_py" paths "$settings_json")"
+assert_eq 'curated paths list iTerm' "$got" '/Applications/iTerm.app'
+
+printf '\n=== equal: not applied before merge ===\n'
+rc=0
+python3 "$prefs_py" equal "$tmpdir/existing.plist" "$settings_json" || rc=$?
+assert_exit_nonzero 'equal exits non-zero before merge' "$rc"
+
+printf '\n=== merge ===\n'
+python3 "$prefs_py" merge "$tmpdir/existing.plist" "$settings_json" "$tmpdir/merged.plist"
+report="$(
+    python3 - "$tmpdir/merged.plist" <<'PY'
+import json, plistlib, sys
+d = plistlib.load(open(sys.argv[1], "rb"))
+apps = json.loads(d["applications"])
+by_path = {a["path"]: a for a in apps}
+it = by_path["/Applications/iTerm.app"]
+print("xcode-preserved:", "/Applications/Xcode.app" in by_path)
+print("xcode-untouched:", by_path["/Applications/Xcode.app"] == {"path": "/Applications/Xcode.app", "inherit": True})
+print("iterm-inherit-off:", it["inherit"] is False)
+print("iterm-smooth-off:", it["scroll"]["smooth"] is False)
+print("iterm-axis-off:", it["scroll"]["smoothVertical"] is False and it["scroll"]["smoothHorizontal"] is False)
+print("iterm-mirrors-global-reverse:", it["scroll"]["reverse"] is False)
+print("iterm-mirrors-global-step:", it["scroll"]["step"] == 9.5)
+PY
+)"
+assert_contains 'unrelated app preserved' "$report" 'xcode-preserved: True'
+assert_contains 'unrelated app untouched' "$report" 'xcode-untouched: True'
+assert_contains 'iTerm stops inheriting' "$report" 'iterm-inherit-off: True'
+assert_contains 'iTerm smoothing off' "$report" 'iterm-smooth-off: True'
+assert_contains 'iTerm axis smoothing off' "$report" 'iterm-axis-off: True'
+assert_contains 'iTerm mirrors global reverse' "$report" 'iterm-mirrors-global-reverse: True'
+assert_contains 'iTerm mirrors global step' "$report" 'iterm-mirrors-global-step: True'
+
+printf '\n=== equal: applied after merge ===\n'
+rc=0
+python3 "$prefs_py" equal "$tmpdir/merged.plist" "$settings_json" || rc=$?
+assert_exit_0 'equal exits zero after merge' "$rc"
+
+printf '\n=== merge is idempotent ===\n'
+python3 "$prefs_py" merge "$tmpdir/merged.plist" "$settings_json" "$tmpdir/merged2.plist"
+same="$(
+    python3 - "$tmpdir/merged.plist" "$tmpdir/merged2.plist" <<'PY'
+import json, plistlib, sys
+a = json.loads(plistlib.load(open(sys.argv[1], "rb"))["applications"])
+b = json.loads(plistlib.load(open(sys.argv[2], "rb"))["applications"])
+print("same" if a == b else "diff")
+PY
+)"
+assert_eq 'second merge matches first' "$same" 'same'
+
+printf '\n=== merge replaces a stale entry for a curated path ===\n'
+python3 - "$tmpdir/stale.plist" <<'PY'
+import plistlib, sys
+plistlib.dump(
+    {
+        "smooth": True, "reverse": False,
+        "step": 9.5, "speed": 2.0, "duration": 3.9, "deadZone": 1.0,
+        "applications": b'[{"path":"/Applications/iTerm.app","inherit":true}]',
+    },
+    open(sys.argv[1], "wb"),
+    fmt=plistlib.FMT_XML,
+)
+PY
+python3 "$prefs_py" merge "$tmpdir/stale.plist" "$settings_json" "$tmpdir/fixed.plist"
+fixed="$(
+    python3 - "$tmpdir/fixed.plist" <<'PY'
+import json, plistlib, sys
+apps = json.loads(plistlib.load(open(sys.argv[1], "rb"))["applications"])
+it = [a for a in apps if a["path"] == "/Applications/iTerm.app"]
+print("count:", len(it))
+print("inherit:", it[0]["inherit"])
+PY
+)"
+assert_contains 'no duplicate iTerm entry' "$fixed" 'count: 1'
+assert_contains 'stale iTerm entry rewritten' "$fixed" 'inherit: False'
+
+printf '\n=== static: only applications is touched ===\n'
+prefs_text="$(<"$prefs_py")"
+assert_contains 'merge deep-copies existing' "$prefs_text" 'copy.deepcopy(existing)'
+assert_contains 'only applications key written' "$prefs_text" 'out[APPLICATIONS_KEY] = dump_applications'
+
+test_summary

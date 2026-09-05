@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "_comment": "Curated Mos (com.caldis.Mos) per-app scroll overrides. Mos smooths every app by default (blocklist mode); for terminal emulators that draw their own content view and translate the wheel to arrow keys in alt-screen apps, Mos's interpolated delta stream turns into jerky multi-line jumps. Each entry here is expanded by _prefs.py into a full Mos Application object with inherit=false and a scroll block that mirrors the live global scroll settings except smooth=off, so the terminal keeps global feel (direction, dead zone) but its own scroll accumulator drives line motion. Only 'path' and 'smooth' are meaningful inputs; everything else is derived at merge time.",
+  "applications": [
+    {
+      "path": "/Applications/iTerm.app",
+      "displayName": "iTerm",
+      "smooth": false
+    }
+  ]
+}
