@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# Tests for lib/release_install (local, no-admin GitHub-release installs).
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+
+printf '\n=== lib/release_install ===\n'
+lib_text="$(<"${root}/lib/release_install")"
+assert_contains 'defines repo slug lookup' "$lib_text" 'init_files_release_repo_slug()'
+assert_contains 'defines latest version lookup' "$lib_text" 'init_files_release_latest_version()'
+assert_contains 'defines asset name resolver' "$lib_text" 'init_files_release_asset_name()'
+assert_contains 'defines install entry point' "$lib_text" 'init_files_release_install()'
+
+printf '\n=== behavioral: repo slug / asset name (pure logic, no network) ===\n'
+# shellcheck disable=SC1091
+source "${root}/lib/release_install"
+
+if slug="$(init_files_release_repo_slug rg)" && [[ "$slug" == 'BurntSushi/ripgrep' ]]; then
+  pass_case 'repo slug for rg'
+else
+  fail_case "repo slug for rg (got '${slug:-}')"
+fi
+
+if init_files_release_repo_slug not-a-real-tool >/dev/null 2>&1; then
+  fail_case 'repo slug rejects unknown tool'
+else
+  pass_case 'repo slug rejects unknown tool'
+fi
+
+printf '\n=== behavioral: init_files_release_install end-to-end (stubbed network) ===\n'
+test_home="$(mktemp -d)"
+stub_bin="$(mktemp -d)"
+trap 'rm -rf "$test_home" "$stub_bin"' EXIT
+
+# Build a real tar.gz fixture containing a fake, executable "rg" binary — the
+# same shape a real ripgrep release archive has (binary found by name+exec
+# bit anywhere under the extracted tree; init_files_release_install does not
+# assume a fixed subdirectory layout).
+fixture_dir="$(mktemp -d)"
+mkdir -p "${fixture_dir}/ripgrep-15.2.0-aarch64-apple-darwin"
+cat > "${fixture_dir}/ripgrep-15.2.0-aarch64-apple-darwin/rg" <<'EOF'
+#!/usr/bin/env bash
+printf 'ripgrep 15.2.0\n'
+EOF
+chmod +x "${fixture_dir}/ripgrep-15.2.0-aarch64-apple-darwin/rg"
+fixture_tarball="${stub_bin}/fixture.tar.gz"
+tar -czf "$fixture_tarball" -C "$fixture_dir" ripgrep-15.2.0-aarch64-apple-darwin
+
+# Stub curl: the "-o FILE URL" form (release download) copies the fixture
+# tarball; any other form (GitHub API latest-release lookup) prints a fixed,
+# minimal release JSON body to stdout.
+cat > "${stub_bin}/curl" <<EOF
+#!/usr/bin/env bash
+out=""
+for ((i = 1; i <= \$#; i++)); do
+    if [[ "\${!i}" == "-o" ]]; then
+        j=\$((i + 1))
+        out="\${!j}"
+    fi
+done
+if [[ -n "\$out" ]]; then
+    cp "${fixture_tarball}" "\$out"
+    exit 0
+fi
+printf '{"tag_name": "15.2.0"}'
+EOF
+chmod +x "${stub_bin}/curl"
+
+if HOME="$test_home" PATH="${stub_bin}:${PATH}" init_files_release_install rg \
+    > "${test_home}/install-output" 2> "${test_home}/install-stderr"; then
+  installed_path="$(<"${test_home}/install-output")"
+  expected_path="${test_home}/.local/opt/rg-15.2.0/rg"
+  symlink_path="${test_home}/.local/bin/rg"
+
+  assert_eq 'prints the installed binary path' "$installed_path" "$expected_path"
+
+  if [[ -x "$expected_path" ]]; then
+    pass_case 'installed binary is executable'
+  else
+    fail_case 'installed binary is executable'
+  fi
+
+  if [[ -L "$symlink_path" ]]; then
+    pass_case 'local bin symlink created'
+  else
+    fail_case 'local bin symlink created'
+  fi
+
+  assert_files_equal 'installed binary matches fixture' \
+    "$expected_path" "${fixture_dir}/ripgrep-15.2.0-aarch64-apple-darwin/rg"
+
+  if [[ "$("$symlink_path")" == 'ripgrep 15.2.0' ]]; then
+    pass_case 'symlinked binary runs'
+  else
+    fail_case 'symlinked binary runs'
+  fi
+else
+  fail_case "init_files_release_install rg failed: $(<"${test_home}/install-stderr")"
+fi
+
+# Old-version pruning: a stale ~/.local/opt/rg-<ver> dir from a previous
+# install must be removed once the new one lands.
+mkdir -p "${test_home}/.local/opt/rg-1.0.0"
+touch "${test_home}/.local/opt/rg-1.0.0/rg"
+if HOME="$test_home" PATH="${stub_bin}:${PATH}" init_files_release_install rg > /dev/null 2>&1 \
+    && [[ ! -d "${test_home}/.local/opt/rg-1.0.0" ]]; then
+  pass_case 'prunes older ~/.local/opt/<tool>-* installs'
+else
+  fail_case 'prunes older ~/.local/opt/<tool>-* installs'
+fi
+
+test_summary

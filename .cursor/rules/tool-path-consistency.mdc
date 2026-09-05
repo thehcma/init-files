@@ -5,6 +5,10 @@ alwaysApply: true
 
 # Tool path consistency
 
+See [local-install-preference.mdc](local-install-preference.mdc) for *which*
+mechanism (local vs Homebrew) a tool's candidates should check first — this
+rule covers the validation contract those candidates must satisfy either way.
+
 `provision_init_files` discovers tools; `bashrc` consumes `~/.config/init-files/tools.<hostname>`. Both use **only** [`lib/tool_path`](../../lib/tool_path) (`init_files_verify_tool_path`). Clean break — no legacy `-x`-only gates or dual wrappers.
 
 Host layout probes (Homebrew prefix, brew binary locations, MacVim.app paths) live in [`lib/host_paths`](../../lib/host_paths). That is discovery DRY — **not** a second config system. Recorded `init_tool_*` paths remain the runtime contract. Do **not** add env-var overrides for config dir / brew prefix / candidate lists. `bootstrap_host` stays scp/curl-able alone and keeps an inline brew-bin probe with a `SYNC: lib/host_paths` comment.

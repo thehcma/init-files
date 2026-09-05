@@ -1,0 +1,185 @@
+# Shared "install a GitHub release binary under ~/.local" helper.
+# shellcheck shell=bash
+# Sourced only — do not execute. See .cursor/rules/local-install-preference.mdc.
+#
+# Prefer a local/user-owned install (no admin needed to update) over Homebrew
+# whenever a tool ships a static release binary. Layout: flat
+# ~/.local/opt/<tool>-<version>/<tool>, symlinked from ~/.local/bin/<tool>.
+# Sourced by bashrc and provision_init_files; error-handling.mdc rules apply
+# (return non-zero on failure, never exit/die — this file is sourced by an
+# interactive shell).
+
+# Repo slug for a tool's GitHub releases. Prints nothing and fails for an
+# unknown tool.
+init_files_release_repo_slug()
+{
+    case "$1" in
+        gh) printf 'cli/cli\n' ;;
+        rg) printf 'BurntSushi/ripgrep\n' ;;
+        fzf) printf 'junegunn/fzf\n' ;;
+        bat) printf 'sharkdp/bat\n' ;;
+        lsd) printf 'lsd-rs/lsd\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+# Latest release tag for REPO, exactly as GitHub reports it (some repos tag
+# with a leading "v", some do not — callers must not assume either way).
+init_files_release_latest_version()
+{
+    local repo="$1"
+    local curl_bin python_bin json
+
+    [[ -n "$repo" ]] || return 1
+    curl_bin="${init_tool_curl:-$(command -v curl 2>/dev/null || true)}"
+    [[ -n "$curl_bin" && -x "$curl_bin" ]] || return 1
+
+    json=$(
+        "$curl_bin" --silent --show-error --fail --location --max-time 15 \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'User-Agent: init-files-release-install' \
+            "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null
+    ) || return 1
+
+    python_bin="${init_tool_python3:-$(command -v python3 2>/dev/null || true)}"
+    if [[ -n "$python_bin" && -x "$python_bin" ]]; then
+        printf '%s' "$json" | "$python_bin" -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])' 2>/dev/null && return 0
+    fi
+
+    printf '%s' "$json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+}
+
+# Release-asset filename for TOOL at RAW_TAG (as returned by
+# init_files_release_latest_version — may or may not have a leading "v";
+# each tool spells its own asset names differently, verified against actual
+# upstream release assets when this was written). Fails closed on an
+# unsupported OS/arch rather than guessing.
+init_files_release_asset_name()
+{
+    local tool="$1" raw_tag="$2" os arch no_v
+
+    [[ -n "$tool" && -n "$raw_tag" ]] || return 1
+    os="$(uname -s 2>/dev/null || true)"
+    arch="$(uname -m 2>/dev/null || true)"
+    no_v="${raw_tag#v}"
+
+    case "$tool" in
+        gh)
+            case "${os}:${arch}" in
+                Darwin:arm64) printf 'gh_%s_macOS_arm64.zip\n' "$no_v" ;;
+                Darwin:x86_64) printf 'gh_%s_macOS_amd64.zip\n' "$no_v" ;;
+                Linux:aarch64|Linux:arm64) printf 'gh_%s_linux_arm64.tar.gz\n' "$no_v" ;;
+                Linux:x86_64) printf 'gh_%s_linux_amd64.tar.gz\n' "$no_v" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        rg)
+            case "${os}:${arch}" in
+                Darwin:arm64) printf 'ripgrep-%s-aarch64-apple-darwin.tar.gz\n' "$no_v" ;;
+                Darwin:x86_64) printf 'ripgrep-%s-x86_64-apple-darwin.tar.gz\n' "$no_v" ;;
+                Linux:aarch64|Linux:arm64) printf 'ripgrep-%s-aarch64-unknown-linux-musl.tar.gz\n' "$no_v" ;;
+                Linux:x86_64) printf 'ripgrep-%s-x86_64-unknown-linux-musl.tar.gz\n' "$no_v" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        fzf)
+            case "${os}:${arch}" in
+                Darwin:arm64) printf 'fzf-%s-darwin_arm64.tar.gz\n' "$no_v" ;;
+                Darwin:x86_64) printf 'fzf-%s-darwin_amd64.tar.gz\n' "$no_v" ;;
+                Linux:aarch64|Linux:arm64) printf 'fzf-%s-linux_arm64.tar.gz\n' "$no_v" ;;
+                Linux:x86_64) printf 'fzf-%s-linux_amd64.tar.gz\n' "$no_v" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        bat)
+            # bat/lsd embed the raw tag (with its "v") in the filename itself.
+            case "${os}:${arch}" in
+                Darwin:arm64) printf 'bat-%s-aarch64-apple-darwin.tar.gz\n' "$raw_tag" ;;
+                Darwin:x86_64) printf 'bat-%s-x86_64-apple-darwin.tar.gz\n' "$raw_tag" ;;
+                Linux:aarch64|Linux:arm64) printf 'bat-%s-aarch64-unknown-linux-musl.tar.gz\n' "$raw_tag" ;;
+                Linux:x86_64) printf 'bat-%s-x86_64-unknown-linux-musl.tar.gz\n' "$raw_tag" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        lsd)
+            case "${os}:${arch}" in
+                Darwin:arm64) printf 'lsd-%s-aarch64-apple-darwin.tar.gz\n' "$raw_tag" ;;
+                Darwin:x86_64) printf 'lsd-%s-x86_64-apple-darwin.tar.gz\n' "$raw_tag" ;;
+                Linux:aarch64|Linux:arm64) printf 'lsd-%s-aarch64-unknown-linux-musl.tar.gz\n' "$raw_tag" ;;
+                Linux:x86_64) printf 'lsd-%s-x86_64-unknown-linux-musl.tar.gz\n' "$raw_tag" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# Download, extract, and install TOOL's latest GitHub release binary under
+# ~/.local. Prints the installed binary path on success (also symlinked at
+# ~/.local/bin/<tool>); returns 1 on any failure. Prunes older
+# ~/.local/opt/<tool>-* installs.
+init_files_release_install()
+{
+    local tool="$1"
+    local repo raw_tag no_v asset url curl_bin tar_bin
+    local tmp_dir archive extracted install_dir bin_path old_dir
+
+    [[ -n "$tool" ]] || return 1
+    repo="$(init_files_release_repo_slug "$tool")" || return 1
+
+    curl_bin="${init_tool_curl:-$(command -v curl 2>/dev/null || true)}"
+    [[ -n "$curl_bin" && -x "$curl_bin" ]] || return 1
+
+    raw_tag="$(init_files_release_latest_version "$repo")" || return 1
+    [[ -n "$raw_tag" ]] || return 1
+    no_v="${raw_tag#v}"
+
+    asset="$(init_files_release_asset_name "$tool" "$raw_tag")" || return 1
+    url="https://github.com/${repo}/releases/download/${raw_tag}/${asset}"
+
+    tmp_dir="$(mktemp -d)" || return 1
+
+    case "$asset" in
+        *.zip)
+            command -v unzip >/dev/null 2>&1 || { rm -rf "$tmp_dir"; return 1; }
+            archive="${tmp_dir}/asset.zip"
+            "$curl_bin" --silent --show-error --fail --location --max-time 120 \
+                -o "$archive" "$url" || { rm -rf "$tmp_dir"; return 1; }
+            unzip -q "$archive" -d "$tmp_dir" || { rm -rf "$tmp_dir"; return 1; }
+            ;;
+        *.tar.gz)
+            tar_bin="$(command -v tar 2>/dev/null || true)"
+            [[ -n "$tar_bin" && -x "$tar_bin" ]] || { rm -rf "$tmp_dir"; return 1; }
+            archive="${tmp_dir}/asset.tar.gz"
+            "$curl_bin" --silent --show-error --fail --location --max-time 120 \
+                -o "$archive" "$url" || { rm -rf "$tmp_dir"; return 1; }
+            "$tar_bin" -xzf "$archive" -C "$tmp_dir" || { rm -rf "$tmp_dir"; return 1; }
+            ;;
+        *)
+            rm -rf "$tmp_dir"
+            return 1
+            ;;
+    esac
+
+    extracted="$(find "$tmp_dir" -type f -name "$tool" -perm -111 2>/dev/null | head -1)"
+    [[ -n "$extracted" && -x "$extracted" ]] || { rm -rf "$tmp_dir"; return 1; }
+
+    install_dir="${HOME}/.local/opt/${tool}-${no_v}"
+    mkdir -p "$install_dir" "${HOME}/.local/bin" || { rm -rf "$tmp_dir"; return 1; }
+    rm -rf "$install_dir"
+    mkdir -p "$install_dir" || { rm -rf "$tmp_dir"; return 1; }
+    bin_path="${install_dir}/${tool}"
+    cp "$extracted" "$bin_path" || { rm -rf "$tmp_dir"; return 1; }
+    chmod 755 "$bin_path"
+    ln -sf "$bin_path" "${HOME}/.local/bin/${tool}"
+    rm -rf "$tmp_dir"
+
+    for old_dir in "${HOME}/.local/opt/${tool}-"*; do
+        [[ -d "$old_dir" && "$old_dir" != "$install_dir" ]] || continue
+        rm -rf "$old_dir"
+    done
+
+    printf '%s\n' "$bin_path"
+}

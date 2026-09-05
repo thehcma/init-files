@@ -1,0 +1,71 @@
+---
+description: Prefer a local (no-admin) install/update over Homebrew when one exists
+alwaysApply: true
+---
+
+# Local install preference
+
+Two separate questions, judged independently:
+
+1. **Already installed?** Prefer whatever copy is already on this host and
+   current, regardless of source (system, Homebrew, or a local install). Do
+   not proactively reinstall or relocate a tool just to move it off brew.
+2. **Installing fresh, or updating a stale copy?** Prefer a local/user-owned
+   mechanism over Homebrew whenever one exists for that tool — a static
+   GitHub-release binary, an official no-sudo installer script, or nvm/fnm for
+   Node. A local install needs no admin account to set up or to update later;
+   Homebrew installs/upgrades on modern macOS need `is_macos_admin` (see
+   [tool-path-consistency.mdc](tool-path-consistency.mdc)), and are unavailable
+   at all on older macOS (see [platform-isolation.mdc](platform-isolation.mdc)).
+
+Homebrew remains the right default only when no local mechanism exists —
+typically because the tool has no static-binary release, needs a compiler
+toolchain / system libraries to build, or ships only as a cask. Judge each
+tool against this criterion explicitly; don't default to brew out of habit
+just because it's convenient to wire up.
+
+## Mechanism
+
+- `lib/release_install` (`init_files_release_install TOOL`) is the shared
+  implementation for "download the latest GitHub-release binary for TOOL and
+  install it under `~/.local`" — flat `~/.local/opt/<tool>-<version>/<tool>`,
+  symlinked from `~/.local/bin/<tool>`, older versions pruned. Add a new tool
+  by extending `init_files_release_repo_slug` and
+  `init_files_release_asset_name` in that file — do not hand-roll another
+  download/extract/symlink implementation elsewhere (`gh` used to duplicate
+  this in both `lib/github_bootstrap` and `bashrc`; that inconsistency is why
+  this rule and this lib exist).
+- `bashrc` re-prepends `~/.local/bin` after the Homebrew-gnubin `PATH` prepend
+  (see the `PATH=` assembly near shell init), so a local install always wins
+  `command -v` resolution once it exists — no further wiring needed per tool.
+- `provision_init_files`'s `record_tool` candidate lists must check
+  `"$HOME/.local/bin/<tool>"` **before** any brew path, matching that `PATH`
+  order — discovery and runtime resolution must agree on which copy wins when
+  both exist.
+- `maybe_offer_local_release_installs` (in `provision_init_files`) offers the
+  local install for any still-missing tool *before*
+  `maybe_offer_brew_for_missing` / `maybe_offer_apt_for_missing` run, so local
+  is tried first on every OS tier and brew/apt are the fallback, not the
+  default.
+- Each tool needs an `update_<tool>` function in `bashrc` (thin wrapper around
+  `init_files_release_install`, mirroring `update_gh`/`update_rg`/etc.), wired
+  into `tool_update_command` and `fetch_latest_tool_version` so
+  `check_tool_versions` / `update_tools` track it like any other tool.
+- `install_starship` is the one exception to the "static binary" shape — it
+  shells out to the upstream `starship.rs/install.sh -b ~/.local/bin`
+  installer instead of `lib/release_install`, since starship ships its own
+  no-sudo installer rather than a bare release binary. Same policy, different
+  mechanism; falls back to brew/apt/dnf only if the upstream installer fails.
+
+## Anti-patterns
+
+- Defaulting a new brew-installable tool straight to `brew install` without
+  checking whether it ships a static release binary or an official no-sudo
+  installer first.
+- A second hand-rolled "curl a GitHub release, extract, symlink into
+  `~/.local`" implementation instead of extending `lib/release_install`.
+- `record_tool` candidate lists that check the brew path before
+  `~/.local/bin` — contradicts the `PATH` order `bashrc` actually uses.
+- Reinstalling / relocating an already-current brew-installed copy just to
+  satisfy this preference — the policy governs new installs and updates, not
+  hosts that are already fine.

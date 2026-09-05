@@ -32,11 +32,14 @@ INIT_FILES_SKIP_DAILY_REFRESH=1 source ~/.bashrc
 
 | Tier | Install path |
 | --- | --- |
-| Modern macOS | `brew install starship` |
-| Debian/Ubuntu (when packaged) | `sudo apt install starship` |
-| Fedora/Rocky (when packaged) | `sudo dnf install starship` |
-| Else | `install_starship` → upstream script into `~/.local/bin` |
+| Every tier (tried first) | `install_starship` → upstream script into `~/.local/bin` (no admin needed) |
+| Modern macOS, only if that fails | `brew install starship` |
+| Debian/Ubuntu, only if that fails (when packaged) | `sudo apt install starship` |
+| Fedora/Rocky, only if that fails (when packaged) | `sudo dnf install starship` |
 
+Local install is preferred on every tier — see
+[.cursor/rules/local-install-preference.mdc](../.cursor/rules/local-install-preference.mdc).
+`update_starship` re-runs the same installer to pick up a newer release.
 `prompt_fancy -q` (login restore) never prompts; it prints a short hint instead. Disable with `prompt_plain`.
 
 When **starship is already on PATH** (or otherwise resolvable) but fancy is off for this host, interactive TTYs **explain** `prompt_fancy` and offer to enable it about weekly (`last-fancy-prompt-offer`). Skip with `INIT_FILES_SKIP_FANCY_PROMPT_OFFER=1`. Missing starship is not nagged here — run `prompt_fancy` yourself to get the install offer.
@@ -286,15 +289,21 @@ On **modern macOS** and **Linux**, `provision_init_files` may offer optional `ba
 - **Alt-C** previews directory trees the same way
 - **`fif <query>`** — live ripgrep results in fzf; `bat` preview when available; Enter opens `$EDITOR` / vim at the line
 
-Older macOS keeps plain fzf binds (no brew offers for bat/lsd/rg). `fif` still works wherever `rg` + `fzf` exist. Listing aliases (`ll` / `dir` / `lld` / `llm`) prefer `lsd` when available. When `aria2c` is installed, `aria` provides resumable, persistent, segmented downloads without file preallocation or post-download seeding.
+`fif` still works wherever `rg` + `fzf` exist. Listing aliases (`ll` / `dir` / `lld` / `llm`) prefer `lsd` when available. When `aria2c` is installed, `aria` provides resumable, persistent, segmented downloads without file preallocation or post-download seeding.
 
-Install hints from `./provision_init_files`:
+`./provision_init_files` offers a local (no-admin) install for any of
+`fzf`/`bat`/`lsd`/`rg` still missing after discovery, on every OS tier — see
+[.cursor/rules/local-install-preference.mdc](../.cursor/rules/local-install-preference.mdc).
+Only a tool still missing after declining/failing that offer falls through to:
 
-| Tier | Hint |
+| Tier | Fallback hint |
 | --- | --- |
 | Modern macOS | `brew install fzf bat lsd ripgrep` |
-| Older macOS | fzf via GitHub release → `~/.local` (**no brew**); bat/lsd/rg not offered |
+| Older macOS | none (brew not recommended on this tier) |
 | Linux | `sudo apt install fzf bat lsd ripgrep` (or dnf); Debian/Ubuntu may provide `bat` as `batcat` |
+
+`update_fzf` / `update_bat` / `update_lsd` / `update_rg` re-run the local
+install to pick up a newer release.
 
 Implementation pointers in [`bashrc`](../bashrc): `_init_load_fzf` (prefer `fzf --bash`, else distro key-bindings), `_init_fzf_bindings_ready` (Ctrl-R must actually be bound), `_init_configure_fzf_env` / `_init_fzf_wrap_history_keep_query` (Ctrl-R keeps unmatched query), preview strings + `batcat`.
 

@@ -104,6 +104,10 @@ if [[ -f "${_init_files_clone_dir}/lib/orphan_cleanup" ]]; then
     # shellcheck disable=SC1091
     . "${_init_files_clone_dir}/lib/orphan_cleanup"
 fi
+if [[ -f "${_init_files_clone_dir}/lib/release_install" ]]; then
+    # shellcheck disable=SC1091
+    . "${_init_files_clone_dir}/lib/release_install"
+fi
 unset _init_files_clone_dir
 
 if [[ -f "$init_files_tools_file" ]]; then
@@ -2042,6 +2046,8 @@ function check_tool_versions()
     local gh_path git_path gt_path gh_stack_current gh_stack_path
     local bash_current bash_path bash_shell_notice bash_reset bash_shell_hint
     local pipx_current pipx_path pnpm_current pnpm_path uv_current uv_path
+    local rg_current rg_path fzf_current fzf_path bat_current bat_path
+    local lsd_current lsd_path starship_current starship_path
     local pending_tool_count
     local no_dev_flag check_stamp report_file rebuild report
     local cache_mtime report_mtime
@@ -2078,6 +2084,11 @@ function check_tool_versions()
     pipx_latest=
     pnpm_latest=
     uv_latest=
+    rg_latest=
+    fzf_latest=
+    bat_latest=
+    lsd_latest=
+    starship_latest=
     tool_status_use_color=
     tool_update_messages=
     tool_status_messages=
@@ -2375,9 +2386,58 @@ function check_tool_versions()
         tool_status_messages+="$(tool_status_line uv "" "" "$uv_latest")"$'\n'
     fi
 
+    if command -v rg > /dev/null 2>&1; then
+        rg_path=$(command -v rg)
+        rg_current=$(rg --version 2> /dev/null | awk 'NR == 1 { print $2 }' || true)
+        add_tool_update_notice rg "$rg_path" "$rg_current" "$rg_latest"
+        tool_status_messages+="$(tool_status_line rg "$rg_path" "$rg_current" "$rg_latest")"$'\n'
+        if [[ -n "$rg_current" && -z "$rg_latest" ]]; then
+            pending_tool_count=$((pending_tool_count + 1))
+        fi
+    fi
+
+    if command -v fzf > /dev/null 2>&1; then
+        fzf_path=$(command -v fzf)
+        fzf_current=$(fzf --version 2> /dev/null | awk 'NR == 1 { print $1 }' || true)
+        add_tool_update_notice fzf "$fzf_path" "$fzf_current" "$fzf_latest"
+        tool_status_messages+="$(tool_status_line fzf "$fzf_path" "$fzf_current" "$fzf_latest")"$'\n'
+        if [[ -n "$fzf_current" && -z "$fzf_latest" ]]; then
+            pending_tool_count=$((pending_tool_count + 1))
+        fi
+    fi
+
+    if command -v bat > /dev/null 2>&1; then
+        bat_path=$(command -v bat)
+        bat_current=$(bat --version 2> /dev/null | awk 'NR == 1 { print $2 }' || true)
+        add_tool_update_notice bat "$bat_path" "$bat_current" "$bat_latest"
+        tool_status_messages+="$(tool_status_line bat "$bat_path" "$bat_current" "$bat_latest")"$'\n'
+        if [[ -n "$bat_current" && -z "$bat_latest" ]]; then
+            pending_tool_count=$((pending_tool_count + 1))
+        fi
+    fi
+
+    if command -v lsd > /dev/null 2>&1; then
+        lsd_path=$(command -v lsd)
+        lsd_current=$(lsd --version 2> /dev/null | awk 'NR == 1 { print $2 }' || true)
+        add_tool_update_notice lsd "$lsd_path" "$lsd_current" "$lsd_latest"
+        tool_status_messages+="$(tool_status_line lsd "$lsd_path" "$lsd_current" "$lsd_latest")"$'\n'
+        if [[ -n "$lsd_current" && -z "$lsd_latest" ]]; then
+            pending_tool_count=$((pending_tool_count + 1))
+        fi
+    fi
+
+    if command -v starship > /dev/null 2>&1; then
+        starship_path=$(command -v starship)
+        starship_current=$(starship --version 2> /dev/null | awk 'NR == 1 { print $2 }' || true)
+        add_tool_update_notice starship "$starship_path" "$starship_current" "$starship_latest"
+        tool_status_messages+="$(tool_status_line starship "$starship_path" "$starship_current" "$starship_latest")"$'\n'
+        if [[ -n "$starship_current" && -z "$starship_latest" ]]; then
+            pending_tool_count=$((pending_tool_count + 1))
+        fi
+    fi
+
     # Optional interactive helpers: show install hints when missing (platform-isolated).
     # On modern macOS bash-completion is required (provision); still report status here.
-    tool_status_messages+="$(fzf_tool_status_line)"$'\n'
     tool_status_messages+="$(bash_completion_status_line)"$'\n'
 
     report=
@@ -4059,6 +4119,16 @@ function fetch_latest_tool_version()
             "$curl_cmd" --silent --show-error --fail --location --max-time 5 https://api.github.com/repos/github/gh-stack/releases/latest 2> /dev/null \
                 | "$init_tool_python3" -c 'import json, sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))' 2> /dev/null
             ;;
+        rg|fzf|bat|lsd)
+            # Repo slugs shared with lib/release_install (init_files_release_repo_slug).
+            "$curl_cmd" --silent --show-error --fail --location --max-time 5 \
+                "https://api.github.com/repos/$(init_files_release_repo_slug "$tool_name" 2> /dev/null)/releases/latest" 2> /dev/null \
+                | "$init_tool_python3" -c 'import json, sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))' 2> /dev/null
+            ;;
+        starship)
+            "$curl_cmd" --silent --show-error --fail --location --max-time 5 https://api.github.com/repos/starship/starship/releases/latest 2> /dev/null \
+                | "$init_tool_python3" -c 'import json, sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))' 2> /dev/null
+            ;;
         gt)
             "$curl_cmd" --silent --show-error --fail --location --max-time 5 https://registry.npmjs.org/@withgraphite/graphite-cli/latest 2> /dev/null \
                 | "$init_tool_python3" -c 'import json, sys; print(json.load(sys.stdin)["version"])' 2> /dev/null
@@ -4227,71 +4297,11 @@ function fif()
     fi
 }
 
+# Local install (init_files_release_install, no admin needed) is preferred on
+# every OS tier — see .cursor/rules/local-install-preference.mdc.
 function fzf_install_hint()
 {
-    if _init_is_darwin && type _init_is_modern_macos > /dev/null 2>&1 && _init_is_modern_macos; then
-        printf 'brew install fzf'
-        return 0
-    fi
-    if _init_is_darwin; then
-        printf 'install fzf from GitHub releases into ~/.local (do not use Homebrew on this macOS)'
-        return 0
-    fi
-    if command -v apt-get > /dev/null 2>&1 || command -v apt > /dev/null 2>&1; then
-        printf 'sudo apt install fzf'
-        return 0
-    fi
-    if command -v dnf > /dev/null 2>&1; then
-        printf 'sudo dnf install fzf'
-        return 0
-    fi
-    if command -v yum > /dev/null 2>&1; then
-        printf 'sudo yum install fzf'
-        return 0
-    fi
-    printf 'install fzf via your OS package manager or GitHub releases into ~/.local'
-}
-
-function fzf_tool_status_line()
-{
-    local fzf_bin fzf_current green red reset tone yellow
-
-    green=
-    red=
-    yellow=
-    reset=
-    tone=
-    if [[ -n "$tool_status_use_color" ]]; then
-        green=$'\033[32m'
-        red=$'\033[31m'
-        yellow=$'\033[33m'
-        reset=$'\033[0m'
-    fi
-
-    fzf_bin="${init_tool_fzf:-}"
-    if [[ -z "$fzf_bin" || ! -x "$fzf_bin" ]]; then
-        fzf_bin="$(command -v fzf 2>/dev/null || true)"
-    fi
-    # Common package locations if PATH is minimal during early checks.
-    if [[ -z "$fzf_bin" || ! -x "$fzf_bin" ]]; then
-        for fzf_bin in /usr/bin/fzf /usr/local/bin/fzf "$HOME/.local/bin/fzf"; do
-            [[ -x "$fzf_bin" ]] && break
-            fzf_bin=
-        done
-    fi
-
-    if [[ -n "$fzf_bin" && -x "$fzf_bin" ]]; then
-        fzf_current=$("$fzf_bin" --version 2> /dev/null | awk 'NR == 1 { print $1 }' || true)
-        printf '%s  fzf: installed %s, status: available, path: %s%s' \
-            "$green" "${fzf_current:-?}" "$fzf_bin" "$reset"
-        return 0
-    fi
-
-    # Optional helper — yellow, not "installed - / not found on PATH".
-    tone="$yellow"
-    [[ -n "$tone" ]] || tone="$red"
-    printf '%s  fzf: not installed%s' "$tone" "$reset"
-    printf '\n%s    install: %s%s' "$tone" "$(fzf_install_hint)" "$reset"
+    printf 'update_fzf'
 }
 
 function gbn()
@@ -5669,19 +5679,13 @@ function init_files_doctor()
     return 0
 }
 
-# Install Starship to ~/.local/bin (Linux / older macOS). Creates the bin dir first.
-# On modern macOS, prompt_fancy / callers should prefer brew; this still works as fallback.
+# Install Starship to ~/.local/bin via the upstream installer, on every OS
+# tier — a local install needs no admin account to update, so it's preferred
+# over Homebrew even on modern macOS (see .cursor/rules/local-install-preference.mdc).
 function install_starship()
 {
     local bin_dir="${HOME}/.local/bin"
     local curl_bin
-
-    if _init_is_darwin && type _init_is_modern_macos > /dev/null 2>&1 && _init_is_modern_macos; then
-        if command -v brew > /dev/null 2>&1; then
-            printf 'install_starship: on modern macOS prefer: brew install starship\n' >&2
-            return 1
-        fi
-    fi
 
     mkdir -p "$bin_dir" || {
         printf 'install_starship: cannot create %s\n' "$bin_dir" >&2
@@ -5737,28 +5741,33 @@ function _init_prompt_yn()
     esac
 }
 
-# Install starship using the path appropriate for this OS/host.
-# Returns 0 when starship is on PATH afterward.
+# Install starship, preferring the local (no-admin) mechanism on every OS
+# tier. Falls back to the distro/Homebrew package manager only if the
+# upstream installer itself fails. Returns 0 when starship is on PATH after.
 function _init_offer_install_starship()
 {
     local brew_bin
 
+    printf 'prompt_fancy: installing starship to ~/.local/bin (upstream install.sh)…\n' >&2
+    if install_starship; then
+        return 0
+    fi
+
     if _init_is_darwin && type _init_is_modern_macos > /dev/null 2>&1 && _init_is_modern_macos; then
         brew_bin="$(command -v brew 2>/dev/null || true)"
-        if [[ -z "$brew_bin" || ! -x "$brew_bin" ]]; then
-            printf 'prompt_fancy: Homebrew is required for starship on modern macOS\n' >&2
-            printf '  install Homebrew, then: brew install starship\n' >&2
-            return 1
+        if [[ -n "$brew_bin" && -x "$brew_bin" ]]; then
+            printf 'prompt_fancy: local install failed — falling back to Homebrew…\n' >&2
+            "$brew_bin" install starship || return 1
+            hash -r 2>/dev/null || true
+            return 0
         fi
-        printf 'prompt_fancy: installing starship via Homebrew…\n' >&2
-        "$brew_bin" install starship || return 1
-        hash -r 2>/dev/null || true
-        return 0
+        printf 'prompt_fancy: local install failed and Homebrew is unavailable\n' >&2
+        return 1
     fi
 
     if ! _init_is_darwin && command -v apt-get > /dev/null 2>&1; then
         if apt-cache show starship > /dev/null 2>&1; then
-            printf 'prompt_fancy: installing starship via apt…\n' >&2
+            printf 'prompt_fancy: local install failed — falling back to apt…\n' >&2
             sudo apt-get update && sudo apt-get install -y starship || return 1
             hash -r 2>/dev/null || true
             return 0
@@ -5767,15 +5776,19 @@ function _init_offer_install_starship()
 
     if ! _init_is_darwin && command -v dnf > /dev/null 2>&1; then
         if dnf info starship > /dev/null 2>&1; then
-            printf 'prompt_fancy: installing starship via dnf…\n' >&2
+            printf 'prompt_fancy: local install failed — falling back to dnf…\n' >&2
             sudo dnf install -y starship || return 1
             hash -r 2>/dev/null || true
             return 0
         fi
     fi
 
-    printf 'prompt_fancy: installing starship to ~/.local/bin (upstream install.sh)…\n' >&2
-    install_starship
+    return 1
+}
+
+function update_starship()
+{
+    _init_offer_install_starship
 }
 
 # Prefer lsd, else recorded/PATH ls. Prints absolute-or-PATH binary or nothing.
@@ -9150,7 +9163,12 @@ function tool_version_cache_is_complete()
         npm_latest \
         pipx_latest \
         pnpm_latest \
-        uv_latest
+        uv_latest \
+        rg_latest \
+        fzf_latest \
+        bat_latest \
+        lsd_latest \
+        starship_latest
     do
         grep -q "^${key}=" "$cache_file" 2>/dev/null || return 1
     done
@@ -9169,6 +9187,7 @@ function tool_version_cache_is_complete()
 function refresh_tool_version_cache()
 {
     local cache_dir cache_file bash_latest gh_latest gh_stack_latest git_latest gt_latest npm_latest pipx_latest pnpm_latest uv_latest
+    local rg_latest fzf_latest bat_latest lsd_latest starship_latest
     local curl_cmd body lock_dir
 
     [[ -n "${init_tool_python3:-}" && -x "$init_tool_python3" ]] || return
@@ -9224,6 +9243,14 @@ function refresh_tool_version_cache()
 
     uv_latest=$(fetch_uv_latest 2> /dev/null || true)
 
+    # rg/fzf/bat/lsd/starship share repo-slug lookup + tag parsing via the
+    # generic fetch_latest_tool_version dispatcher (lib/release_install).
+    rg_latest=$(fetch_latest_tool_version rg 2> /dev/null || true)
+    fzf_latest=$(fetch_latest_tool_version fzf 2> /dev/null || true)
+    bat_latest=$(fetch_latest_tool_version bat 2> /dev/null || true)
+    lsd_latest=$(fetch_latest_tool_version lsd 2> /dev/null || true)
+    starship_latest=$(fetch_latest_tool_version starship 2> /dev/null || true)
+
     body=$(
         printf 'checked_at=%s\n' "$(date +%s)"
         printf 'bash_latest=%s\n' "$bash_latest"
@@ -9235,6 +9262,11 @@ function refresh_tool_version_cache()
         printf 'pipx_latest=%s\n' "$pipx_latest"
         printf 'pnpm_latest=%s\n' "$pnpm_latest"
         printf 'uv_latest=%s\n' "$uv_latest"
+        printf 'rg_latest=%s\n' "$rg_latest"
+        printf 'fzf_latest=%s\n' "$fzf_latest"
+        printf 'bat_latest=%s\n' "$bat_latest"
+        printf 'lsd_latest=%s\n' "$lsd_latest"
+        printf 'starship_latest=%s\n' "$starship_latest"
     ) || return
 
     # Lock only the short publish step (network work stays outside the lock).
@@ -9489,6 +9521,21 @@ function tool_update_command()
         gh-stack)
             printf 'update_gh_stack'
             ;;
+        rg)
+            printf 'update_rg'
+            ;;
+        fzf)
+            printf 'update_fzf'
+            ;;
+        bat)
+            printf 'update_bat'
+            ;;
+        lsd)
+            printf 'update_lsd'
+            ;;
+        starship)
+            printf 'update_starship'
+            ;;
         gt)
             printf 'update_gt'
             ;;
@@ -9718,126 +9765,97 @@ function update_bash()
     bash --version | head -n 1
 }
 
+# Shared implementation: lib/release_install (init_files_release_install).
 function update_gh()
 {
-    local arch version tmp_dir archive extracted_dir install_dir old_install os_slug
-
     invalidate_tool_version_cache
 
-    case "$(uname -m)" in
-        x86_64)
-            arch="amd64"
-            ;;
-        aarch64|arm64)
-            arch="arm64"
-            ;;
-        *)
-            printf 'Unsupported gh architecture: %s\n' "$(uname -m)" >&2
-            return 1
-            ;;
-    esac
-
-    if _init_is_darwin; then
-        os_slug="macOS"
-    else
-        os_slug="linux"
-    fi
-
-    command -v "$init_tool_python3" > /dev/null 2>&1 || {
-        printf 'python3 is required to install gh\n' >&2
+    type init_files_release_install > /dev/null 2>&1 || {
+        printf 'update_gh: lib/release_install not loaded (run refresh_init_files)\n' >&2
         return 1
     }
-    if _init_is_darwin; then
-        command -v unzip > /dev/null 2>&1 || {
-            printf 'unzip is required to install gh on macOS\n' >&2
-            return 1
-        }
-    else
-        command -v tar > /dev/null 2>&1 || {
-            printf 'tar is required to install gh\n' >&2
-            return 1
-        }
-    fi
+    init_files_release_install gh > /dev/null || return
 
-    version=$(
-        "$init_tool_python3" - <<'PY'
-import json
-import urllib.request
-
-with urllib.request.urlopen("https://api.github.com/repos/cli/cli/releases/latest", timeout=10) as response:
-    print(json.load(response)["tag_name"].lstrip("v"))
-PY
-    ) || return
-
-    tmp_dir=$(mktemp -d) || return
-    if _init_is_darwin; then
-        archive="$tmp_dir/gh.zip"
-    else
-        archive="$tmp_dir/gh.tar.gz"
-    fi
-    install_dir="$HOME/.local/opt/gh-$version"
-
-    if ! "$init_tool_python3" - "$version" "$arch" "$archive" "$os_slug" <<'PY'
-import pathlib
-import sys
-import urllib.request
-
-version, arch, archive, os_slug = sys.argv[1:]
-if os_slug == "macOS":
-    url = f"https://github.com/cli/cli/releases/download/v{version}/gh_{version}_macOS_{arch}.zip"
-else:
-    url = f"https://github.com/cli/cli/releases/download/v{version}/gh_{version}_linux_{arch}.tar.gz"
-pathlib.Path(archive).parent.mkdir(parents=True, exist_ok=True)
-with urllib.request.urlopen(url, timeout=60) as response:
-    pathlib.Path(archive).write_bytes(response.read())
-PY
-    then
-        _init_remove_path --quiet "$tmp_dir"
-        return
-    fi
-
-    mkdir -p "$HOME/.local/bin" "$HOME/.local/opt" || {
-        _init_remove_path --quiet "$tmp_dir"
-        return
-    }
-
-    if _init_is_darwin; then
-        unzip -q "$archive" -d "$tmp_dir" || {
-            _init_remove_path --quiet "$tmp_dir"
-            return
-        }
-        extracted_dir="$tmp_dir/gh_${version}_macOS_${arch}"
-    else
-        tar -xzf "$archive" -C "$tmp_dir" || {
-            _init_remove_path --quiet "$tmp_dir"
-            return
-        }
-        extracted_dir="$tmp_dir/gh_${version}_linux_${arch}"
-    fi
-
-    _init_remove_path --quiet "$install_dir"
-    mv "$extracted_dir" "$install_dir" || {
-        _init_remove_path --quiet "$tmp_dir"
-        return
-    }
-
-    ln -sfn "$install_dir/bin/gh" "$HOME/.local/bin/gh" || {
-        _init_remove_path --quiet "$tmp_dir"
-        return
-    }
-
-    for old_install in "$HOME"/.local/opt/gh-*; do
-        [[ -d "$old_install" && "$old_install" != "$install_dir" ]] || continue
-        _init_remove_path "$old_install" || true
-    done
-
-    _init_remove_path --quiet "$tmp_dir"
     hash -r
     # Prefer the freshly installed binary when brew/gh still shadows PATH.
     if [[ -x "$HOME/.local/bin/gh" ]]; then
         "$HOME/.local/bin/gh" --version
     else
         gh --version
+    fi
+}
+
+# update_rg / update_fzf / update_bat / update_lsd: shared implementation is
+# lib/release_install (init_files_release_install) — see update_gh above.
+function update_rg()
+{
+    invalidate_tool_version_cache
+
+    type init_files_release_install > /dev/null 2>&1 || {
+        printf 'update_rg: lib/release_install not loaded (run refresh_init_files)\n' >&2
+        return 1
+    }
+    init_files_release_install rg > /dev/null || return
+
+    hash -r
+    if [[ -x "$HOME/.local/bin/rg" ]]; then
+        "$HOME/.local/bin/rg" --version
+    else
+        rg --version
+    fi
+}
+
+function update_fzf()
+{
+    invalidate_tool_version_cache
+
+    type init_files_release_install > /dev/null 2>&1 || {
+        printf 'update_fzf: lib/release_install not loaded (run refresh_init_files)\n' >&2
+        return 1
+    }
+    init_files_release_install fzf > /dev/null || return
+
+    hash -r
+    if [[ -x "$HOME/.local/bin/fzf" ]]; then
+        "$HOME/.local/bin/fzf" --version
+    else
+        fzf --version
+    fi
+}
+
+function update_bat()
+{
+    invalidate_tool_version_cache
+
+    type init_files_release_install > /dev/null 2>&1 || {
+        printf 'update_bat: lib/release_install not loaded (run refresh_init_files)\n' >&2
+        return 1
+    }
+    init_files_release_install bat > /dev/null || return
+
+    hash -r
+    if [[ -x "$HOME/.local/bin/bat" ]]; then
+        "$HOME/.local/bin/bat" --version
+    else
+        bat --version
+    fi
+}
+
+function update_lsd()
+{
+    invalidate_tool_version_cache
+
+    type init_files_release_install > /dev/null 2>&1 || {
+        printf 'update_lsd: lib/release_install not loaded (run refresh_init_files)\n' >&2
+        return 1
+    }
+    init_files_release_install lsd > /dev/null || return
+
+    hash -r
+    if [[ -x "$HOME/.local/bin/lsd" ]]; then
+        "$HOME/.local/bin/lsd" --version
+    else
+        lsd --version
     fi
 }
 

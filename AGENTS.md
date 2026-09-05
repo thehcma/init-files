@@ -2,7 +2,20 @@
 
 Guidance for agents maintaining this repo. Generic shell tooling here is prepared for a **public** repo; user-specific material (shared SSH, pubkeys, primary-user allowlist) lives in a **private config overlay** (`~/.local/share/config`, URL prompted / `INIT_FILES_CONFIG_REPO`).
 
-Human-oriented install/refresh steps live in [README.md](README.md). Platform isolation details also live in [.cursor/rules/platform-isolation.mdc](.cursor/rules/platform-isolation.mdc) (`alwaysApply`). Tool-path contract: [.cursor/rules/tool-path-consistency.mdc](.cursor/rules/tool-path-consistency.mdc) (`alwaysApply`) + shared [`lib/tool_path`](lib/tool_path) / [`lib/host_paths`](lib/host_paths). Error handling: [.cursor/rules/error-handling.mdc](.cursor/rules/error-handling.mdc) (`alwaysApply`) + [`lib/error`](lib/error) for standalone scripts. Interactive input: [.cursor/rules/interactive-input.mdc](.cursor/rules/interactive-input.mdc) (`alwaysApply`) + [`lib/interactive_input`](lib/interactive_input) for `bt` / `cache_ssh`. That tool-path rule also covers **admin vs non-admin** modern-macOS installs (MDM handoff via `print_brew_admin_copy_paste`). Prefer updating **both** this file and those rules when isolation or tool-path policy changes. Bash scripts in this repo do **not** use a `.sh` suffix — see [.cursor/rules/no-sh-extension.mdc](.cursor/rules/no-sh-extension.mdc).
+Human-oriented install/refresh steps live in [README.md](README.md). Platform isolation details also live in [.cursor/rules/platform-isolation.mdc](.cursor/rules/platform-isolation.mdc) (`alwaysApply`). Tool-path contract: [.cursor/rules/tool-path-consistency.mdc](.cursor/rules/tool-path-consistency.mdc) (`alwaysApply`) + shared [`lib/tool_path`](lib/tool_path) / [`lib/host_paths`](lib/host_paths). Local-install-over-Homebrew policy: [.cursor/rules/local-install-preference.mdc](.cursor/rules/local-install-preference.mdc) (`alwaysApply`) + shared [`lib/release_install`](lib/release_install). Error handling: [.cursor/rules/error-handling.mdc](.cursor/rules/error-handling.mdc) (`alwaysApply`) + [`lib/error`](lib/error) for standalone scripts. Interactive input: [.cursor/rules/interactive-input.mdc](.cursor/rules/interactive-input.mdc) (`alwaysApply`) + [`lib/interactive_input`](lib/interactive_input) for `bt` / `cache_ssh`. That tool-path rule also covers **admin vs non-admin** modern-macOS installs (MDM handoff via `print_brew_admin_copy_paste`). Prefer updating **both** this file and those rules when isolation or tool-path policy changes. Bash scripts in this repo do **not** use a `.sh` suffix — see [.cursor/rules/no-sh-extension.mdc](.cursor/rules/no-sh-extension.mdc).
+
+## Session startup
+
+At the **start of every agent session**, before acting from assumed conventions:
+
+1. Read this `AGENTS.md` in full.
+2. Read every rule under `.cursor/rules/*.mdc` whose front matter has
+   `alwaysApply: true`, plus any rule whose `globs` match files you will touch.
+   `AGENTS.md` and the `.cursor/rules/` files together are the contract — neither
+   alone is complete.
+
+`CLAUDE.md` (a `@AGENTS.md` import) and `.github/copilot-instructions.md` exist so
+Claude Code and Copilot reach this same guidance; do not put rules in them.
 
 ---
 
@@ -36,6 +49,7 @@ Tracked content is shared. Host-specific absolute tool paths are **generated on 
 | `cursor/` | Agent CLI statusline + session-id recorder; `agent_sessions` / `resume_agent_session` — see [cursor/README.md](cursor/README.md). |
 | `lib/tool_path` | Sole `init_files_verify_tool_path` (provision + bashrc). Clean break — no legacy dual validators. |
 | `lib/host_paths` | Shared Homebrew prefix / brew-bin / MacVim discovery probes (provision + bashrc). No env overrides. |
+| `lib/release_install` | Shared "install a GitHub-release binary under `~/.local`" mechanism (provision + bashrc) — see [.cursor/rules/local-install-preference.mdc](.cursor/rules/local-install-preference.mdc). |
 | `lib/error` | Script-only `init_files_die` / `warn` / `log`. Not sourced from bashrc. |
 | `lib/interactive_input` | `bt` / `cache_ssh` path and timeout checks (sourced by bashrc). |
 | `lib/iterm_host_label` | Local vs ssh/et/mosh label for the iTerm pane status bar (`user.hostlabel`). |
@@ -292,11 +306,16 @@ Flags: `-f` / `--force`, `-q` / `--quiet`, `--no-dev` / `--dev`, `--github-https
 
 When adding a tool bashrc needs:
 
-1. Add `init_tool_*` default / usage in `bashrc`.
-2. Add `record_tool` candidates + hints in `provision_init_files` (modern brew vs older/system vs Linux).
-3. Keep path acceptance in `lib/tool_path` (do not fork a second verifier in either caller).
-4. Bump `INIT_FILES_TOOLS_REVISION` in `provision_init_files` and `bashrc`.
-5. Re-run `provision_init_files` on the current host and confirm `tools` + hints.
+1. Check whether the tool has a local/no-admin install mechanism (static
+   GitHub-release binary, official no-sudo installer script) before defaulting
+   to brew — see [.cursor/rules/local-install-preference.mdc](.cursor/rules/local-install-preference.mdc).
+   If so, extend `lib/release_install` rather than brew-only `record_tool` hints.
+2. Add `init_tool_*` default / usage in `bashrc`.
+3. Add `record_tool` candidates + hints in `provision_init_files` (local path
+   before brew on modern macOS; older/system vs Linux).
+4. Keep path acceptance in `lib/tool_path` (do not fork a second verifier in either caller).
+5. Bump `INIT_FILES_TOOLS_REVISION` in `provision_init_files` and `bashrc`.
+6. Re-run `provision_init_files` on the current host and confirm `tools` + hints.
 
 ---
 
@@ -384,6 +403,8 @@ Copying transcript UUID dirs is optional secondary context, not a substitute for
 - Suggesting `update_git` when the package manager cannot actually upgrade (Linux distro-capped).
 - Changing Linux and macOS behavior with a single ungated PATH heuristic.
 - Forking tool-path validation in `bashrc` / `provision_init_files` instead of `lib/tool_path`.
+- Defaulting a new brew-installable tool to brew without checking for a local (no-admin) install mechanism first (see `.cursor/rules/local-install-preference.mdc`).
+- Hand-rolling another "download a GitHub release, extract, symlink into `~/.local`" implementation instead of extending `lib/release_install`.
 - Adding tracked bash scripts with a `.sh` suffix (see `.cursor/rules/no-sh-extension.mdc`).
 - Calling `exit` from sourced bashrc functions (use `return`; scripts use `init_files_die`).
 - Building a repo-wide argv sanitizer for interactive helpers (validate `bt` / `cache_ssh` entry points only).

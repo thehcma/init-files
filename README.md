@@ -83,7 +83,7 @@ init_files_doctor            # OK/WARN/FAIL summary
 shopt -p globstar autocd     # expect -s on bash ≥ 4
 ```
 
-Optional shell UX: **modern macOS** Homebrew **bash** + **bash-completion@2** are required (offered by `./provision_init_files`); also `brew install fzf bat lsd ripgrep`. **Linux** `sudo apt install fzf bat lsd ripgrep` (or dnf). Then `./provision_init_files` + new shell. Enables fzf previews (`bat`/`lsd`) and `fif` (rg→fzf). `prompt_fancy` offers to install starship for this OS when missing.
+Optional shell UX: **modern macOS** Homebrew **bash** + **bash-completion@2** are required (offered by `./provision_init_files`); `fzf`/`bat`/`lsd`/`ripgrep` are offered as a local (no-admin) install on every tier, falling back to `brew install fzf bat lsd ripgrep` (macOS) or `sudo apt install fzf bat lsd ripgrep` (Linux, or dnf) only if declined/failed. Then `./provision_init_files` + new shell. Enables fzf previews (`bat`/`lsd`) and `fif` (rg→fzf). `prompt_fancy` installs starship locally (`~/.local/bin`) when missing, falling back to this OS's package manager only if that fails.
 
 ---
 
