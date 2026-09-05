@@ -26,6 +26,7 @@ Shell functions are Darwin-only (fail on Linux). Scripts stay runnable under `~/
   - **Per-pane status bar** (tight packing) embedded in the pane title bar (`SeparateStatusBarsPerPane` + top position; `ShowPaneTitlesEvenIfOnlyOnePane`). Left: `\(user.agentsession)` (Cursor Agent short id from `cursor/statusline`; empty when not in an agent). Right: `\(user.hostlabel)` (`local` or hop hostname from bashrc / `cssh`/`cesh`/`cmsh`). Embedding hides iTerm’s title label — agent id must live in the status bar, not only OSC 0/1/2.
 - Daily `refresh_init_files -q` compares live curated prefs to the clone plist and offers `refresh_iterm_settings` when they differ (macOS only; no auto-apply under `-q`).
 - Global input: `PointerActions`, `FocusFollowsMouse`, Esc feedback toggles when present
+- **Scroll precision**: `UseModernScrollWheelAccumulator` (modern trackpad/Mos-smoothed deltas → precise lines, not multi-line jumps) and `AlternateMouseScroll` (wheel sends arrow keys in alt-screen apps — vim/htop/interactive CLIs — instead of raw, sometimes-multiplied mouse reporting), both `true`
 - **Remember window positions** (`RememberWindowPositions` = false) so profile Columns/Rows apply to new windows
 - **Pane title + status bar placement**: `ShowPaneTitles`, `ShowPaneTitlesEvenIfOnlyOnePane`, `SeparateStatusBarsPerPane`, `StatusBarPosition` (top, so the host label sits in the pane title)
 - **Applications in terminal may access clipboard** (`AllowClipboardAccess`) so OSC 52 / shell copy-to-clipboard is allowed without a prompt

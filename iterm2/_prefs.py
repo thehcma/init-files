@@ -36,6 +36,12 @@ TOP_LEVEL_KEEP = frozenset(
         "New Bookmarks",
         "PointerActions",
         "FocusFollowsMouse",
+        # Legacy accumulator mis-reads smoothed trackpad/Mos deltas into
+        # multi-line jumps; modern accumulator scrolls precisely. Arrow-key
+        # scroll in alt-screen apps (vim/htop/interactive CLIs) is exact
+        # per-notch instead of raw, sometimes-multiplied mouse reporting.
+        "UseModernScrollWheelAccumulator",
+        "AlternateMouseScroll",
         "ApplePressAndHoldEnabled",
         "HapticFeedbackForEsc",
         "SoundForEsc",
