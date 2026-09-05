@@ -260,7 +260,8 @@ What `provision_init_files` does, in order:
 9. Persists or clears `no-dev.<hostname>`, `github-https.<hostname>`, and `github-ssh.<hostname>` according to flags / saved preference / gh auth.
 10. Ensures `~/.profile` / `~/.bash_profile` sources `~/.bashrc` (login shells).
 11. On macOS (not `-q`, not `--no-iterm`): merges curated terminal prefs — iTerm2 (`iterm2/install`), Terminal.app font (`terminal/install`), and Mos per-app scroll overrides (`mos/install`).
-12. On modern macOS (not `-q`): if login shell is not the preferred Homebrew Cellar bash, prints `/etc/shells` + `chsh` steps.
+12. Not `-q`: links each personal CLI's own shell completion (`blumkin`, …) into `~/.local/share/bash-completion/completions/` so bash-completion lazy-loads it. Nothing vendored — run `link_shell_completions` to refresh on demand; a daily drift check nudges when a tool is newer than its linked script.
+13. On modern macOS (not `-q`): if login shell is not the preferred Homebrew Cellar bash, prints `/etc/shells` + `chsh` steps.
 
 ### Dev vs non-dev mode
 

@@ -108,6 +108,10 @@ if [[ -f "${_init_files_clone_dir}/lib/release_install" ]]; then
     # shellcheck disable=SC1091
     . "${_init_files_clone_dir}/lib/release_install"
 fi
+if [[ -f "${_init_files_clone_dir}/lib/shell_completions" ]]; then
+    # shellcheck disable=SC1091
+    . "${_init_files_clone_dir}/lib/shell_completions"
+fi
 unset _init_files_clone_dir
 
 if [[ -f "$init_files_tools_file" ]]; then
@@ -607,6 +611,39 @@ function _init_load_bash_completion()
         . "$candidate" && return 0
     done
     return 1
+}
+
+# Link personal CLIs' own completion scripts into the bash-completion v2 user
+# dir (lazy-loaded on first <tool><TAB>). Nothing is vendored — each tool emits
+# its own script (see lib/shell_completions). Also run by provision_init_files
+# / refresh_init_files; this is the on-demand entry point.
+function link_shell_completions()
+{
+    local out status tool dir
+
+    if ! type init_files_completion_link_all > /dev/null 2>&1; then
+        printf 'link_shell_completions: lib/shell_completions not loaded (run refresh_init_files)\n' >&2
+        return 1
+    fi
+    if ! init_files_completion_bash_completion_present; then
+        printf 'link_shell_completions: bash-completion not installed — linked scripts would not load\n' >&2
+        printf '  install it first (%s), then re-run.\n' "$(bash_completion_install_hint 2>/dev/null || echo 'your package manager')" >&2
+        return 1
+    fi
+
+    dir="$(init_files_completion_user_dir)"
+    out="$(init_files_completion_link_all)"
+    if [[ -z "$out" ]]; then
+        printf 'link_shell_completions: no registered CLIs on PATH\n'
+        return 0
+    fi
+    while IFS=$'\t' read -r status tool; do
+        case "$status" in
+            ok) printf '  linked  %s -> %s/%s.bash\n' "$tool" "$dir" "$tool" ;;
+            failed) printf '  FAILED  %s (its completion emitter errored)\n' "$tool" >&2 ;;
+        esac
+    done <<< "$out"
+    printf 'Open a new shell — bash-completion loads each on first <tool><TAB>.\n'
 }
 
 # True when fzf history integration is actually bound (not merely sourced).
@@ -5668,6 +5705,22 @@ function init_files_doctor()
         fi
     fi
 
+    # 11) shell completions for personal CLIs
+    if type init_files_completion_drift > /dev/null 2>&1; then
+        if ! init_files_completion_bash_completion_present; then
+            :  # bash-completion absent — nothing to link; covered by tool checks
+        else
+            local _doc_completion_drift
+            _doc_completion_drift="$(init_files_completion_drift 2>/dev/null | tr '\n' ' ')"
+            _doc_completion_drift="${_doc_completion_drift% }"
+            if [[ -n "$_doc_completion_drift" ]]; then
+                _doc_warn "shell completions missing/stale (${_doc_completion_drift}); run: link_shell_completions"
+            else
+                _doc_ok "shell completions linked for registered CLIs"
+            fi
+        fi
+    fi
+
     if type _init_files_is_no_dev_host > /dev/null 2>&1 && _init_files_is_no_dev_host; then
         _doc_ok "mode: --no-dev (toolchain checks softened)"
     fi
@@ -7087,6 +7140,7 @@ _init_files_deploy_drift_reasons()
     local link_target expected
     local tools_reasons
     local iterm_rc
+    local completion_drift
 
     expected="${clone_dir}/bashrc"
     if [[ -L "${HOME}/.bashrc" ]]; then
@@ -7131,6 +7185,14 @@ _init_files_deploy_drift_reasons()
         tools_reasons="$(_init_files_tools_reinstall_reasons broken 2>/dev/null || true)"
         if [[ -n "$tools_reasons" ]]; then
             printf '%s\n' "$tools_reasons"
+        fi
+    fi
+
+    if type init_files_completion_drift > /dev/null 2>&1; then
+        completion_drift="$(init_files_completion_drift 2>/dev/null | tr '\n' ' ')"
+        completion_drift="${completion_drift% }"
+        if [[ -n "$completion_drift" ]]; then
+            printf 'shell completions missing/stale for: %s\n' "$completion_drift"
         fi
     fi
 }
@@ -7266,6 +7328,7 @@ _init_files_offer_deploy_repairs()
 {
     local reasons
     local need_bashrc=0 need_vim=0 need_iterm=0 need_login=0 need_tools=0
+    local need_completions=0
     local repair_cmd reply
     local no_dev=0
 
@@ -7280,6 +7343,7 @@ _init_files_offer_deploy_repairs()
             vimrc\ *|\~/.vimrc\ *|\~/.gvimrc\ *) need_vim=1 ;;
             iTerm\ *) need_iterm=1 ;;
             login\ *) need_login=1 ;;
+            shell\ completions\ *) need_completions=1 ;;
             *) need_tools=1 ;;
         esac
     done <<< "$reasons"
@@ -7290,11 +7354,14 @@ _init_files_offer_deploy_repairs()
 
     # Prefer the narrowest fix when only one subsystem drifted.
     if [[ $need_bashrc -eq 0 && $need_login -eq 0 && $need_tools -eq 0 \
-        && $need_vim -eq 1 && $need_iterm -eq 0 ]]; then
+        && $need_completions -eq 0 && $need_vim -eq 1 && $need_iterm -eq 0 ]]; then
         repair_cmd='refresh_vimrc'
     elif [[ $need_bashrc -eq 0 && $need_login -eq 0 && $need_tools -eq 0 \
-        && $need_vim -eq 0 && $need_iterm -eq 1 ]]; then
+        && $need_completions -eq 0 && $need_vim -eq 0 && $need_iterm -eq 1 ]]; then
         repair_cmd='refresh_iterm_settings'
+    elif [[ $need_bashrc -eq 0 && $need_login -eq 0 && $need_tools -eq 0 \
+        && $need_vim -eq 0 && $need_iterm -eq 0 && $need_completions -eq 1 ]]; then
+        repair_cmd='link_shell_completions'
     elif [[ $no_dev -eq 1 ]]; then
         repair_cmd='refresh_init_files --no-dev'
     else
@@ -7320,6 +7387,7 @@ _init_files_offer_deploy_repairs()
                         # shellcheck disable=SC2119
                         refresh_iterm_settings
                         ;;
+                    link_shell_completions) link_shell_completions ;;
                     'refresh_init_files --no-dev') refresh_init_files --no-dev ;;
                     *) refresh_init_files ;;
                 esac

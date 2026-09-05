@@ -51,6 +51,7 @@ Tracked content is shared. Host-specific absolute tool paths are **generated on 
 | `lib/tool_path` | Sole `init_files_verify_tool_path` (provision + bashrc). Clean break — no legacy dual validators. |
 | `lib/host_paths` | Shared Homebrew prefix / brew-bin / MacVim discovery probes (provision + bashrc). No env overrides. |
 | `lib/release_install` | Shared "install a GitHub-release binary under `~/.local`" mechanism (provision + bashrc) — see [.cursor/rules/local-install-preference.mdc](.cursor/rules/local-install-preference.mdc). |
+| `lib/shell_completions` | Link personal CLIs' own completion output into the bash-completion v2 user dir (provision + bashrc `link_shell_completions`). Registry: builtin list + `~/.config/init-files/shell-completions`. Nothing vendored. |
 | `lib/error` | Script-only `init_files_die` / `warn` / `log`. Not sourced from bashrc. |
 | `lib/interactive_input` | `bt` / `cache_ssh` path and timeout checks (sourced by bashrc). |
 | `lib/iterm_host_label` | Local vs ssh/et/mosh label for the iTerm pane status bar (`user.hostlabel`). |
@@ -298,8 +299,9 @@ Conventions:
 6. Symlink `~/.bashrc` → clone `bashrc` (backup regular files once).
 7. Merge shared SSH materials from private config overlay (`~/.local/share/config/.ssh/`) when present.
 8. Ensure `~/.profile` or `~/.bash_profile` sources `~/.bashrc` (needed for Debian/Ubuntu SSH login shells).
-9. On Darwin (not `-q`): merge curated iTerm2 prefs via `iterm2/install` when the plist is present (warn-only on failure).
-10. On modern macOS (not `-q`): if preferred Homebrew bash is present and UserShell is not that Cellar binary, print `/etc/shells` + `chsh` setup steps.
+9. On Darwin (not `-q`): merge curated iTerm2 / Terminal.app / Mos prefs (`iterm2/install`, `terminal/install`, `mos/install`) when present (warn-only on failure).
+10. Not `-q`: link each personal CLI's own shell completion into the bash-completion user dir (`lib/shell_completions` → `maybe_link_shell_completions`).
+11. On modern macOS (not `-q`): if preferred Homebrew bash is present and UserShell is not that Cellar binary, print `/etc/shells` + `chsh` setup steps.
 
 `refresh_init_files` detects tools revision mismatch / broken paths at shell startup (doctor / warn tip). Full `refresh_init_files` provisions after pull when HEAD is not yet recorded in `last-provisioned.<hostname>`, deploy has drifted, or you pass `-f` / mode / transport / iterm flags. Bump `INIT_FILES_TOOLS_REVISION` in both `provision_init_files` and `bashrc` when the `record_tool` set changes.
 

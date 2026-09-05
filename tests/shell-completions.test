@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# lib/shell_completions: link a tool's own completion into the bash-completion
+# user dir; detect drift; ignore absent tools.
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+
+# shellcheck disable=SC1091
+source "${root}/lib/shell_completions"
+
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
+mkdir -p "${tmpdir}/bin" "${tmpdir}/xdg"
+export XDG_DATA_HOME="${tmpdir}/xdg"
+export PATH="${tmpdir}/bin:${PATH}"
+
+# A fake tool whose `--emit` prints a valid bash completion script.
+cat >"${tmpdir}/bin/faketool" <<'EOF'
+#!/bin/sh
+if [ "$1" = "--emit" ]; then
+    printf '_faketool() { COMPREPLY=(); }\ncomplete -F _faketool faketool\n'
+    exit 0
+fi
+echo "faketool: unknown args" >&2
+exit 1
+EOF
+chmod +x "${tmpdir}/bin/faketool"
+
+# Force a known registry + always-present bash-completion for the test.
+init_files_completion_registry() { printf 'faketool|faketool --emit\n'; }
+init_files_completion_bash_completion_present() { return 0; }
+
+target="$(init_files_completion_user_dir)/faketool.bash"
+
+printf '\n=== user dir honours XDG_DATA_HOME ===\n'
+assert_eq 'completions under XDG_DATA_HOME' \
+    "$(init_files_completion_user_dir)" \
+    "${tmpdir}/xdg/bash-completion/completions"
+
+printf '\n=== drift before first link ===\n'
+assert_eq 'faketool drifts (no script yet)' "$(init_files_completion_drift)" 'faketool'
+
+printf '\n=== link_all writes the script ===\n'
+rc=0
+out="$(init_files_completion_link_all)" || rc=$?
+assert_exit_0 'link_all returns 0 (something linked)' "$rc"
+assert_eq 'link_all reports ok' "$out" "$(printf 'ok\tfaketool')"
+assert_eq 'script exists and is non-empty' "$([[ -s "$target" ]] && echo yes)" 'yes'
+rc=0
+bash -n "$target" || rc=$?
+assert_exit_0 'linked script is valid bash' "$rc"
+assert_eq 'script is world-readable' \
+    "$(perl -e 'printf "%o\n", (stat($ARGV[0]))[2] & 0777' "$target")" '644'
+
+printf '\n=== no drift once linked and fresh ===\n'
+assert_eq 'faketool no longer drifts' "$(init_files_completion_drift)" ''
+
+printf '\n=== stale when the binary is newer ===\n'
+sleep 1
+touch "${tmpdir}/bin/faketool"
+assert_eq 'faketool drifts again after "upgrade"' "$(init_files_completion_drift)" 'faketool'
+init_files_completion_link_all >/dev/null
+assert_eq 'refreshed, drift clears' "$(init_files_completion_drift)" ''
+
+printf '\n=== absent tool: skipped, not failed ===\n'
+init_files_completion_registry() { printf 'nope|nope --emit\n'; }
+rc=0
+out="$(init_files_completion_link_all)" || rc=$?
+assert_exit_nonzero 'link_all returns non-zero (nothing linked)' "$rc"
+assert_eq 'absent tool produces no output' "$out" ''
+assert_eq 'absent tool does not drift' "$(init_files_completion_drift)" ''
+
+printf '\n=== emitter failure: reported as failed ===\n'
+cat >"${tmpdir}/bin/broke" <<'EOF'
+#!/bin/sh
+echo "boom" >&2
+exit 1
+EOF
+chmod +x "${tmpdir}/bin/broke"
+init_files_completion_registry() { printf 'broke|broke --emit\n'; }
+out="$(init_files_completion_link_all || true)"
+assert_eq 'broken emitter reported failed' "$out" "$(printf 'failed\tbroke')"
+assert_eq 'no script written for broken emitter' \
+    "$([[ -e "$(init_files_completion_user_dir)/broke.bash" ]] && echo present || echo absent)" \
+    'absent'
+
+printf '\n=== registry extension file is honoured ===\n'
+# Restore the real registry (tests above stubbed it).
+# shellcheck disable=SC1091
+source "${root}/lib/shell_completions"
+mkdir -p "${tmpdir}/xdgcfg/init-files"
+export XDG_CONFIG_HOME="${tmpdir}/xdgcfg"
+printf '# a comment\n\nfaketool|faketool --emit   # trailing comment\n' \
+    >"${tmpdir}/xdgcfg/init-files/shell-completions"
+assert_contains 'extension entry parsed' "$(init_files_completion_registry)" 'faketool|faketool --emit'
+assert_not_contains 'comment stripped' "$(init_files_completion_registry)" 'trailing comment'
+
+printf '\n=== static: nothing is vendored in the repo ===\n'
+assert_eq 'no completions/ dir in repo' \
+    "$([[ -d "${root}/completions" ]] && echo present || echo absent)" 'absent'
+lib_text="$(<"${root}/lib/shell_completions")"
+assert_contains 'targets the bash-completion user dir' "$lib_text" '/bash-completion}"'
+# shellcheck disable=SC2016  # literal needle, not meant to expand
+assert_contains 'appends the completions subdir' "$lib_text" '${base%/}/completions'
+
+test_summary

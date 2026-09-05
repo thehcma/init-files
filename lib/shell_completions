@@ -1,0 +1,136 @@
+# Shared shell-completion linking for personal CLIs.
+# shellcheck shell=bash
+# Sourced only — do not execute. error-handling.mdc: return non-zero, never
+# exit/die (sourced by an interactive shell and by provision_init_files).
+#
+# Each tool owns its completion; this just runs the tool's own emitter and
+# drops the script into the bash-completion v2 user dir
+# (${XDG_DATA_HOME:-~/.local/share}/bash-completion/completions/<tool>.bash),
+# which is lazy-loaded on the first <tool><TAB> — no rc edit, no shell-startup
+# cost. Applied by provision_init_files / refresh_init_files; a startup drift
+# check nudges `link_shell_completions` when a tool is newer than its script.
+
+# Registry lines: "<tool>|<command that prints a bash completion script>".
+# Extend by adding a line here, or per host via
+# ~/.config/init-files/shell-completions (same format; blank lines and #… ok).
+_init_files_completion_registry_builtin()
+{
+    cat <<'EOF'
+blumkin|blumkin completion bash
+EOF
+    # bunnify|bunnify --completion bash
+    #   ^ enable once the-hcma/bunnify#398 ships the emitter flag. Until then
+    #   bunnify has no way to print its script from a pipx install; add a line
+    #   to ~/.config/init-files/shell-completions on a dev box if you want it
+    #   wired from a source checkout in the meantime.
+}
+
+init_files_completion_registry()
+{
+    local extra="${XDG_CONFIG_HOME:-$HOME/.config}/init-files/shell-completions"
+    _init_files_completion_registry_builtin
+    if [[ -r "$extra" ]]; then
+        # Strip comments / blank lines; keep tool|command lines.
+        sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' "$extra" 2>/dev/null || true
+    fi
+}
+
+init_files_completion_user_dir()
+{
+    local base="${BASH_COMPLETION_USER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion}"
+    printf '%s\n' "${base%/}/completions"
+}
+
+# True when bash-completion (v2) is present, so linked scripts would load.
+init_files_completion_bash_completion_present()
+{
+    local candidate
+    [[ -n "${BASH_COMPLETION_VERSINFO:-}" ]] && return 0
+    for candidate in \
+        /opt/homebrew/etc/profile.d/bash_completion.sh \
+        /usr/local/etc/profile.d/bash_completion.sh \
+        /opt/homebrew/share/bash-completion/bash_completion \
+        /usr/share/bash-completion/bash_completion \
+        /etc/bash_completion \
+        /usr/local/etc/bash_completion
+    do
+        [[ -r "$candidate" ]] && return 0
+    done
+    return 1
+}
+
+# Resolve a tool binary: recorded init_tool_<name>, else PATH. Prints path.
+_init_files_completion_bin()
+{
+    local tool="$1" var path
+    var="init_tool_${tool//[^A-Za-z0-9_]/_}"
+    path="${!var:-}"
+    if [[ -n "$path" && -x "$path" ]]; then
+        printf '%s\n' "$path"
+        return 0
+    fi
+    command -v "$tool" 2>/dev/null || return 1
+}
+
+# 0 = linked or already fresh; 1 = tool not installed; 2 = emitter failed.
+init_files_completion_link_one()
+{
+    local tool="$1"
+    shift
+    local bin dir target tmp
+    [[ -n "$tool" && $# -gt 0 ]] || return 2
+    bin="$(_init_files_completion_bin "$tool")" || return 1
+    dir="$(init_files_completion_user_dir)"
+    target="${dir}/${tool}.bash"
+    if [[ -s "$target" && ! "$bin" -nt "$target" ]]; then
+        return 0
+    fi
+    mkdir -p "$dir" 2>/dev/null || return 2
+    tmp="$(mktemp "${target}.XXXXXX" 2>/dev/null)" || return 2
+    if "$@" >"$tmp" 2>/dev/null && [[ -s "$tmp" ]]; then
+        chmod 644 "$tmp" 2>/dev/null || true
+        mv -f "$tmp" "$target" 2>/dev/null && return 0
+    fi
+    rm -f "$tmp" 2>/dev/null
+    return 2
+}
+
+# Link every registered tool that is installed. Prints "<status>\t<tool>" for
+# tools that were acted on (status: ok | failed). Returns 0 if any linked.
+init_files_completion_link_all()
+{
+    local tool rest rc linked=1
+    while IFS='|' read -r tool rest; do
+        tool="${tool#"${tool%%[![:space:]]*}"}"
+        tool="${tool%"${tool##*[![:space:]]}"}"
+        [[ -n "$tool" && -n "$rest" ]] || continue
+        # rest is a command line — intentional word split.
+        # shellcheck disable=SC2086
+        init_files_completion_link_one "$tool" $rest
+        rc=$?
+        case "$rc" in
+            0) linked=0; printf 'ok\t%s\n' "$tool" ;;
+            2) printf 'failed\t%s\n' "$tool" ;;
+        esac
+    done < <(init_files_completion_registry)
+    return "$linked"
+}
+
+# Print names of installed tools whose linked completion is missing or stale
+# (tool binary newer than the script). Empty when bash-completion is absent.
+init_files_completion_drift()
+{
+    local tool rest bin dir target
+    init_files_completion_bash_completion_present || return 0
+    dir="$(init_files_completion_user_dir)"
+    while IFS='|' read -r tool rest; do
+        tool="${tool#"${tool%%[![:space:]]*}"}"
+        tool="${tool%"${tool##*[![:space:]]}"}"
+        [[ -n "$tool" && -n "$rest" ]] || continue
+        bin="$(_init_files_completion_bin "$tool")" || continue
+        target="${dir}/${tool}.bash"
+        if [[ ! -s "$target" || "$bin" -nt "$target" ]]; then
+            printf '%s\n' "$tool"
+        fi
+    done < <(init_files_completion_registry)
+}

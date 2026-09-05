@@ -396,6 +396,10 @@ is_modern_macos()
     || init_files_die "missing ${repo_dir}/lib/release_install (clone incomplete?)"
 # shellcheck disable=SC1091
 . "${repo_dir}/lib/release_install"
+if [[ -f "${repo_dir}/lib/shell_completions" ]]; then
+    # shellcheck disable=SC1091
+    . "${repo_dir}/lib/shell_completions"
+fi
 
 # Thin alias — discovery lives in lib/host_paths.
 homebrew_prefix()
@@ -2641,6 +2645,23 @@ maybe_install_terminal_prefs()
     log "OK       Terminal.app font merged — quit and reopen Terminal to see Meslo Nerd Font"
 }
 
+maybe_link_shell_completions()
+{
+    local out status tool
+
+    [[ $quiet -eq 1 ]] && return 0
+    type init_files_completion_link_all > /dev/null 2>&1 || return 0
+
+    out="$(init_files_completion_link_all 2>/dev/null || true)"
+    [[ -n "$out" ]] || return 0
+    while IFS=$'\t' read -r status tool; do
+        case "$status" in
+            ok) log "OK       linked ${tool} shell completion ($(init_files_completion_user_dir)/${tool}.bash)" ;;
+            failed) log "WARN     ${tool}: its completion emitter failed (skipped)" ;;
+        esac
+    done <<< "$out"
+}
+
 maybe_install_mos_prefs()
 {
     local install_bin settings
@@ -2738,4 +2759,5 @@ EOF
 maybe_install_iterm_prefs
 maybe_install_terminal_prefs
 maybe_install_mos_prefs
+maybe_link_shell_completions
 print_brew_bash_login_shell_tip
