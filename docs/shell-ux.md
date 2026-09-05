@@ -156,7 +156,10 @@ Open two Terminal tabs, run commands in each; both contribute to `history.all`. 
 check_tool_versions
 # bash: installed 5.3.15, latest 5.3.15, status: up to date, path: /opt/homebrew/bin/bash
 # … or on Ubuntu: latest matches apt candidate (not stuck on "pending")
-# fzf / bash-completion lines include install: … when missing
+# bash-completion line includes install: … when missing (required on modern macOS)
+# rg / fzf / bat / lsd / starship only appear once installed (truly optional —
+# no "not found on PATH" red line for these; install via update_<tool> or
+# provision_init_files's local-install offer, see "Fuzzy find" below)
 
 update_bash    # modern macOS brew / Linux package manager only — never on older macOS
 update_tools   # all currently outdated tools (same OS-tier / admin-handoff rules)
@@ -283,7 +286,7 @@ When `fzf` is on PATH / recorded as `init_tool_fzf`, `_init_load_fzf` enables in
 
 Typical binds (fzf defaults): **Ctrl-R** history, **Ctrl-T** files, **Alt-C** cd.
 
-On **modern macOS** and **Linux**, `provision_init_files` may offer optional `bat`, `lsd`, and `ripgrep` (Homebrew on modern macOS; apt on Debian/Ubuntu). When present:
+`provision_init_files` may offer optional `bat`, `lsd`, and `ripgrep` on every OS tier (local install first — see below). When present:
 
 - **Ctrl-T** previews files with `bat`/`batcat` (dirs with `lsd`, else `ls`)
 - **Alt-C** previews directory trees the same way
