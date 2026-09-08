@@ -2079,7 +2079,7 @@ function check_pipx_tool()
 
 function check_tool_versions()
 {
-    local cache_file checked_at current_time gh_cleanup_notice gh_current git_current gt_current lock_dir
+    local cache_file checked_at current_time gh_current git_current gt_current lock_dir
     local gh_path git_path gt_path gh_stack_current gh_stack_path
     local bash_current bash_path bash_shell_notice bash_reset bash_shell_hint
     local pipx_current pipx_path pnpm_current pnpm_path uv_current uv_path
@@ -2355,10 +2355,6 @@ function check_tool_versions()
         tool_status_messages+="$(tool_status_line gh "$gh_path" "$gh_current" "$gh_latest")"$'\n'
         if [[ -n "$gh_current" && -z "$gh_latest" ]]; then
             pending_tool_count=$((pending_tool_count + 1))
-        fi
-        gh_cleanup_notice="$(detect_gh_cleanup_notice "$gh_latest" || true)"
-        if [[ -n "$gh_cleanup_notice" ]]; then
-            tool_update_messages+="$gh_cleanup_notice"$'\n'
         fi
     else
         tool_status_messages+="$(tool_status_line gh "" "" "$gh_latest")"$'\n'
@@ -2975,162 +2971,6 @@ EOF
     fi
 
     /bin/rm -rf -- "$extract_dir" "${target}.tar"
-}
-
-# Dual-install notice for gh: ~/.local/bin/gh preferred (update_gh) vs brew/apt/rpm.
-# Quiet when the other install matches the local version (main status covers outdated).
-# When versions differ, yellow-warn each install behind latest (or behind the peer).
-function detect_gh_cleanup_notice()
-{
-    local latest_version="${1:-}"
-    local gh_path package_name local_gh local_ver other_ver ref_ver
-    local yellow='' reset='' kind upgrade_hint
-
-    local_gh="$HOME/.local/bin/gh"
-    [[ -x "$local_gh" ]] || return 0
-    local_ver=$("$local_gh" --version 2> /dev/null | awk 'NR == 1 { print $3 }' || true)
-    [[ -n "$(normalize_version "$local_ver")" ]] || return 0
-
-    if [[ -n "${tool_status_use_color:-}" ]]; then
-        yellow=$'\033[33m'
-        reset=$'\033[0m'
-    fi
-
-    while IFS= read -r gh_path; do
-        [[ -n "$gh_path" ]] || continue
-        [[ "$gh_path" == "$HOME/.local/"* ]] && continue
-        [[ -x "$gh_path" ]] || continue
-
-        other_ver=$("$gh_path" --version 2> /dev/null | awk 'NR == 1 { print $3 }' || true)
-        [[ -n "$(normalize_version "$other_ver")" ]] || continue
-
-        # Same version on both installs: stay quiet (whether or not up to date).
-        if versions_equal "$local_ver" "$other_ver"; then
-            return 0
-        fi
-
-        if [[ -n "$(normalize_version "$latest_version")" ]]; then
-            ref_ver="$latest_version"
-        elif version_lt "$local_ver" "$other_ver"; then
-            ref_ver="$other_ver"
-        else
-            ref_ver="$local_ver"
-        fi
-
-        kind=
-        package_name=
-        upgrade_hint=
-        if command -v dpkg-query > /dev/null 2>&1; then
-            package_name=$(dpkg-query --search "$gh_path" 2> /dev/null | awk -F': ' 'NR == 1 { print $1 }')
-            if [[ -n "$package_name" ]]; then
-                kind=apt
-                if _init_linux_can_sudo_upgrade 2> /dev/null; then
-                    upgrade_hint="sudo apt update && sudo apt install --only-upgrade $package_name"
-                else
-                    upgrade_hint="ask an admin: sudo apt update && sudo apt install --only-upgrade $package_name"
-                fi
-            fi
-        fi
-        if [[ -z "$kind" ]] && command -v rpm > /dev/null 2>&1; then
-            package_name=$(rpm -qf "$gh_path" 2> /dev/null || true)
-            if [[ -n "$package_name" && "$package_name" != "file $gh_path is not owned by any package" ]]; then
-                kind=rpm
-                if command -v dnf > /dev/null 2>&1; then
-                    if _init_linux_can_sudo_upgrade 2> /dev/null; then
-                        upgrade_hint="sudo dnf upgrade $package_name"
-                    else
-                        upgrade_hint="ask an admin: sudo dnf upgrade $package_name"
-                    fi
-                else
-                    if _init_linux_can_sudo_upgrade 2> /dev/null; then
-                        upgrade_hint="sudo yum update $package_name"
-                    else
-                        upgrade_hint="ask an admin: sudo yum update $package_name"
-                    fi
-                fi
-            fi
-        fi
-        if [[ -z "$kind" ]] && _init_is_darwin \
-            && command -v brew > /dev/null 2>&1 \
-            && _init_brew_formula_present gh 2> /dev/null
-        then
-            kind=brew
-            # Brew upgrades only on modern macOS; older tiers never recommend brew.
-            if type _init_is_modern_macos > /dev/null 2>&1 && _init_is_modern_macos; then
-                if _init_is_macos_admin; then
-                    upgrade_hint='brew upgrade gh'
-                else
-                    upgrade_hint='ask an admin (MDM): brew upgrade gh'
-                fi
-            fi
-        fi
-        [[ -n "$kind" ]] || kind=other
-
-        if version_lt "$local_ver" "$ref_ver"; then
-            if [[ -n "$(normalize_version "$latest_version")" ]]; then
-                printf '%s  gh: ~/.local/bin/gh is %s (latest %s)%s\n' \
-                    "$yellow" "$local_ver" "$latest_version" "$reset"
-            else
-                printf '%s  gh: ~/.local/bin/gh is %s (also installed: %s at %s)%s\n' \
-                    "$yellow" "$local_ver" "$other_ver" "$gh_path" "$reset"
-            fi
-            printf '%s    suggested: update_gh%s\n' "$yellow" "$reset"
-        fi
-
-        if version_lt "$other_ver" "$ref_ver"; then
-            case "$kind" in
-                apt)
-                    if [[ -n "$(normalize_version "$latest_version")" ]]; then
-                        printf '%s  gh: apt install (%s) at %s is %s (latest %s)%s\n' \
-                            "$yellow" "$package_name" "$gh_path" "$other_ver" "$latest_version" "$reset"
-                    else
-                        printf '%s  gh: apt install (%s) at %s is %s (also installed: %s at ~/.local/bin/gh)%s\n' \
-                            "$yellow" "$package_name" "$gh_path" "$other_ver" "$local_ver" "$reset"
-                    fi
-                    ;;
-                rpm)
-                    if [[ -n "$(normalize_version "$latest_version")" ]]; then
-                        printf '%s  gh: rpm install (%s) at %s is %s (latest %s)%s\n' \
-                            "$yellow" "$package_name" "$gh_path" "$other_ver" "$latest_version" "$reset"
-                    else
-                        printf '%s  gh: rpm install (%s) at %s is %s (also installed: %s at ~/.local/bin/gh)%s\n' \
-                            "$yellow" "$package_name" "$gh_path" "$other_ver" "$local_ver" "$reset"
-                    fi
-                    ;;
-                brew)
-                    if [[ -n "$(normalize_version "$latest_version")" ]]; then
-                        printf '%s  gh: Homebrew install at %s is %s (latest %s)%s\n' \
-                            "$yellow" "$gh_path" "$other_ver" "$latest_version" "$reset"
-                    else
-                        printf '%s  gh: Homebrew install at %s is %s (also installed: %s at ~/.local/bin/gh)%s\n' \
-                            "$yellow" "$gh_path" "$other_ver" "$local_ver" "$reset"
-                    fi
-                    ;;
-                *)
-                    if [[ -n "$(normalize_version "$latest_version")" ]]; then
-                        printf '%s  gh: install at %s is %s (latest %s)%s\n' \
-                            "$yellow" "$gh_path" "$other_ver" "$latest_version" "$reset"
-                    else
-                        printf '%s  gh: install at %s is %s (also installed: %s at ~/.local/bin/gh)%s\n' \
-                            "$yellow" "$gh_path" "$other_ver" "$local_ver" "$reset"
-                    fi
-                    ;;
-            esac
-            if [[ -n "$upgrade_hint" ]]; then
-                printf '%s    suggested: %s%s\n' "$yellow" "$upgrade_hint" "$reset"
-            elif [[ "$kind" == brew ]]; then
-                printf '%s    note: brew upgrades are not recommended on this macOS; prefer ~/.local/bin/gh (update_gh)%s\n' \
-                    "$yellow" "$reset"
-            else
-                printf '%s    suggested: upgrade or remove this install; preferred is ~/.local/bin/gh (update_gh)%s\n' \
-                    "$yellow" "$reset"
-            fi
-        fi
-
-        return 0
-    done < <(type -ap gh 2> /dev/null | awk '!seen[$0]++')
-
-    return 0
 }
 
 function bash_completion_install_hint()
