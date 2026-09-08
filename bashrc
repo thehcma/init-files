@@ -7074,9 +7074,12 @@ _init_files_deploy_drift_reasons()
 
 # Probe origin/main SHA for git dir $1 (optional git binary $2). Prints SHA; returns 1 if empty.
 # Uses HTTPS helper or BatchMode SSH based on this host’s GitHub transport.
+# Optional $3 = label (e.g. init-files, private-config): on HTTPS success, records
+# the active gh account for that label so a later auth failure (different active
+# account) can offer switching back to the one that worked.
 _init_files_probe_origin_main()
 {
-    local dir="${1:-}" git_bin="${2:-}" remote_head
+    local dir="${1:-}" git_bin="${2:-}" label="${3:-}" remote_head is_https=0
 
     [[ -n "$dir" && -d "$dir/.git" ]] || return 1
     if [[ -z "$git_bin" || ! -x "$git_bin" ]]; then
@@ -7088,6 +7091,7 @@ _init_files_probe_origin_main()
     [[ -n "$git_bin" && -x "$git_bin" ]] || return 1
 
     if type _init_files_is_github_https_host > /dev/null 2>&1 && _init_files_is_github_https_host; then
+        is_https=1
         remote_head=$(
             _init_files_git_https "$git_bin" -C "$dir" ls-remote --heads origin main 2>/dev/null \
                 | awk '{ print $1; exit }'
@@ -7100,6 +7104,9 @@ _init_files_probe_origin_main()
         )
     fi
     [[ -n "$remote_head" ]] || return 1
+    if [[ $is_https -eq 1 && -n "$label" ]] && type _init_files_record_gh_account > /dev/null 2>&1; then
+        _init_files_record_gh_account "$label"
+    fi
     printf '%s\n' "$remote_head"
 }
 
@@ -7108,11 +7115,17 @@ _init_files_probe_origin_main()
 _init_files_offer_remote_check_retry()
 {
     local label="${1:-remote}"
-    local reply
+    local reply is_https=0
 
     echo "init-files: could not reach ${label} origin/main (offline, auth, or network)." >&2
     if type _init_files_is_github_https_host > /dev/null 2>&1 && _init_files_is_github_https_host; then
+        is_https=1
         echo "  Hint: check gh auth / credential helper, then retry." >&2
+        # Multiple `gh auth login` accounts: if a different account previously
+        # worked for this label, offer switching gh's active identity to it.
+        if type _init_files_maybe_offer_gh_account_switch > /dev/null 2>&1; then
+            _init_files_maybe_offer_gh_account_switch "$label" || true
+        fi
     else
         echo "  Hint: run cache_ssh (BatchMode needs a loaded key), then retry." >&2
     fi
@@ -7121,8 +7134,7 @@ _init_files_offer_remote_check_retry()
         read -r reply || reply=n
         case "$reply" in
             ''|y|Y|yes|YES)
-                if ! type _init_files_is_github_https_host > /dev/null 2>&1 \
-                    || ! _init_files_is_github_https_host; then
+                if [[ $is_https -eq 0 ]]; then
                     if type cache_ssh > /dev/null 2>&1 && ! cache_ssh -c 2>/dev/null; then
                         cache_ssh || true
                     fi
@@ -7171,10 +7183,10 @@ _init_files_offer_private_config_update()
         echo "       # or update ~/.config/init-files/config-repo / INIT_FILES_CONFIG_REPO" >&2
     fi
 
-    remote_head="$(_init_files_probe_origin_main "$dir" "$git_bin" 2>/dev/null || true)"
+    remote_head="$(_init_files_probe_origin_main "$dir" "$git_bin" 'private-config' 2>/dev/null || true)"
     while [[ -z "$remote_head" ]]; do
         if _init_files_offer_remote_check_retry 'private config'; then
-            remote_head="$(_init_files_probe_origin_main "$dir" "$git_bin" 2>/dev/null || true)"
+            remote_head="$(_init_files_probe_origin_main "$dir" "$git_bin" 'private-config' 2>/dev/null || true)"
             continue
         fi
         break
@@ -7360,6 +7372,7 @@ function refresh_init_config()
             echo "refresh_init_config: fetch failed" >&2
             return 1
         }
+        type _init_files_record_gh_account > /dev/null 2>&1 && _init_files_record_gh_account 'private-config'
     elif ! GIT_TERMINAL_PROMPT=0 "$git_bin" -C "$dir" fetch --quiet origin \
         '+refs/heads/main:refs/remotes/origin/main'; then
         echo "refresh_init_config: fetch failed" >&2
@@ -7530,6 +7543,39 @@ _init_files_provision_already_current()
     return 0
 }
 
+# True (0) when the daily -q gate ($1=stamp path, $2=now epoch, $3=max age
+# seconds, $4=current clone HEAD) should run its checks now; false (1) when
+# it can stay throttled. Due whenever the stamp is missing/unreadable/expired,
+# OR the clone's checked-out HEAD moved since the last check — e.g. a commit
+# landed directly in this clone (it doubles as the live deploy source). Without
+# the HEAD comparison, a same-day local commit touching iTerm/vim/tools-
+# affecting files would silently wait for tomorrow's stamp before the
+# drift/provision offer ever ran (see $stamp.head, written by the caller).
+_init_files_daily_check_due()
+{
+    local stamp="${1:-}" now="${2:-0}" max_age="${3:-0}" current_head="${4:-}"
+    local last checked_head
+
+    [[ -n "$stamp" && -r "$stamp" ]] || return 0
+    last=$(cat "$stamp" 2>/dev/null || echo 0)
+    [[ "$last" =~ ^[0-9]+$ ]] || return 0
+    (( now - last < max_age )) || return 0
+    checked_head=$(cat "${stamp}.head" 2>/dev/null || true)
+    [[ -n "$current_head" && -n "$checked_head" && "$current_head" == "$checked_head" ]] || return 0
+    return 1
+}
+
+# Stamp a daily -q pass as done at $2 (now epoch) for HEAD $3, at path $1.
+_init_files_write_daily_check_stamp()
+{
+    local stamp="${1:-}" now="${2:-}" head="${3:-}"
+
+    [[ -n "$stamp" ]] || return 1
+    printf '%s\n' "$now" > "$stamp" || return 1
+    [[ -n "$head" ]] && { printf '%s\n' "$head" > "${stamp}.head" || return 1; }
+    return 0
+}
+
 function refresh_init_files()
 {
     local force=0
@@ -7645,13 +7691,12 @@ function refresh_init_files()
     # Quiet daily path: compare local HEAD to origin/main; when behind, offer
     # to pull (interactive prompt) or print a hint (non-TTY).
     if [[ $quiet -eq 1 && $force -eq 0 && $dev_mode_explicit -eq 0 && $github_transport_explicit -eq 0 && $iterm_flag_explicit -eq 0 ]]; then
-        if [[ -r "$init_files_check_stamp" ]]; then
-            last=$(cat "$init_files_check_stamp" 2>/dev/null || echo 0)
-            if [[ "$last" =~ ^[0-9]+$ ]] && (( now - last < init_files_max_age_seconds )); then
-                return 0
-            fi
+        local current_head_now
+        current_head_now=$("$init_tool_git" -C "$init_files_dir" rev-parse HEAD 2>/dev/null || true)
+        if ! _init_files_daily_check_due "$init_files_check_stamp" "$now" "$init_files_max_age_seconds" "$current_head_now"; then
+            return 0
         fi
-        printf '%s\n' "$now" > "$init_files_check_stamp"
+        _init_files_write_daily_check_stamp "$init_files_check_stamp" "$now" "$current_head_now"
 
         if [[ ! -d "$init_files_dir/.git" ]]; then
             echo "init-files: clone missing at $init_files_dir" >&2
@@ -7671,10 +7716,10 @@ function refresh_init_files()
         previous_head=$("$init_tool_git" -C "$init_files_dir" rev-parse HEAD 2>/dev/null || true)
         # BatchMode: never block startup on passphrase / host-key prompts.
         # HTTPS hosts use credential helper / gh; SSH hosts need a loaded key.
-        remote_head="$(_init_files_probe_origin_main "$init_files_dir" "$init_tool_git" 2>/dev/null || true)"
+        remote_head="$(_init_files_probe_origin_main "$init_files_dir" "$init_tool_git" 'init-files' 2>/dev/null || true)"
         while [[ -z "$remote_head" ]]; do
             if _init_files_offer_remote_check_retry 'init-files'; then
-                remote_head="$(_init_files_probe_origin_main "$init_files_dir" "$init_tool_git" 2>/dev/null || true)"
+                remote_head="$(_init_files_probe_origin_main "$init_files_dir" "$init_tool_git" 'init-files' 2>/dev/null || true)"
                 continue
             fi
             break
@@ -7774,6 +7819,9 @@ function refresh_init_files()
                     fetch_ok=1
                 fi
             fi
+            if [[ $fetch_ok -eq 1 ]] && type _init_files_record_gh_account > /dev/null 2>&1; then
+                _init_files_record_gh_account 'init-files'
+            fi
         else
             fetch_ok=0
             if "$init_tool_git" -C "$init_files_dir" fetch --quiet origin main 2>"$fetch_err_file"; then
@@ -7806,7 +7854,7 @@ function refresh_init_files()
                     [[ -n "$fetch_err" ]] && printf '%s\n' "$fetch_err" | command sed 's/^/  /' >&2
                 fi
             fi
-            printf '%s\n' "$now" > "$init_files_check_stamp"
+            _init_files_write_daily_check_stamp "$init_files_check_stamp" "$now" "${current_head_now:-}"
             return 1
         fi
         rm -f "$fetch_err_file" 2>/dev/null || true
@@ -7852,6 +7900,9 @@ function refresh_init_files()
 
     new_head=$("$init_tool_git" -C "$init_files_dir" rev-parse HEAD 2>/dev/null || true)
     new_head_short=$("$init_tool_git" -C "$init_files_dir" rev-parse --short HEAD 2>/dev/null || true)
+    # Keep the daily-throttle head stamp current so a same-host commit right
+    # after this refresh doesn't get masked by the bypass added above.
+    [[ -n "$new_head" ]] && printf '%s\n' "$new_head" > "${init_files_check_stamp}.head"
     previous_head_short=
     if [[ -n "$previous_head" ]]; then
         previous_head_short=$("$init_tool_git" -C "$init_files_dir" rev-parse --short "$previous_head" 2>/dev/null || printf '%.7s' "$previous_head")
@@ -10743,6 +10794,128 @@ _init_files_gh_authenticated()
     gh_bin="$(command -v gh 2>/dev/null || true)"
     [[ -n "$gh_bin" && -x "$gh_bin" ]] || return 1
     "$gh_bin" auth status >/dev/null 2>&1
+}
+
+# Raw `gh auth status` text for github.com (used to enumerate/identify accounts
+# without an extra network round-trip beyond what gh itself already does).
+_init_files_gh_auth_status_text()
+{
+    local gh_bin
+    gh_bin="$(command -v gh 2>/dev/null || true)"
+    [[ -n "$gh_bin" && -x "$gh_bin" ]] || return 1
+    "$gh_bin" auth status --hostname github.com 2>&1
+}
+
+# List every gh-logged-in github.com account login, one per line.
+_init_files_gh_logged_in_accounts()
+{
+    local text
+    text="$(_init_files_gh_auth_status_text 2>/dev/null || true)"
+    [[ -n "$text" ]] || return 1
+    printf '%s\n' "$text" | command sed -nE 's/^[[:space:]]*[^[:space:]]*[[:space:]]*Logged in to [^[:space:]]+ account ([^[:space:]]+).*/\1/p'
+}
+
+# Currently active gh account login for github.com (empty/1 if none).
+_init_files_gh_active_account()
+{
+    local text line account=''
+    text="$(_init_files_gh_auth_status_text 2>/dev/null || true)"
+    [[ -n "$text" ]] || return 1
+    while IFS= read -r line; do
+        if [[ "$line" =~ Logged\ in\ to\ [^[:space:]]+\ account\ ([^[:space:]]+) ]]; then
+            account="${BASH_REMATCH[1]}"
+        elif [[ "$line" == *'Active account: true'* && -n "$account" ]]; then
+            printf '%s\n' "$account"
+            return 0
+        fi
+    done <<< "$text"
+    return 1
+}
+
+# Per-label (e.g. init-files, private-config), per-host record of which gh
+# account last successfully reached that remote over HTTPS. Multiple gh
+# accounts (issue: private-config auth failing while a different account is
+# active) can then be detected and offered a `gh auth switch` before retrying.
+_init_files_gh_account_stamp_path()
+{
+    local label="${1:-}"
+    local state_dir host
+
+    [[ -n "$label" ]] || return 1
+    state_dir="${init_files_state_dir:-${XDG_STATE_HOME:-$HOME/.local/state}/init-files}"
+    host="${init_files_host:-$(_init_files_sanitize_host "$(_init_files_raw_host_label)" 2>/dev/null || hostname -s 2>/dev/null || echo host)}"
+    printf '%s/gh-account.%s.%s' "$state_dir" "$label" "$host"
+}
+
+_init_files_read_recorded_gh_account()
+{
+    local label="${1:-}" path login
+
+    path="$(_init_files_gh_account_stamp_path "$label")" || return 1
+    [[ -r "$path" ]] || return 1
+    login=$(tr -d '[:space:]' <"$path" 2>/dev/null || true)
+    [[ -n "$login" ]] || return 1
+    printf '%s\n' "$login"
+}
+
+# Best-effort; never fails the caller's flow when gh/account info is unavailable.
+_init_files_record_gh_account()
+{
+    local label="${1:-}" path dir account
+
+    [[ -n "$label" ]] || return 0
+    account="$(_init_files_gh_active_account 2>/dev/null || true)"
+    [[ -n "$account" ]] || return 0
+    path="$(_init_files_gh_account_stamp_path "$label")" || return 0
+    dir=$(dirname -- "$path")
+    mkdir -p "$dir" 2>/dev/null || true
+    if declare -F init_files_atomic_write > /dev/null 2>&1; then
+        printf '%s\n' "$account" | init_files_atomic_write "$path" || true
+    else
+        printf '%s\n' "$account" >"$path" 2>/dev/null || true
+    fi
+    return 0
+}
+
+# On an auth-flavored remote-check failure: if a *different* gh account
+# previously worked for this label and is still logged in, offer to switch gh's
+# active identity (`gh auth switch`) to it before the caller retries. This
+# targets the "right repo, wrong active gh account" case seen with multiple
+# `gh auth login` accounts — switching identity, not juggling tokens, keeps
+# the existing gh-credential-helper model (one active account) intact.
+_init_files_maybe_offer_gh_account_switch()
+{
+    local label="${1:-}" gh_bin recorded active reply
+
+    [[ -n "$label" ]] || return 1
+    gh_bin="$(command -v gh 2>/dev/null || true)"
+    [[ -n "$gh_bin" && -x "$gh_bin" ]] || return 1
+    recorded="$(_init_files_read_recorded_gh_account "$label" 2>/dev/null || true)"
+    [[ -n "$recorded" ]] || return 1
+    active="$(_init_files_gh_active_account 2>/dev/null || true)"
+    [[ -n "$active" && "$active" != "$recorded" ]] || return 1
+    _init_files_gh_logged_in_accounts 2>/dev/null | command grep -qxF "$recorded" || return 1
+
+    echo "  gh is active as '${active}', but '${recorded}' last worked for ${label}." >&2
+    if [[ -t 0 && -t 2 ]]; then
+        printf "Switch gh to '%s' for this host? [Y/n] " "$recorded" >&2
+        read -r reply || reply=n
+        case "$reply" in
+            ''|y|Y|yes|YES)
+                if "$gh_bin" auth switch --hostname github.com --user "$recorded" >/dev/null 2>&1; then
+                    echo "  Switched gh active account to '${recorded}'." >&2
+                    return 0
+                fi
+                echo "  Failed to switch gh account to '${recorded}'." >&2
+                return 1
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+    fi
+    echo "  Run: gh auth switch --hostname github.com --user ${recorded}" >&2
+    return 1
 }
 
 # HTTPS when remembered, or when gh is logged in and SSH was not explicitly preferred.

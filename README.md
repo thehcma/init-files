@@ -379,8 +379,20 @@ Interactive shells, about once per day (`init_files_max_age_seconds` / `tool_ver
 | Tool versions | Reprint cached diagnostic every shell (with color); rebuild at most once/day, or sooner when the background latest-* cache updates. No `[N]+ Done` job noise. Skipped on `--no-dev` hosts. |
 | init-files `main` | `git ls-remote` vs local HEAD; if behind, prompt `Update now? [Y/n]` (TTY) or print `Run: refresh_init_files`. |
 | Private config overlay | Same for `~/.local/share/config` `origin/main` (plus remembered-URL drift); if behind, use `refresh_init_config` to preview changes, confirm, pull, and provision. |
-| Local deploy drift | Compare this host’s deployables to the clone: `~/.bashrc` / `~/.vimrc` symlinks, retired `~/.gvimrc`, login-profile bashrc hook, broken `tools.<hostname>` paths, and (macOS) curated iTerm prefs vs `iterm2/com.googlecode.iterm2.plist`. If anything differs, prompt `Repair now with …? [Y/n]` (TTY) or print `Run: …`. Narrow fixes use `refresh_vimrc` / `refresh_iterm_settings`; otherwise `refresh_init_files`. Never auto-applies under `-q`. |
-| Remote check failure | If `ls-remote` fails (offline/auth/network), print a flag + hint (`cache_ssh` or `gh auth`); on a TTY offer `Retry … remote check now? [Y/n]` (may run `cache_ssh` on SSH hosts). Still runs the private-config and deploy-drift checks even when the init-files probe fails. Non-TTY prints a later hint. |
+| Local deploy drift | Compare this host’s deployables to the clone: `~/.bashrc` / `~/.vimrc` symlinks, retired `~/.gvimrc`, login-profile bashrc hook, broken `tools.<hostname>` paths, and (macOS) curated iTerm prefs vs `iterm2/com.googlecode.iterm2.plist`. If anything differs, prompt `Repair now with …? [Y/n]` (TTY) or print `Run: …`. Narrow fixes use `refresh_vimrc` / `refresh_iterm_settings`; otherwise `refresh_init_files`. Never auto-applies under `-q`. **The once/day throttle is bypassed** (this check runs immediately, even mid-day) whenever the clone's checked-out HEAD has moved since the stamp was last written — e.g. a commit landed directly in this clone (it doubles as the live deploy source) — so a same-day local change to iTerm/vim/tools-affecting files is not silently deferred to tomorrow's stamp. |
+| Remote check failure | If `ls-remote` fails (offline/auth/network), print a flag + hint (`cache_ssh` or `gh auth`); on a TTY offer `Retry … remote check now? [Y/n]` (may run `cache_ssh` on SSH hosts). Still runs the private-config and deploy-drift checks even when the init-files probe fails. Non-TTY prints a later hint. On GitHub HTTPS hosts, if a *different* `gh auth login` account previously succeeded for this remote (`init-files` / `private-config`) than the one currently active, offers `gh auth switch --hostname github.com --user <that account>` (identity switch, not a token) before retrying — see below. |
+
+#### Multiple `gh auth login` accounts
+
+If you're logged into more than one GitHub account with `gh` (`gh auth status` lists several), only one is "active" per host and used for all HTTPS git operations (via the `gh auth git-credential` helper). A remote check can fail with "could not reach … origin/main (offline, auth, or network)" simply because the *wrong* account is active for that particular repo (e.g. a personal account active while the private config overlay needs a work/org account).
+
+To fix this without ever touching tokens directly:
+
+- Whenever a remote check or fetch **succeeds** over HTTPS, the currently-active `gh` account is recorded per remote label at `~/.local/state/init-files/gh-account.<label>.<hostname>` (`init-files` or `private-config`).
+- On a later **auth failure**, if the recorded account differs from the currently-active one and is still logged in (`gh auth status`), you're offered `Switch gh to '<account>' for this host? [Y/n]` — accepting runs `gh auth switch --hostname github.com --user <account>` (switches the whole host's active gh identity, same one-active-account model `_init_files_ensure_github_https_creds` already relies on) and then retries.
+- Non-interactively (no TTY), the exact command is printed instead of run automatically.
+
+This targets "right repo, wrong active gh identity" — it does not attempt every logged-in account blindly, and it never generates, stores, or exports a token (`GH_TOKEN`/`GITHUB_TOKEN`); `gh auth switch` only changes which already-authenticated identity is active.
 
 ### Overrides (optional)
 

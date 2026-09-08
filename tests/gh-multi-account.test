@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# Tests for multi-`gh auth login` account detection/switch helpers used when a
+# daily remote check fails with the *wrong* gh account active (issue: private
+# config remote check failing while a different gh identity is active).
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+bashrc="${root}/bashrc"
+
+printf '\n=== static: gh multi-account helpers ===\n'
+text="$(<"$bashrc")"
+assert_contains 'defines auth status text helper' "$text" '_init_files_gh_auth_status_text()'
+assert_contains 'defines logged-in accounts list' "$text" '_init_files_gh_logged_in_accounts()'
+assert_contains 'defines active account lookup' "$text" '_init_files_gh_active_account()'
+assert_contains 'defines account stamp path' "$text" '_init_files_gh_account_stamp_path()'
+assert_contains 'defines read recorded account' "$text" '_init_files_read_recorded_gh_account()'
+assert_contains 'defines record account' "$text" '_init_files_record_gh_account()'
+assert_contains 'defines maybe-offer switch' "$text" '_init_files_maybe_offer_gh_account_switch()'
+assert_contains 'switch uses identity, not a token' "$text" 'gh auth switch --hostname github.com --user'
+assert_contains 'retry hint offers account switch' "$text" '_init_files_maybe_offer_gh_account_switch "$label"'
+assert_contains 'probe records account on https success' "$text" '_init_files_record_gh_account "$label"'
+
+printf '\n=== behavioral: account parsing + stamp round-trip ===\n'
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
+# shellcheck disable=SC1090
+eval "$(sed -n \
+    '/^_init_files_gh_auth_status_text()$/,/^}$/p; /^_init_files_gh_logged_in_accounts()$/,/^}$/p; /^_init_files_gh_active_account()$/,/^}$/p; /^_init_files_gh_account_stamp_path()$/,/^}$/p; /^_init_files_read_recorded_gh_account()$/,/^}$/p; /^_init_files_record_gh_account()$/,/^}$/p; /^_init_files_maybe_offer_gh_account_switch()$/,/^}$/p' \
+    "$bashrc")"
+
+# shellcheck disable=SC2034
+init_files_state_dir="$tmpdir/state"
+# shellcheck disable=SC2034
+init_files_host="testhost"
+mkdir -p "$init_files_state_dir"
+
+# Fake multi-account `gh auth status` output (matches real gh 2.x formatting).
+# shellcheck disable=SC2317
+_init_files_gh_auth_status_text() {
+    cat <<'EOF'
+github.com
+  ✓ Logged in to github.com account work-account (keyring)
+  - Active account: true
+  - Git operations protocol: https
+  - Token: gho_****
+
+  ✓ Logged in to github.com account personal-account (keyring)
+  - Active account: false
+  - Git operations protocol: https
+  - Token: gho_****
+EOF
+}
+
+got="$(_init_files_gh_logged_in_accounts | tr '\n' ',')"
+assert_eq 'lists both logged-in accounts' "$got" 'work-account,personal-account,'
+
+got="$(_init_files_gh_active_account)"
+assert_eq 'identifies active account' "$got" 'work-account'
+
+path="$(_init_files_gh_account_stamp_path 'private-config')"
+assert_contains 'stamp path is per-label + per-host' "$path" 'gh-account.private-config.testhost'
+
+if _init_files_read_recorded_gh_account 'private-config'; then
+    fail_case 'missing stamp is not readable'
+else
+    pass_case 'missing stamp is not readable'
+fi
+
+_init_files_record_gh_account 'private-config'
+got="$(_init_files_read_recorded_gh_account 'private-config')"
+assert_eq 'records the currently-active account' "$got" 'work-account'
+
+printf '\n=== behavioral: maybe-offer switch (non-interactive paths) ===\n'
+# No `gh` on PATH at all -> nothing to offer (force an empty PATH scope; the
+# function's own functions are still visible since bash functions are
+# inherited by subshells regardless of PATH).
+if (PATH='/nonexistent-init-files-test-bin'; _init_files_maybe_offer_gh_account_switch 'private-config' < /dev/null); then
+    fail_case 'no gh binary: nothing to offer'
+else
+    pass_case 'no gh binary: nothing to offer'
+fi
+
+# Recorded account already active -> nothing to offer.
+_init_files_gh_active_account() { printf '%s\n' 'work-account'; }
+if _init_files_maybe_offer_gh_account_switch 'private-config' < /dev/null; then
+    fail_case 'recorded == active: nothing to offer'
+else
+    pass_case 'recorded == active: nothing to offer'
+fi
+
+# Recorded account differs and is still logged in, but stdin is not a TTY ->
+# prints the manual command and returns non-zero (does not switch silently).
+_init_files_gh_active_account() { printf '%s\n' 'personal-account'; }
+out="$(_init_files_maybe_offer_gh_account_switch 'private-config' < /dev/null 2>&1)" && rc=0 || rc=$?
+assert_contains 'non-TTY prints manual switch command' "$out" 'gh auth switch --hostname github.com --user work-account'
+if [[ $rc -ne 0 ]]; then
+    pass_case 'non-TTY does not silently switch (non-zero return)'
+else
+    fail_case 'non-TTY does not silently switch (non-zero return)'
+fi
+
+# Recorded account differs but is no longer logged in -> nothing to offer.
+_init_files_gh_logged_in_accounts() { printf '%s\n' 'personal-account'; }
+if _init_files_maybe_offer_gh_account_switch 'private-config' < /dev/null; then
+    fail_case 'recorded account no longer logged in: nothing to offer'
+else
+    pass_case 'recorded account no longer logged in: nothing to offer'
+fi
+
+test_summary

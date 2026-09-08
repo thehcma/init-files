@@ -24,6 +24,11 @@ assert_contains 'skip message mentions -f' "$text" 'use -f to force'
 # Needle is a literal bashrc snippet (includes "$new_head").
 # shellcheck disable=SC2016
 assert_contains 'writes stamp after provision' "$text" '_init_files_write_last_provisioned "$new_head"'
+assert_contains 'defines daily-check-due helper' "$text" '_init_files_daily_check_due()'
+assert_contains 'defines daily-check stamp writer' "$text" '_init_files_write_daily_check_stamp()'
+# Needle is a literal bashrc snippet (includes "$init_files_check_stamp").
+# shellcheck disable=SC2016
+assert_contains 'quiet gate calls daily-check-due' "$text" '_init_files_daily_check_due "$init_files_check_stamp"'
 
 printf '\n=== behavioral: stamp read/write + already-current ===\n'
 tmpdir="$(mktemp -d)"
@@ -31,7 +36,7 @@ trap 'rm -rf "$tmpdir"' EXIT
 
 # shellcheck disable=SC1090
 eval "$(sed -n \
-    '/^_init_files_last_provisioned_path()$/,/^}$/p; /^_init_files_read_last_provisioned()$/,/^}$/p; /^_init_files_write_last_provisioned()$/,/^}$/p; /^_init_files_provision_already_current()$/,/^}$/p' \
+    '/^_init_files_last_provisioned_path()$/,/^}$/p; /^_init_files_read_last_provisioned()$/,/^}$/p; /^_init_files_write_last_provisioned()$/,/^}$/p; /^_init_files_provision_already_current()$/,/^}$/p; /^_init_files_daily_check_due()$/,/^}$/p; /^_init_files_write_daily_check_stamp()$/,/^}$/p' \
     "$bashrc")"
 
 # shellcheck disable=SC2034
@@ -78,6 +83,44 @@ if _init_files_provision_already_current "$sha"; then
     fail_case 'not current when deploy drifted'
 else
     pass_case 'not current when deploy drifted'
+fi
+
+printf '\n=== behavioral: daily-check-due bypasses throttle on local HEAD move ===\n'
+stamp="$tmpdir/last-check"
+now=1000000
+max_age=86400
+head_a='1111111111111111111111111111111111111111'
+head_b='2222222222222222222222222222222222222222'
+
+if _init_files_daily_check_due "$stamp" "$now" "$max_age" "$head_a"; then
+    pass_case 'due when stamp file missing'
+else
+    fail_case 'due when stamp file missing'
+fi
+
+_init_files_write_daily_check_stamp "$stamp" "$now" "$head_a"
+if [[ "$(cat "$stamp")" == "$now" && "$(cat "${stamp}.head")" == "$head_a" ]]; then
+    pass_case 'stamp writer records time + head'
+else
+    fail_case 'stamp writer records time + head'
+fi
+
+if _init_files_daily_check_due "$stamp" "$((now + 60))" "$max_age" "$head_a"; then
+    fail_case 'not due: same head, within max age'
+else
+    pass_case 'not due: same head, within max age'
+fi
+
+if _init_files_daily_check_due "$stamp" "$((now + 60))" "$max_age" "$head_b"; then
+    pass_case 'due: HEAD moved since last check, even within max age'
+else
+    fail_case 'due: HEAD moved since last check, even within max age'
+fi
+
+if _init_files_daily_check_due "$stamp" "$((now + max_age + 1))" "$max_age" "$head_a"; then
+    pass_case 'due: stamp expired, same head'
+else
+    fail_case 'due: stamp expired, same head'
 fi
 
 test_summary
