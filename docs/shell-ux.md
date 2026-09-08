@@ -98,6 +98,9 @@ cdb                 # picker (any dir under ~/work/brk-tech); . = ~/work/brk-tec
 cdb gei<Tab>        # → reference-implementation/…/geico (basename match)
 cdb candidate       # exact match, or fzf with query prefilled
 cdb .               # always ~/work/brk-tech
+cdh                 # picker (any dir under $HOME, skipping Library/node_modules/dist/build/vendor)
+cdh Downloads       # exact match, or fzf with query prefilled
+cdh .               # always $HOME
 ```
 
 Implementation: `_init_cd_work_project` / `_init_cd_project_apply_script_paths` in [`bashrc`](../bashrc) — on enter, prepend `scripts/` then `scripts/dev/` (dev wins on clashes); tracked dirs are stripped on the next jump so PATH does not accumulate.
@@ -252,7 +255,7 @@ Set `INIT_FILES_HISTORY_SCRUB=0` to keep everything. Works in both plain and fan
 
 ### Always
 
-- Custom: `cda` → `complete -o filenames -F _cda cda` (top-level only); `cdb` → `complete -o filenames -F _cdb cdb` (any depth; basename or path prefix)
+- Custom: `cda` → `complete -o filenames -F _cda cda` (top-level only); `cdb` → `complete -o filenames -F _cdb cdb` (any depth; basename or path prefix); `cdh` → `complete -o filenames -F _cdh cdh` (any depth under $HOME, pruning Library/node_modules/dist/build/vendor; basename or path prefix)
 - Custom: `agent` → `_init_files_agent_complete` (wrapper `-N`/`--name` + common CLI flags/commands); `resume_agent_session` → `--named`
 
 ### Readline (interactive)

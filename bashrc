@@ -208,6 +208,11 @@ fi
 
 ###### functions
 
+# Basenames pruned from cdh's whole-$HOME scan: huge/noisy trees that are
+# either not user project dirs (Library) or already covered by other jumpers
+# / not worth fuzzy-picking into (build artifacts, dependency caches).
+_init_cd_home_excludes="Library node_modules dist build vendor *.app *.photoslibrary *.framework *.bundle *.plugin *.xcodeproj *.xcworkspace"
+
 function _cda()
 {
     _init_cd_work_complete "${HOME}/work/ai"
@@ -216,6 +221,11 @@ function _cda()
 function _cdb()
 {
     _init_cd_work_complete "${HOME}/work/brk-tech" --recursive
+}
+
+function _cdh()
+{
+    _init_cd_work_complete "${HOME}" --recursive "$_init_cd_home_excludes"
 }
 
 # Dirs that cda/cdb last prepended to PATH (colon-separated); cleared/replaced
@@ -263,12 +273,13 @@ function _init_cd_project_apply_script_paths()
 
 function _init_cd_work_complete()
 {
-    local cur base="${1:-}" recursive=0
+    local cur base="${1:-}" recursive=0 exclude_names=
     local -a matches=()
     local nocasematch_was_off=0
     local rel
 
     [[ "${2:-}" == --recursive ]] && recursive=1
+    exclude_names="${3:-}"
     cur="${COMP_WORDS[COMP_CWORD]}"
     [[ -n "$base" && -d "$base" ]] || return 0
 
@@ -283,7 +294,7 @@ function _init_cd_work_complete()
     shopt -q nocasematch || { nocasematch_was_off=1; shopt -s nocasematch; }
     while IFS= read -r rel; do
         matches+=("$rel")
-    done < <(_init_cd_work_list_dirs "$base" 1 | _init_cd_work_filter_completions "$cur")
+    done < <(_init_cd_work_list_dirs "$base" 1 "$exclude_names" | _init_cd_work_filter_completions "$cur")
     (( nocasematch_was_off )) && shopt -u nocasematch
 
     COMPREPLY=("${matches[@]}")
@@ -306,18 +317,26 @@ function _init_cd_work_filter_completions()
     done
 }
 
-# Relative dir names under base for cda/cdb fzf + recursive completion.
-# recursive=1 lists any depth (cdb); otherwise immediate children only (cda).
-# Hidden names are skipped (and not descended into when recursive).
+# Relative dir names under base for cda/cdb/cdh fzf + recursive completion.
+# recursive=1 lists any depth (cdb/cdh); otherwise immediate children only (cda).
+# Hidden names are skipped (and not descended into when recursive). exclude_names
+# is an optional space-separated list of additional basenames to prune (e.g.
+# cdh skips Library/node_modules/etc across the whole of $HOME).
 function _init_cd_work_list_dirs()
 {
-    local base="${1:-}" recursive="${2:-0}"
+    local base="${1:-}" recursive="${2:-0}" exclude_names="${3:-}"
+    local -a prune_expr=(-name '.*')
+    local name
 
     [[ -n "$base" && -d "$base" ]] || return 0
 
+    for name in $exclude_names; do
+        prune_expr+=(-o -name "$name")
+    done
+
     {
         if (( recursive )); then
-            find "$base" -mindepth 1 \( -name '.*' -prune -o \( -type d -o -type l \) -print \)
+            find "$base" -mindepth 1 \( "${prune_expr[@]}" \) -prune -o \( -type d -o -type l \) -print
         else
             find "$base" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) ! -name '.*' -print
         fi
@@ -332,12 +351,23 @@ function _init_cd_work_list_dirs()
 function _init_cd_work_project()
 {
     local cmd base base_disp target fzf_bin picked query preview_cmd list_bin recursive=0
-    local fzf_pick_help fzf_enter_noun tab_help
+    local fzf_pick_help fzf_enter_noun tab_help exclude_names=
 
-    if [[ "${1:-}" == --recursive ]]; then
-        recursive=1
-        shift
-    fi
+    while true; do
+        case "${1:-}" in
+            --recursive)
+                recursive=1
+                shift
+                ;;
+            --exclude)
+                exclude_names="${2:-}"
+                shift 2
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
 
     cmd="${1:-cd}"
     base="${2:-}"
@@ -432,7 +462,7 @@ EOF
         {
             printf '%s\n' .
             # Include directory symlinks (-type d alone skips them on BSD/GNU find).
-            _init_cd_work_list_dirs "$base" "$recursive"
+            _init_cd_work_list_dirs "$base" "$recursive" "$exclude_names"
         } | "$fzf_bin" \
             --height=40% \
             --reverse \
@@ -2009,6 +2039,11 @@ function cda()
 function cdb()
 {
     _init_cd_work_project --recursive cdb "${HOME}/work/brk-tech" "$@"
+}
+
+function cdh()
+{
+    _init_cd_work_project --recursive --exclude "$_init_cd_home_excludes" cdh "${HOME}" "$@"
 }
 
 function cdr()
@@ -11194,6 +11229,7 @@ if [[ $- == *i* ]]; then
     _init_load_fzf || true
     complete -o filenames -F _cda cda
     complete -o filenames -F _cdb cdb
+    complete -o filenames -F _cdh cdh
     # agent is a bash function wrapping the CLI; bind our completer explicitly.
     if type _init_files_agent_complete > /dev/null 2>&1; then
         complete -o default -F _init_files_agent_complete agent
