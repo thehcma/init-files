@@ -2077,12 +2077,12 @@ function check_npm_tools()
         current_version="$(npm_tools_version)"
         # Use cached latest only — do not block shell startup on the registry.
         add_tool_update_notice npm "$tool_path" "$current_version" "$latest_ref"
-        tool_status_messages+="$(tool_status_line npm "$tool_path" "$current_version" "$latest_ref")"$'\n'
+        tool_line_npm="$(tool_status_line npm "$tool_path" "$current_version" "$latest_ref")"
         [[ -n "$current_version" && -z "$latest_ref" ]] && return 1
         return 0
     fi
 
-    tool_status_messages+="$(tool_status_line npm "" "" "$latest_ref")"$'\n'
+    tool_line_npm="$(tool_status_line npm "" "" "$latest_ref")"
     return 0
 }
 
@@ -2098,16 +2098,16 @@ function check_pipx_tool()
             pipx_path="$(pipx_command_path 2> /dev/null || true)"
             pipx_current="$(pipx_current_version "$pipx_path" || true)"
             add_pipx_tool_update_notice "$pipx_path" "$pipx_current" "$pipx_latest"
-            tool_status_messages+="$(pipx_tool_status_line "$pipx_path" "$pipx_current" "$pipx_latest")"$'\n'
+            tool_line_pipx="$(pipx_tool_status_line "$pipx_path" "$pipx_current" "$pipx_latest")"
             ;;
         not-installed)
-            tool_status_messages+="$(tool_status_line pipx "" "" "$pipx_latest")"$'\n'
+            tool_line_pipx="$(tool_status_line pipx "" "" "$pipx_latest")"
             ;;
         *)
             pipx_path="$(pipx_resolve_host_dir 2> /dev/null)/current/bin/pipx"
             [[ -x "$pipx_path" ]] || pipx_path="${HOME}/.local/bin/pipx"
             add_pipx_tool_update_notice "$pipx_path" "" "$pipx_latest"
-            tool_status_messages+="$(pipx_tool_status_line "$pipx_path" "" "$pipx_latest")"$'\n'
+            tool_line_pipx="$(pipx_tool_status_line "$pipx_path" "" "$pipx_latest")"
             ;;
     esac
 }
@@ -2126,6 +2126,11 @@ function check_tool_versions()
     local pending_file self_names_file
     local rebuild_lock acquired_rebuild_lock wait_i
     local _footer waited_for_rebuild reuse_report
+    local tool_line
+    local tool_line_bash tool_line_bash_completion tool_line_bat tool_line_fzf
+    local tool_line_gh tool_line_gh_stack tool_line_git tool_line_gt tool_line_lsd
+    local tool_line_npm tool_line_pipx tool_line_pnpm tool_line_rg
+    local tool_line_starship tool_line_uv
 
     [[ $- == *i* ]] || return
 
@@ -2168,6 +2173,23 @@ function check_tool_versions()
     tool_update_self_names=
     tool_update_admin_hints=
     pending_tool_count=0
+    # Per-tool status lines, assembled alphabetically by name once every
+    # check below has run (see the tool_status_messages build-up further down).
+    tool_line_bash=
+    tool_line_bash_completion=
+    tool_line_bat=
+    tool_line_fzf=
+    tool_line_gh=
+    tool_line_gh_stack=
+    tool_line_git=
+    tool_line_gt=
+    tool_line_lsd=
+    tool_line_npm=
+    tool_line_pipx=
+    tool_line_pnpm=
+    tool_line_rg=
+    tool_line_starship=
+    tool_line_uv=
     rebuild=0
     acquired_rebuild_lock=0
     waited_for_rebuild=0
@@ -2331,7 +2353,7 @@ function check_tool_versions()
             bash_latest="$(fetch_bash_latest_distro 2> /dev/null || true)"
         fi
         add_bash_tool_update_notice "$bash_path" "$bash_current" "$bash_latest"
-        tool_status_messages+="$(bash_tool_status_line "$bash_path" "$bash_current" "$bash_latest")"$'\n'
+        tool_line_bash="$(bash_tool_status_line "$bash_path" "$bash_current" "$bash_latest")"
         if [[ -n "$bash_current" && -z "$bash_latest" ]]; then
             pending_tool_count=$((pending_tool_count + 1))
         fi
@@ -2361,7 +2383,7 @@ function check_tool_versions()
             tool_update_messages+="${bash_shell_hint%x}"
         fi
     else
-        tool_status_messages+="$(tool_status_line bash "" "" "$bash_latest")"$'\n'
+        tool_line_bash="$(tool_status_line bash "" "" "$bash_latest")"
     fi
 
     if [[ -n "$init_tool_git" && -x "$init_tool_git" ]]; then
@@ -2372,12 +2394,12 @@ function check_tool_versions()
             git_latest="$(fetch_git_latest_distro 2> /dev/null || true)"
         fi
         add_git_tool_update_notice "$git_path" "$git_current" "$git_latest"
-        tool_status_messages+="$(git_tool_status_line "$git_path" "$git_current" "$git_latest")"$'\n'
+        tool_line_git="$(git_tool_status_line "$git_path" "$git_current" "$git_latest")"
         if [[ -n "$git_current" && -z "$git_latest" ]]; then
             pending_tool_count=$((pending_tool_count + 1))
         fi
     else
-        tool_status_messages+="$(tool_status_line git "" "" "$git_latest")"$'\n'
+        tool_line_git="$(tool_status_line git "" "" "$git_latest")"
     fi
 
     if command -v gh > /dev/null 2>&1; then
@@ -2387,12 +2409,12 @@ function check_tool_versions()
             gh_latest="$(fetch_gh_latest_distro 2> /dev/null || true)"
         fi
         add_tool_update_notice gh "$gh_path" "$gh_current" "$gh_latest"
-        tool_status_messages+="$(tool_status_line gh "$gh_path" "$gh_current" "$gh_latest")"$'\n'
+        tool_line_gh="$(tool_status_line gh "$gh_path" "$gh_current" "$gh_latest")"
         if [[ -n "$gh_current" && -z "$gh_latest" ]]; then
             pending_tool_count=$((pending_tool_count + 1))
         fi
     else
-        tool_status_messages+="$(tool_status_line gh "" "" "$gh_latest")"$'\n'
+        tool_line_gh="$(tool_status_line gh "" "" "$gh_latest")"
     fi
 
     # gh-stack is a gh extension (never a PATH binary). Only report when gh
@@ -2405,12 +2427,12 @@ function check_tool_versions()
             if [[ "$gh_stack_current" != "present" ]]; then
                 add_tool_update_notice gh-stack "${gh_stack_path:-gh-stack}" "$gh_stack_current" "$gh_stack_latest"
             fi
-            tool_status_messages+="$(gh_stack_tool_status_line "$gh_stack_path" "$gh_stack_current" "$gh_stack_latest")"$'\n'
+            tool_line_gh_stack="$(gh_stack_tool_status_line "$gh_stack_path" "$gh_stack_current" "$gh_stack_latest")"
             if [[ -z "$gh_stack_latest" ]]; then
                 pending_tool_count=$((pending_tool_count + 1))
             fi
         else
-            tool_status_messages+="$(gh_stack_tool_status_line "" "" "$gh_stack_latest")"$'\n'
+            tool_line_gh_stack="$(gh_stack_tool_status_line "" "" "$gh_stack_latest")"
         fi
     fi
 
@@ -2418,12 +2440,12 @@ function check_tool_versions()
         gt_path=$(command -v gt)
         gt_current=$(gt --version 2> /dev/null | grep -Eo '[0-9]+(\.[0-9]+)+' | head -n 1 || true)
         add_tool_update_notice gt "$gt_path" "$gt_current" "$gt_latest"
-        tool_status_messages+="$(tool_status_line gt "$gt_path" "$gt_current" "$gt_latest")"$'\n'
+        tool_line_gt="$(tool_status_line gt "$gt_path" "$gt_current" "$gt_latest")"
         if [[ -n "$gt_current" && -z "$gt_latest" ]]; then
             pending_tool_count=$((pending_tool_count + 1))
         fi
     else
-        tool_status_messages+="$(tool_status_line gt "" "" "$gt_latest")"$'\n'
+        tool_line_gt="$(tool_status_line gt "" "" "$gt_latest")"
     fi
 
     check_npm_tools npm_latest || pending_tool_count=$((pending_tool_count + 1))
@@ -2434,31 +2456,31 @@ function check_tool_versions()
         pnpm_path=$(command -v pnpm)
         pnpm_current=$(pnpm --version 2> /dev/null || true)
         add_tool_update_notice pnpm "$pnpm_path" "$pnpm_current" "$pnpm_latest"
-        tool_status_messages+="$(tool_status_line pnpm "$pnpm_path" "$pnpm_current" "$pnpm_latest")"$'\n'
+        tool_line_pnpm="$(tool_status_line pnpm "$pnpm_path" "$pnpm_current" "$pnpm_latest")"
         if [[ -n "$pnpm_current" && -z "$pnpm_latest" ]]; then
             pending_tool_count=$((pending_tool_count + 1))
         fi
     else
-        tool_status_messages+="$(tool_status_line pnpm "" "" "$pnpm_latest")"$'\n'
+        tool_line_pnpm="$(tool_status_line pnpm "" "" "$pnpm_latest")"
     fi
 
     if command -v uv > /dev/null 2>&1; then
         uv_path=$(command -v uv)
         uv_current=$(uv --version 2> /dev/null | awk 'NR == 1 { print $2 }' || true)
         add_tool_update_notice uv "$uv_path" "$uv_current" "$uv_latest"
-        tool_status_messages+="$(tool_status_line uv "$uv_path" "$uv_current" "$uv_latest")"$'\n'
+        tool_line_uv="$(tool_status_line uv "$uv_path" "$uv_current" "$uv_latest")"
         if [[ -n "$uv_current" && -z "$uv_latest" ]]; then
             pending_tool_count=$((pending_tool_count + 1))
         fi
     else
-        tool_status_messages+="$(tool_status_line uv "" "" "$uv_latest")"$'\n'
+        tool_line_uv="$(tool_status_line uv "" "" "$uv_latest")"
     fi
 
     if command -v rg > /dev/null 2>&1; then
         rg_path=$(command -v rg)
         rg_current=$(rg --version 2> /dev/null | awk 'NR == 1 { print $2 }' || true)
         add_tool_update_notice rg "$rg_path" "$rg_current" "$rg_latest"
-        tool_status_messages+="$(tool_status_line rg "$rg_path" "$rg_current" "$rg_latest")"$'\n'
+        tool_line_rg="$(tool_status_line rg "$rg_path" "$rg_current" "$rg_latest")"
         if [[ -n "$rg_current" && -z "$rg_latest" ]]; then
             pending_tool_count=$((pending_tool_count + 1))
         fi
@@ -2468,7 +2490,7 @@ function check_tool_versions()
         fzf_path=$(command -v fzf)
         fzf_current=$(fzf --version 2> /dev/null | awk 'NR == 1 { print $1 }' || true)
         add_tool_update_notice fzf "$fzf_path" "$fzf_current" "$fzf_latest"
-        tool_status_messages+="$(tool_status_line fzf "$fzf_path" "$fzf_current" "$fzf_latest")"$'\n'
+        tool_line_fzf="$(tool_status_line fzf "$fzf_path" "$fzf_current" "$fzf_latest")"
         if [[ -n "$fzf_current" && -z "$fzf_latest" ]]; then
             pending_tool_count=$((pending_tool_count + 1))
         fi
@@ -2478,7 +2500,7 @@ function check_tool_versions()
         bat_path=$(command -v bat)
         bat_current=$(bat --version 2> /dev/null | awk 'NR == 1 { print $2 }' || true)
         add_tool_update_notice bat "$bat_path" "$bat_current" "$bat_latest"
-        tool_status_messages+="$(tool_status_line bat "$bat_path" "$bat_current" "$bat_latest")"$'\n'
+        tool_line_bat="$(tool_status_line bat "$bat_path" "$bat_current" "$bat_latest")"
         if [[ -n "$bat_current" && -z "$bat_latest" ]]; then
             pending_tool_count=$((pending_tool_count + 1))
         fi
@@ -2488,7 +2510,7 @@ function check_tool_versions()
         lsd_path=$(command -v lsd)
         lsd_current=$(lsd --version 2> /dev/null | awk 'NR == 1 { print $2 }' || true)
         add_tool_update_notice lsd "$lsd_path" "$lsd_current" "$lsd_latest"
-        tool_status_messages+="$(tool_status_line lsd "$lsd_path" "$lsd_current" "$lsd_latest")"$'\n'
+        tool_line_lsd="$(tool_status_line lsd "$lsd_path" "$lsd_current" "$lsd_latest")"
         if [[ -n "$lsd_current" && -z "$lsd_latest" ]]; then
             pending_tool_count=$((pending_tool_count + 1))
         fi
@@ -2498,7 +2520,7 @@ function check_tool_versions()
         starship_path=$(command -v starship)
         starship_current=$(starship --version 2> /dev/null | awk 'NR == 1 { print $2 }' || true)
         add_tool_update_notice starship "$starship_path" "$starship_current" "$starship_latest"
-        tool_status_messages+="$(tool_status_line starship "$starship_path" "$starship_current" "$starship_latest")"$'\n'
+        tool_line_starship="$(tool_status_line starship "$starship_path" "$starship_current" "$starship_latest")"
         if [[ -n "$starship_current" && -z "$starship_latest" ]]; then
             pending_tool_count=$((pending_tool_count + 1))
         fi
@@ -2506,7 +2528,18 @@ function check_tool_versions()
 
     # Optional interactive helpers: show install hints when missing (platform-isolated).
     # On modern macOS bash-completion is required (provision); still report status here.
-    tool_status_messages+="$(bash_completion_status_line)"$'\n'
+    tool_line_bash_completion="$(bash_completion_status_line)"
+
+    # Assemble the printed list alphabetically by tool name, independent of the
+    # probe order above (which is grouped by dependency/perf, not name).
+    for tool_line in \
+        "$tool_line_bash" "$tool_line_bash_completion" "$tool_line_bat" \
+        "$tool_line_fzf" "$tool_line_gh" "$tool_line_gh_stack" "$tool_line_git" \
+        "$tool_line_gt" "$tool_line_lsd" "$tool_line_npm" "$tool_line_pipx" \
+        "$tool_line_pnpm" "$tool_line_rg" "$tool_line_starship" "$tool_line_uv"
+    do
+        [[ -n "$tool_line" ]] && tool_status_messages+="${tool_line}"$'\n'
+    done
 
     report=
     if [[ -n "$tool_status_messages" ]]; then
