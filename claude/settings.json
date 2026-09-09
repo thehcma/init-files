@@ -1,0 +1,13 @@
+{
+  "attribution": {
+    "commit": "",
+    "pr": "",
+    "sessionUrl": false
+  },
+  "availableModels": ["sonnet", "haiku"],
+  "editorMode": "vim",
+  "enforceAvailableModels": true,
+  "includeCoAuthoredBy": false,
+  "model": "sonnet",
+  "theme": "dark"
+}

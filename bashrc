@@ -5592,7 +5592,21 @@ function init_files_doctor()
         fi
     fi
 
-    # 9) login-shell bashrc hook
+    # 9) claude settings
+    if [[ -f "${clone_dir}/claude/settings.json" ]]; then
+        if [[ -L "${HOME}/.claude/settings.json" ]]; then
+            link_target=$(readlink "${HOME}/.claude/settings.json" 2>/dev/null || true)
+            if [[ "$link_target" == "${clone_dir}/claude/settings.json" ]]; then
+                _doc_ok "claude settings -> $link_target"
+            else
+                _doc_warn "claude settings symlink is $link_target (expected ${clone_dir}/claude/settings.json); run: refresh_claude_settings"
+            fi
+        else
+            _doc_warn "$HOME/.claude/settings.json not a symlink to clone; run: refresh_claude_settings"
+        fi
+    fi
+
+    # 10) login-shell bashrc hook
     if type _init_files_login_hook_ok > /dev/null 2>&1; then
         if _init_files_login_hook_ok; then
             _doc_ok "login shell sources ~/.bashrc (init-files hook)"
@@ -5601,7 +5615,7 @@ function init_files_doctor()
         fi
     fi
 
-    # 10) curated iTerm prefs (Darwin)
+    # 11) curated iTerm prefs (Darwin)
     if type _init_is_darwin > /dev/null 2>&1 && _init_is_darwin \
         && type _init_files_iterm_curated_drift > /dev/null 2>&1; then
         if [[ -f "${clone_dir}/iterm2/com.googlecode.iterm2.plist" ]]; then
@@ -5613,7 +5627,7 @@ function init_files_doctor()
         fi
     fi
 
-    # 11) shell completions for personal CLIs
+    # 12) shell completions for personal CLIs
     if type init_files_completion_drift > /dev/null 2>&1; then
         if ! init_files_completion_bash_completion_present; then
             :  # bash-completion absent — nothing to link; covered by tool checks
@@ -7041,7 +7055,7 @@ _init_files_iterm_curated_drift()
 }
 
 # Print one drift reason per line (stdout). Empty = no drift.
-# Covers bashrc/vimrc/login hook/iTerm curated prefs + broken tool paths.
+# Covers bashrc/vimrc/claude-settings/login hook/iTerm curated prefs + broken tool paths.
 _init_files_deploy_drift_reasons()
 {
     local clone_dir="${init_files_dir:-${XDG_DATA_HOME:-$HOME/.local/share}/init-files}"
@@ -7074,6 +7088,20 @@ _init_files_deploy_drift_reasons()
         fi
         if [[ -e "${HOME}/.gvimrc" || -L "${HOME}/.gvimrc" ]]; then
             printf '%s/.gvimrc still present (should be retired for one-file vimrc)\n' "$HOME"
+        fi
+    fi
+
+    if [[ -f "${clone_dir}/claude/settings.json" ]]; then
+        expected="${clone_dir}/claude/settings.json"
+        if [[ -L "${HOME}/.claude/settings.json" ]]; then
+            link_target=$(readlink "${HOME}/.claude/settings.json" 2>/dev/null || true)
+            if [[ "$link_target" != "$expected" ]]; then
+                printf 'claude settings symlink is %s (expected %s)\n' "$link_target" "$expected"
+            fi
+        elif [[ -e "${HOME}/.claude/settings.json" ]]; then
+            printf '%s/.claude/settings.json is not a symlink (expected -> %s)\n' "$HOME" "$expected"
+        else
+            printf '%s/.claude/settings.json missing (expected symlink -> %s)\n' "$HOME" "$expected"
         fi
     fi
 
@@ -7248,7 +7276,7 @@ _init_files_offer_deploy_repairs()
 {
     local reasons
     local need_bashrc=0 need_vim=0 need_iterm=0 need_login=0 need_tools=0
-    local need_completions=0
+    local need_completions=0 need_claude=0
     local repair_cmd reply
     local no_dev=0
 
@@ -7261,6 +7289,7 @@ _init_files_offer_deploy_repairs()
         case "$line" in
             bashrc\ *|\~/.bashrc\ *) need_bashrc=1 ;;
             vimrc\ *|\~/.vimrc\ *|\~/.gvimrc\ *) need_vim=1 ;;
+            claude\ settings\ *|\~/.claude/settings.json\ *) need_claude=1 ;;
             iTerm\ *) need_iterm=1 ;;
             login\ *) need_login=1 ;;
             shell\ completions\ *) need_completions=1 ;;
@@ -7274,14 +7303,21 @@ _init_files_offer_deploy_repairs()
 
     # Prefer the narrowest fix when only one subsystem drifted.
     if [[ $need_bashrc -eq 0 && $need_login -eq 0 && $need_tools -eq 0 \
-        && $need_completions -eq 0 && $need_vim -eq 1 && $need_iterm -eq 0 ]]; then
+        && $need_completions -eq 0 && $need_vim -eq 1 && $need_iterm -eq 0 \
+        && $need_claude -eq 0 ]]; then
         repair_cmd='refresh_vimrc'
     elif [[ $need_bashrc -eq 0 && $need_login -eq 0 && $need_tools -eq 0 \
-        && $need_completions -eq 0 && $need_vim -eq 0 && $need_iterm -eq 1 ]]; then
+        && $need_completions -eq 0 && $need_vim -eq 0 && $need_iterm -eq 1 \
+        && $need_claude -eq 0 ]]; then
         repair_cmd='refresh_iterm_settings'
     elif [[ $need_bashrc -eq 0 && $need_login -eq 0 && $need_tools -eq 0 \
-        && $need_vim -eq 0 && $need_iterm -eq 0 && $need_completions -eq 1 ]]; then
+        && $need_vim -eq 0 && $need_iterm -eq 0 && $need_completions -eq 1 \
+        && $need_claude -eq 0 ]]; then
         repair_cmd='link_shell_completions'
+    elif [[ $need_bashrc -eq 0 && $need_login -eq 0 && $need_tools -eq 0 \
+        && $need_vim -eq 0 && $need_iterm -eq 0 && $need_completions -eq 0 \
+        && $need_claude -eq 1 ]]; then
+        repair_cmd='refresh_claude_settings'
     elif [[ $no_dev -eq 1 ]]; then
         repair_cmd='refresh_init_files --no-dev'
     else
@@ -7308,6 +7344,11 @@ _init_files_offer_deploy_repairs()
                         refresh_iterm_settings
                         ;;
                     link_shell_completions) link_shell_completions ;;
+                    refresh_claude_settings)
+                        # Interactive repair uses default options.
+                        # shellcheck disable=SC2119
+                        refresh_claude_settings
+                        ;;
                     'refresh_init_files --no-dev') refresh_init_files --no-dev ;;
                     *) refresh_init_files ;;
                 esac
@@ -7642,7 +7683,7 @@ function refresh_init_files()
                 echo "                     [--github-https|--github-ssh] [--iterm|--no-iterm]" >&2
                 echo "  Default: pull init-files main into $init_files_dir," >&2
                 echo "  ensure ~/.bashrc is a symlink, run provision_init_files" >&2
-                echo "  when HEAD is new or deploy drifted (tools/ssh/vimrc/iTerm)," >&2
+                echo "  when HEAD is new or deploy drifted (tools/ssh/vimrc/claude/iTerm)," >&2
                 echo "  merge curated iTerm2 prefs on macOS when provisioning," >&2
                 echo "  and reload ~/.bashrc in this shell when needed." >&2
                 echo "  -f        always re-run provision_init_files (even if HEAD" >&2
@@ -8623,6 +8664,78 @@ EOF
         printf 'refresh_vimrc: note: glyphs need Meslo Nerd Font under ~/.local/share/fonts\n'
     fi
     printf 'refresh_vimrc: open a file in a git repo to confirm airline branch + gitgutter\n'
+}
+
+# Only bare calls appear in this repo; --help works when invoked manually.
+# shellcheck disable=SC2120
+function refresh_claude_settings()
+{
+    local repo_dir claude_settings_src claude_settings_dest backup_dir stamp current backup
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<'EOF'
+Usage: refresh_claude_settings
+
+Repair the ~/.claude/settings.json symlink into init-files (claude/settings.json).
+Backs up a non-canonical ~/.claude/settings.json to
+~/.claude/settings.json.bak.<timestamp> and
+~/.local/state/init-files/claude-backup/. Does not touch any other file
+under ~/.claude/ (history, sessions, cache, projects, plugins are local
+runtime state, not tracked here).
+EOF
+                return 0
+                ;;
+            *)
+                printf 'refresh_claude_settings: unknown option: %s\n' "$1" >&2
+                return 1
+                ;;
+        esac
+    done
+
+    repo_dir="${init_files_dir:-${XDG_DATA_HOME:-$HOME/.local/share}/init-files}"
+    claude_settings_src="$repo_dir/claude/settings.json"
+    claude_settings_dest="${HOME}/.claude/settings.json"
+    backup_dir="${XDG_STATE_HOME:-$HOME/.local/state}/init-files/claude-backup"
+
+    if [[ ! -f "$claude_settings_src" ]]; then
+        printf 'refresh_claude_settings: missing %s (refresh_init_files first?)\n' "$claude_settings_src" >&2
+        return 1
+    fi
+
+    mkdir -p "$(dirname "$claude_settings_dest")" || return 1
+
+    if [[ -L "$claude_settings_dest" ]]; then
+        current=$(readlink "$claude_settings_dest" 2>/dev/null || true)
+        if [[ "$current" == "$claude_settings_src" ]]; then
+            printf 'refresh_claude_settings: already linked -> %s\n' "$claude_settings_src"
+            return 0
+        fi
+        stamp="$(date +%Y%m%d-%H%M%S)"
+        mkdir -p "$backup_dir" 2>/dev/null || true
+        printf '%s\n' "$current" > "${claude_settings_dest}.bak.${stamp}.linktarget"
+        printf '%s\n' "$current" > "${backup_dir}/settings.json.${stamp}.linktarget" 2>/dev/null || true
+        rm -f "$claude_settings_dest" || return 1
+        ln -s "$claude_settings_src" "$claude_settings_dest" || return 1
+        printf 'refresh_claude_settings: repaired ~/.claude/settings.json symlink -> %s\n' "$claude_settings_src"
+    elif [[ -f "$claude_settings_dest" ]]; then
+        stamp="$(date +%Y%m%d-%H%M%S)"
+        backup="${claude_settings_dest}.bak.${stamp}"
+        mkdir -p "$backup_dir" 2>/dev/null || true
+        cp -p "$claude_settings_dest" "$backup" || return 1
+        cp -p "$claude_settings_dest" "${backup_dir}/settings.json.${stamp}" 2>/dev/null || true
+        rm -f "$claude_settings_dest" || return 1
+        ln -s "$claude_settings_src" "$claude_settings_dest" || return 1
+        printf 'refresh_claude_settings: backed up previous ~/.claude/settings.json -> %s\n' "$backup"
+        printf 'refresh_claude_settings: linked ~/.claude/settings.json -> %s\n' "$claude_settings_src"
+    elif [[ ! -e "$claude_settings_dest" ]]; then
+        ln -s "$claude_settings_src" "$claude_settings_dest" || return 1
+        printf 'refresh_claude_settings: linked ~/.claude/settings.json -> %s\n' "$claude_settings_src"
+    else
+        printf 'refresh_claude_settings: ~/.claude/settings.json exists and is not a file/symlink\n' >&2
+        return 1
+    fi
 }
 
 # --- Cursor Agent session recovery -------------------------------------------

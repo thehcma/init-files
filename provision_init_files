@@ -2503,6 +2503,80 @@ else
 fi
 _init_files_vim_font_hint
 
+# ~/.claude/settings.json symlink (Claude Code CLI config: model/theme/editor
+# mode/attribution — no secrets, no runtime state). Preserves any pre-existing
+# regular file as ~/.claude/settings.json.bak.<timestamp> (and a copy under
+# ~/.local/state/init-files/claude-backup/). Does not touch anything else
+# under ~/.claude/ (history, sessions, cache, projects, plugins are local
+# runtime state, not tracked here).
+claude_settings_src="$repo_dir/claude/settings.json"
+claude_settings_dest="${HOME}/.claude/settings.json"
+claude_backup_dir="${XDG_STATE_HOME:-$HOME/.local/state}/init-files/claude-backup"
+
+backup_existing_claude_settings()
+{
+    local backup stamp state_copy current
+
+    [[ -e "$claude_settings_dest" || -L "$claude_settings_dest" ]] || return 0
+
+    # Already our symlink — nothing to save.
+    if [[ -L "$claude_settings_dest" ]]; then
+        current=$(readlink "$claude_settings_dest" 2>/dev/null || true)
+        if [[ "$current" == "$claude_settings_src" ]]; then
+            return 0
+        fi
+    fi
+
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$claude_backup_dir" 2>/dev/null || true
+
+    if [[ -L "$claude_settings_dest" ]]; then
+        backup="${claude_settings_dest}.bak.${stamp}"
+        printf '%s\n' "$(readlink "$claude_settings_dest" 2>/dev/null || true)" > "${backup}.linktarget"
+        rm -f "$claude_settings_dest" || return 1
+        log "Removed previous ~/.claude/settings.json symlink (target saved in ${backup}.linktarget)"
+        return 0
+    fi
+
+    if [[ ! -f "$claude_settings_dest" ]]; then
+        init_files_warn "$claude_settings_dest exists and is not a regular file or symlink"
+        return 1
+    fi
+
+    backup="${claude_settings_dest}.bak.${stamp}"
+    cp -p "$claude_settings_dest" "$backup" || return 1
+    state_copy="${claude_backup_dir}/settings.json.${stamp}"
+    cp -p "$claude_settings_dest" "$state_copy" 2>/dev/null || true
+    log "Backed up existing ~/.claude/settings.json -> $backup"
+    [[ -f "$state_copy" ]] && log "         (also $state_copy)"
+    rm -f "$claude_settings_dest" || return 1
+}
+
+link_claude_settings_to_repo()
+{
+    local current
+
+    if [[ ! -f "$claude_settings_src" ]]; then
+        log "Skip claude settings: missing $claude_settings_src"
+        return 0
+    fi
+
+    if [[ -L "$claude_settings_dest" ]]; then
+        current=$(readlink "$claude_settings_dest" 2>/dev/null || true)
+        if [[ "$current" == "$claude_settings_src" ]]; then
+            log "OK       ~/.claude/settings.json -> $claude_settings_src"
+            return 0
+        fi
+    fi
+
+    mkdir -p "$(dirname "$claude_settings_dest")" || return 1
+    backup_existing_claude_settings || return 1
+    ln -s "$claude_settings_src" "$claude_settings_dest" || return 1
+    log "Linked   ~/.claude/settings.json -> $claude_settings_src"
+}
+
+link_claude_settings_to_repo
+
 # Login shells (Debian/Ubuntu SSH, macOS Terminal) read ~/.profile or
 # ~/.bash_profile — not ~/.bashrc — unless those files source it.
 # Always install our marker when missing. bashrc is idempotent
