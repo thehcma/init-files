@@ -11511,6 +11511,12 @@ PROMPT_COMMAND="$(_init_prompt_ensure_session_hooks "${PROMPT_COMMAND-}")"
 if [[ $- == *i* ]] && declare -F _init_iterm_report_host_label > /dev/null 2>&1; then
     _init_iterm_report_host_label
 fi
+# One-shot per new shell: clear any dynamic fg/bg/cursor color override a prior
+# tty occupant (e.g. Copilot CLI's TUI) left behind, so a fresh split/tab/window
+# always starts from the real profile colors (issue: text going white).
+if [[ $- == *i* ]] && declare -F init_files_iterm_reset_dynamic_colors > /dev/null 2>&1; then
+    init_files_iterm_reset_dynamic_colors
+fi
 # Re-install EXIT trap on reload (trap is not cleared by sourcing).
 trap 'history_finalize' EXIT
 

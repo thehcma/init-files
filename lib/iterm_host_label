@@ -127,6 +127,23 @@ init_files_iterm_short_label()
     printf '%s' "${dest%%.*}"
 }
 
+# Reset any lingering dynamic fg/bg/cursor color override (OSC 10/11/12) back
+# to the profile default via OSC 110/111/112. TUI apps (Copilot CLI's renderer,
+# fzf, vim, ...) can set these live and skip the matching reset on exit/crash,
+# leaving the pane's text color stuck. Called once per new interactive shell
+# (new window/tab/split all source bashrc fresh) — cheap enough, and each
+# fresh pane should start from the real profile colors regardless of what an
+# earlier occupant of the tty last did.
+init_files_iterm_reset_dynamic_colors()
+{
+    init_files_iterm_is_client || return 0
+    if [[ -c /dev/tty ]]; then
+        printf '\033]110\007\033]111\007\033]112\007' > /dev/tty 2>/dev/null
+    else
+        printf '\033]110\007\033]111\007\033]112\007'
+    fi
+}
+
 # OSC 1337 SetUserVar=hostlabel=base64 to this pane's tty (not stdout).
 init_files_iterm_emit_host_label()
 {
