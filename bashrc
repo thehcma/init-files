@@ -9634,11 +9634,19 @@ EOF
         printf 'update_tools: upgrading %s …\n' "$tool"
         ran=$((ran + 1))
         tool_rc=0
+        # Keep this dispatch in sync with tool_update_command: any tool that
+        # yields a self-service `update_*` hint there must be runnable here, or
+        # the update_tools batch offer prints "no updater for <tool>".
         case "$tool" in
             bash) update_bash || tool_rc=1 ;;
             git) update_git || tool_rc=1 ;;
             gh) update_gh || tool_rc=1 ;;
             gh-stack) update_gh_stack || tool_rc=1 ;;
+            rg) update_rg || tool_rc=1 ;;
+            fzf) update_fzf || tool_rc=1 ;;
+            bat) update_bat || tool_rc=1 ;;
+            lsd) update_lsd || tool_rc=1 ;;
+            starship) update_starship || tool_rc=1 ;;
             gt) update_gt || tool_rc=1 ;;
             npm|npx) update_npm || tool_rc=1 ;;
             pipx) update_pipx || tool_rc=1 ;;

@@ -236,6 +236,11 @@ update_git()
     printf 'git\n' >>"$update_log"
     return 1
 }
+update_rg() { printf 'rg\n' >>"$update_log"; return 0; }
+update_fzf() { printf 'fzf\n' >>"$update_log"; return 0; }
+update_bat() { printf 'bat\n' >>"$update_log"; return 0; }
+update_lsd() { printf 'lsd\n' >>"$update_log"; return 0; }
+update_starship() { printf 'starship\n' >>"$update_log"; return 0; }
 update_bash()
 {
     printf 'bash\n' >>"$update_log"
@@ -253,6 +258,7 @@ cat >"$pending" <<'EOF'
 # tool	installed	path
 git	2.54.0	/usr/bin/git
 bash	5.2.0	/bin/bash
+fzf	0.44.1	/usr/bin/fzf
 EOF
 
 # Live still at recorded versions → both updaters run; git admin hint aggregated.
@@ -268,6 +274,14 @@ else
     fail_case "update_tools invokes per-tool helpers (ran: ${ran_tools})"
 fi
 assert_contains 'update_tools aggregates admin handoff' "$out" 'ask an admin: sudo apt install --only-upgrade git'
+# release_install-backed tools (fzf/rg/bat/lsd/starship) must dispatch, not
+# fall through to "no updater for <tool>".
+if [[ "$ran_tools" == *'fzf '* ]]; then
+    pass_case 'update_tools dispatches release_install tools (fzf)'
+else
+    fail_case "update_tools dispatches release_install tools (fzf) (ran: ${ran_tools})"
+fi
+assert_not_contains 'update_tools has an updater for fzf' "$out" 'no updater for fzf'
 
 # Live git newer than recorded → skip git; still upgrade bash.
 TEST_LIVE_GIT=2.55.0
