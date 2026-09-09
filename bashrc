@@ -2596,39 +2596,82 @@ function check_tool_versions()
     _tool_version_finish_report_print "$pending_tool_count"
 }
 
-# Shortcut for the Copilot CLI (`gh copilot`). When more than one github.com
-# account is logged in via `gh auth login`, prompt which one this invocation
-# should use and scope it with a per-command GH_TOKEN (gh auth token --user)
-# instead of `gh auth switch` — the account choice applies to just this one
-# copilot session, never the host's active gh identity. Non-interactive shells
-# and hosts with 0-1 accounts fall straight through to the active account.
+# Shortcut for the Copilot CLI (`gh copilot`). Whenever gh knows about more
+# than one github.com account (even ones whose keyring token has gone
+# invalid/expired), prompt which one this invocation should use. A non-active
+# choice is scoped with a per-command GH_TOKEN (gh auth token --user) instead
+# of `gh auth switch` — it applies to just this one copilot session, never the
+# host's active gh identity. Picking an account that needs reauth offers
+# `gh auth refresh` on the spot. Non-interactive shells and hosts with 0-1
+# known accounts fall straight through to the active account.
 function copilot()
 {
-    local accounts=() active="" login="" token="" choice i mark
+    local logins=() valids=() actives=() active_login="" login="" token=""
+    local choice i idx reply f_login f_valid f_active mark
 
     if command -v gh > /dev/null 2>&1 \
-        && declare -F _init_files_gh_logged_in_accounts > /dev/null 2>&1; then
-        mapfile -t accounts < <(_init_files_gh_logged_in_accounts 2>/dev/null)
+        && declare -F _init_files_gh_accounts_detailed > /dev/null 2>&1; then
+        while IFS=$'\t' read -r f_login f_valid f_active; do
+            [[ -n "$f_login" ]] || continue
+            logins+=("$f_login")
+            valids+=("$f_valid")
+            actives+=("$f_active")
+            [[ "$f_active" == 1 ]] && active_login="$f_login"
+        done < <(_init_files_gh_accounts_detailed 2>/dev/null)
     fi
-    declare -F _init_files_gh_active_account > /dev/null 2>&1 \
-        && active="$(_init_files_gh_active_account 2>/dev/null || true)"
 
-    if (( ${#accounts[@]} > 1 )) && [[ -t 0 && -t 2 ]]; then
-        echo "Multiple gh accounts are logged in for github.com:" >&2
-        for i in "${!accounts[@]}"; do
+    if (( ${#logins[@]} > 1 )) && [[ -t 0 && -t 2 ]]; then
+        echo "gh knows about multiple github.com accounts:" >&2
+        for i in "${!logins[@]}"; do
             mark=""
-            [[ "${accounts[$i]}" == "$active" ]] && mark=" (active)"
-            printf '  %d) %s%s\n' "$((i + 1))" "${accounts[$i]}" "$mark" >&2
+            [[ "${actives[$i]}" == 1 ]] && mark+=" (active)"
+            [[ "${valids[$i]}" == 0 ]] && mark+=" (needs reauth)"
+            printf '  %d) %s%s\n' "$((i + 1))" "${logins[$i]}" "$mark" >&2
         done
         printf 'Use which account for this copilot session? [1-%d, Enter=active] ' \
-            "${#accounts[@]}" >&2
+            "${#logins[@]}" >&2
         read -r choice
-        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#accounts[@]} )); then
-            login="${accounts[$((choice - 1))]}"
+        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#logins[@]} )); then
+            login="${logins[$((choice - 1))]}"
         fi
     fi
 
-    if [[ -n "$login" && "$login" != "$active" ]]; then
+    [[ -z "$login" ]] && login="$active_login"
+
+    # Chosen (or default active) account's token invalid/expired? Offer to fix
+    # it in place rather than silently falling back.
+    if [[ -n "$login" ]]; then
+        idx=-1
+        for i in "${!logins[@]}"; do
+            [[ "${logins[$i]}" == "$login" ]] && idx=$i && break
+        done
+        if (( idx >= 0 )) && [[ "${valids[$idx]}" == 0 ]]; then
+            echo "gh account '$login' needs reauthentication (invalid/expired keyring token)." >&2
+            if [[ -t 0 && -t 2 ]]; then
+                printf "Reauthenticate '%s' now (gh auth refresh)? [Y/n] " "$login" >&2
+                read -r reply
+                case "$reply" in
+                    ''|y|Y|yes|YES)
+                        if gh auth refresh -h github.com -u "$login"; then
+                            echo "Reauthenticated '$login'." >&2
+                        else
+                            echo "Reauthentication failed; using the active account instead." >&2
+                            login="$active_login"
+                        fi
+                        ;;
+                    *)
+                        echo "Skipping reauthentication; using the active account instead." >&2
+                        login="$active_login"
+                        ;;
+                esac
+            else
+                echo "Run: gh auth refresh -h github.com -u $login" >&2
+                login="$active_login"
+            fi
+        fi
+    fi
+
+    if [[ -n "$login" && "$login" != "$active_login" ]]; then
         token="$(gh auth token --hostname github.com --user "$login" 2>/dev/null || true)"
         if [[ -n "$token" ]]; then
             echo "Using gh account '$login' for this copilot session (active gh identity unchanged)." >&2
@@ -11029,6 +11072,35 @@ _init_files_gh_active_account()
         fi
     done <<< "$text"
     return 1
+}
+
+# Every github.com account gh knows about, regardless of token validity, one
+# per line as "<login>\t<1 valid / 0 needs reauth>\t<1 active / 0 not active>".
+# Unlike _init_files_gh_logged_in_accounts (valid logins only), this also
+# surfaces accounts whose keyring token has gone invalid/expired ("Failed to
+# log in to ... account X") so callers (e.g. the `copilot` shortcut) can still
+# offer them in a menu and prompt to reauthenticate on selection.
+_init_files_gh_accounts_detailed()
+{
+    local text line login='' valid=''
+    text="$(_init_files_gh_auth_status_text 2>/dev/null || true)"
+    [[ -n "$text" ]] || return 1
+    while IFS= read -r line; do
+        if [[ "$line" =~ Logged\ in\ to\ [^[:space:]]+\ account\ ([^[:space:]]+) ]]; then
+            login="${BASH_REMATCH[1]}"
+            valid=1
+        elif [[ "$line" =~ Failed\ to\ log\ in\ to\ [^[:space:]]+\ account\ ([^[:space:]]+) ]]; then
+            login="${BASH_REMATCH[1]}"
+            valid=0
+        elif [[ "$line" == *'Active account: true'* && -n "$login" ]]; then
+            printf '%s\t%s\t1\n' "$login" "$valid"
+            login=''
+        elif [[ "$line" == *'Active account: false'* && -n "$login" ]]; then
+            printf '%s\t%s\t0\n' "$login" "$valid"
+            login=''
+        fi
+    done <<< "$text"
+    return 0
 }
 
 # Per-label (e.g. init-files, private-config), per-host record of which gh

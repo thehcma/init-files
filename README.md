@@ -396,7 +396,7 @@ This targets "right repo, wrong active gh identity" — it does not attempt ever
 
 #### `copilot` shortcut for multi-account hosts
 
-The `copilot` bash function is a thin wrapper around `gh copilot` (the installed Copilot CLI). On a host with more than one `gh auth login` account, running `copilot` from an interactive shell lists the logged-in accounts and asks which one this session should use — separately from the `gh auth switch` flow above. Picking a non-active account scopes just that one `copilot` invocation via `GH_TOKEN="$(gh auth token --user <account>)"`; it never runs `gh auth switch` and never changes the host's active gh identity. Non-interactive shells, and hosts with 0–1 accounts logged in, skip the prompt and use the active account as-is.
+The `copilot` bash function is a thin wrapper around `gh copilot` (the installed Copilot CLI). On a host where `gh` knows about more than one github.com account — including one whose keyring token has gone invalid/expired — running `copilot` from an interactive shell lists every known account (flagging `(active)` / `(needs reauth)`) and asks which one this session should use, separately from the `gh auth switch` flow above. Picking a non-active, valid account scopes just that one `copilot` invocation via `GH_TOKEN="$(gh auth token --user <account>)"`; it never runs `gh auth switch` and never changes the host's active gh identity. Picking an account flagged `(needs reauth)` offers `gh auth refresh -h github.com -u <account>` on the spot before continuing. Non-interactive shells, and hosts with 0–1 known accounts, skip the prompt and use the active account as-is.
 
 ### Overrides (optional)
 
