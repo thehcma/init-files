@@ -394,6 +394,10 @@ To fix this without ever touching tokens directly:
 
 This targets "right repo, wrong active gh identity" — it does not attempt every logged-in account blindly, and it never generates, stores, or exports a token (`GH_TOKEN`/`GITHUB_TOKEN`); `gh auth switch` only changes which already-authenticated identity is active.
 
+#### `copilot` shortcut for multi-account hosts
+
+The `copilot` bash function is a thin wrapper around `gh copilot` (the installed Copilot CLI). On a host with more than one `gh auth login` account, running `copilot` from an interactive shell lists the logged-in accounts and asks which one this session should use — separately from the `gh auth switch` flow above. Picking a non-active account scopes just that one `copilot` invocation via `GH_TOKEN="$(gh auth token --user <account>)"`; it never runs `gh auth switch` and never changes the host's active gh identity. Non-interactive shells, and hosts with 0–1 accounts logged in, skip the prompt and use the active account as-is.
+
 ### Overrides (optional)
 
 | Variable | Default / role |

@@ -2596,6 +2596,51 @@ function check_tool_versions()
     _tool_version_finish_report_print "$pending_tool_count"
 }
 
+# Shortcut for the Copilot CLI (`gh copilot`). When more than one github.com
+# account is logged in via `gh auth login`, prompt which one this invocation
+# should use and scope it with a per-command GH_TOKEN (gh auth token --user)
+# instead of `gh auth switch` — the account choice applies to just this one
+# copilot session, never the host's active gh identity. Non-interactive shells
+# and hosts with 0-1 accounts fall straight through to the active account.
+function copilot()
+{
+    local accounts=() active="" login="" token="" choice i mark
+
+    if command -v gh > /dev/null 2>&1 \
+        && declare -F _init_files_gh_logged_in_accounts > /dev/null 2>&1; then
+        mapfile -t accounts < <(_init_files_gh_logged_in_accounts 2>/dev/null)
+    fi
+    declare -F _init_files_gh_active_account > /dev/null 2>&1 \
+        && active="$(_init_files_gh_active_account 2>/dev/null || true)"
+
+    if (( ${#accounts[@]} > 1 )) && [[ -t 0 && -t 2 ]]; then
+        echo "Multiple gh accounts are logged in for github.com:" >&2
+        for i in "${!accounts[@]}"; do
+            mark=""
+            [[ "${accounts[$i]}" == "$active" ]] && mark=" (active)"
+            printf '  %d) %s%s\n' "$((i + 1))" "${accounts[$i]}" "$mark" >&2
+        done
+        printf 'Use which account for this copilot session? [1-%d, Enter=active] ' \
+            "${#accounts[@]}" >&2
+        read -r choice
+        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#accounts[@]} )); then
+            login="${accounts[$((choice - 1))]}"
+        fi
+    fi
+
+    if [[ -n "$login" && "$login" != "$active" ]]; then
+        token="$(gh auth token --hostname github.com --user "$login" 2>/dev/null || true)"
+        if [[ -n "$token" ]]; then
+            echo "Using gh account '$login' for this copilot session (active gh identity unchanged)." >&2
+            GH_TOKEN="$token" command gh copilot "$@"
+            return
+        fi
+        echo "Could not get a token for '$login'; using the active gh account instead." >&2
+    fi
+
+    command gh copilot "$@"
+}
+
 # Unique SSH destinations: Host aliases from ~/.ssh/config (+ config.d) and
 # cleartext names from ~/.ssh/known_hosts[2]. Hashed known_hosts lines are skipped.
 function _init_ssh_hosts()
