@@ -2625,7 +2625,7 @@ function copilot()
         for i in "${!logins[@]}"; do
             mark=""
             [[ "${actives[$i]}" == 1 ]] && mark+=" (active)"
-            [[ "${valids[$i]}" == 0 ]] && mark+=" (needs reauth)"
+            [[ "${valids[$i]}" == 0 ]] && mark+=" (gh flags this account)"
             printf '  %d) %s%s\n' "$((i + 1))" "${logins[$i]}" "$mark" >&2
         done
         printf 'Use which account for this copilot session? [1-%d, Enter=active] ' \
@@ -2638,38 +2638,69 @@ function copilot()
 
     [[ -z "$login" ]] && login="$active_login"
 
-    # Chosen (or default active) account's token invalid/expired? Offer to fix
-    # it in place rather than silently falling back.
+    # gh's own status text conflates "genuinely revoked/expired" with "valid
+    # but rate-limited" (both print as "Failed to log in ... invalid keyring
+    # token"). Probe the actual token against /rate_limit (free, does not
+    # itself cost quota) before ever offering gh auth refresh, so a merely
+    # rate-limited account isn't misdiagnosed as needing reauthentication.
     if [[ -n "$login" ]]; then
         idx=-1
         for i in "${!logins[@]}"; do
             [[ "${logins[$i]}" == "$login" ]] && idx=$i && break
         done
         if (( idx >= 0 )) && [[ "${valids[$idx]}" == 0 ]]; then
-            echo "gh account '$login' needs reauthentication (invalid/expired keyring token)." >&2
-            if [[ -t 0 && -t 2 ]]; then
-                printf "Reauthenticate '%s' now (gh auth refresh)? [Y/n] " "$login" >&2
-                read -r reply
-                case "$reply" in
-                    ''|y|Y|yes|YES)
-                        if gh auth refresh -h github.com -u "$login"; then
-                            echo "Reauthenticated '$login'." >&2
-                        else
-                            echo "Reauthentication failed; using the active account instead." >&2
-                            login="$active_login"
-                        fi
-                        ;;
-                    *)
-                        echo "Skipping reauthentication; using the active account instead." >&2
-                        login="$active_login"
-                        ;;
-                esac
-            else
-                echo "Run: gh auth refresh -h github.com -u $login" >&2
-                login="$active_login"
+            local probe_token probe_status reset_epoch reset_human
+            probe_token="$(gh auth token --hostname github.com --user "$login" 2>/dev/null || true)"
+            probe_status="unknown"
+            if [[ -n "$probe_token" ]] \
+                && declare -F _init_files_gh_token_probe_status > /dev/null 2>&1; then
+                probe_status="$(_init_files_gh_token_probe_status "$probe_token" 2>/dev/null || echo unknown)"
             fi
+            case "$probe_status" in
+                valid)
+                    echo "gh flagged '$login', but its token actually works (likely a transient hiccup) — using it." >&2
+                    token="$probe_token"
+                    ;;
+                rate_limited:*)
+                    reset_epoch="${probe_status#rate_limited:}"
+                    reset_human=""
+                    [[ -n "$reset_epoch" && "$reset_epoch" != 0 ]] \
+                        && reset_human="$(date -r "$reset_epoch" 2>/dev/null || true)"
+                    echo "gh account '$login' is valid but has hit its GitHub API rate limit${reset_human:+ (resets around $reset_human)}. No reauth needed — falling back to the active account for now." >&2
+                    login="$active_login"
+                    ;;
+                invalid)
+                    echo "gh account '$login' needs reauthentication (token genuinely rejected)." >&2
+                    if [[ -t 0 && -t 2 ]]; then
+                        printf "Reauthenticate '%s' now (gh auth refresh)? [Y/n] " "$login" >&2
+                        read -r reply
+                        case "$reply" in
+                            ''|y|Y|yes|YES)
+                                if gh auth refresh -h github.com -u "$login"; then
+                                    echo "Reauthenticated '$login'." >&2
+                                else
+                                    echo "Reauthentication failed; using the active account instead." >&2
+                                    login="$active_login"
+                                fi
+                                ;;
+                            *)
+                                echo "Skipping reauthentication; using the active account instead." >&2
+                                login="$active_login"
+                                ;;
+                        esac
+                    else
+                        echo "Run: gh auth refresh -h github.com -u $login" >&2
+                        login="$active_login"
+                    fi
+                    ;;
+                *)
+                    echo "Could not verify '$login' (no network/curl) — using the active account instead." >&2
+                    login="$active_login"
+                    ;;
+            esac
         fi
     fi
+
 
     if [[ -n "$login" && "$login" != "$active_login" ]]; then
         token="$(gh auth token --hostname github.com --user "$login" 2>/dev/null || true)"
@@ -11101,6 +11132,48 @@ _init_files_gh_accounts_detailed()
         fi
     done <<< "$text"
     return 0
+}
+
+# `gh auth status` reports a token as invalid whenever its own validation API
+# call fails for *any* reason, including a merely-exhausted rate limit — it
+# cannot tell "revoked/expired" apart from "valid but rate-limited". Probe a
+# token directly against /rate_limit (never counts against the token's own
+# rate limit, per GitHub's docs) to get a real verdict. Prints one of:
+#   valid                  - token works, quota remaining
+#   rate_limited:<epoch>   - token works, quota exhausted (reset unix time)
+#   invalid                - token genuinely rejected (401)
+#   unknown                - could not verify (no curl / no network / timeout)
+_init_files_gh_token_probe_status()
+{
+    local token="${1-}" headers code remaining reset
+    [[ -n "$token" ]] || { printf 'unknown'; return 1; }
+    command -v curl > /dev/null 2>&1 || { printf 'unknown'; return 1; }
+    headers="$(curl -s -m 5 -D - -o /dev/null \
+        -H "Authorization: token $token" \
+        https://api.github.com/rate_limit 2>/dev/null)" || { printf 'unknown'; return 1; }
+    code="$(printf '%s' "$headers" | command awk 'NR==1{print $2}')"
+    case "$code" in
+        401)
+            printf 'invalid'
+            return 0
+            ;;
+        200)
+            remaining="$(printf '%s' "$headers" \
+                | command awk -F': ' 'tolower($1)=="x-ratelimit-remaining"{print $2}' | tr -d '\r')"
+            reset="$(printf '%s' "$headers" \
+                | command awk -F': ' 'tolower($1)=="x-ratelimit-reset"{print $2}' | tr -d '\r')"
+            if [[ "$remaining" == "0" ]]; then
+                printf 'rate_limited:%s' "${reset:-0}"
+            else
+                printf 'valid'
+            fi
+            return 0
+            ;;
+        *)
+            printf 'unknown'
+            return 1
+            ;;
+    esac
 }
 
 # Per-label (e.g. init-files, private-config), per-host record of which gh
