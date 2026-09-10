@@ -31,6 +31,24 @@ symlink (same pattern as the `~/.vimrc` check) and offers to repair it via
 `refresh_claude_settings` (or `refresh_init_files` when other deployables also
 drifted). `init_files_doctor` reports the symlink status read-only.
 
+## iTerm2 status-bar integration (`hooks`)
+
+`hooks.*` wires every Claude Code hook event to
+`$HOME/.config/iterm2/cc-status` — iTerm2's own built-in Claude Code
+status-bar helper (a symlink iTerm2 manages itself, normally pointing at
+`/Applications/iTerm.app/Contents/Resources/utilities/cc-status`). The
+command uses `$HOME` rather than a literal `/Users/<name>` path so it stays
+portable across accounts/hosts, consistent with the tool-path-consistency
+rule. If iTerm2 isn't installed, or that symlink doesn't exist yet, the hook
+command just no-ops/fails harmlessly.
+
+iTerm2 sometimes rewrites `~/.claude/settings.json` in place when
+(re)installing this integration, which can replace the symlink with a plain
+file (breaking the deploy model). `refresh_init_files` / `init_files_doctor`
+detect that drift the same way as any other symlink drift and offer to
+repair it via `refresh_claude_settings` — repairing restores this same
+`hooks` block from the tracked file, so nothing is lost.
+
 ## Editing
 
 Edit `claude/settings.json` in the clone (not `~/.claude/settings.json`
