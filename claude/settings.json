@@ -9,34 +9,34 @@
   "enforceAvailableModels": true,
   "hooks": {
     "Notification": [
-      { "hooks": [{ "type": "command", "command": "$HOME/.config/iterm2/cc-status" }] }
+      { "hooks": [{ "type": "command", "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true" }] }
     ],
     "PermissionRequest": [
-      { "hooks": [{ "type": "command", "command": "$HOME/.config/iterm2/cc-status" }] }
+      { "hooks": [{ "type": "command", "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true" }] }
     ],
     "PostToolUse": [
-      { "hooks": [{ "type": "command", "command": "$HOME/.config/iterm2/cc-status" }] }
+      { "hooks": [{ "type": "command", "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true" }] }
     ],
     "PreToolUse": [
-      { "hooks": [{ "type": "command", "command": "$HOME/.config/iterm2/cc-status" }] }
+      { "hooks": [{ "type": "command", "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true" }] }
     ],
     "SessionEnd": [
-      { "hooks": [{ "type": "command", "command": "$HOME/.config/iterm2/cc-status" }] }
+      { "hooks": [{ "type": "command", "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true" }] }
     ],
     "SessionStart": [
-      { "hooks": [{ "type": "command", "command": "$HOME/.config/iterm2/cc-status" }] }
+      { "hooks": [{ "type": "command", "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true" }] }
     ],
     "Stop": [
-      { "hooks": [{ "type": "command", "command": "$HOME/.config/iterm2/cc-status" }] }
+      { "hooks": [{ "type": "command", "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true" }] }
     ],
     "StopFailure": [
-      { "hooks": [{ "type": "command", "command": "$HOME/.config/iterm2/cc-status" }] }
+      { "hooks": [{ "type": "command", "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true" }] }
     ],
     "SubagentStop": [
-      { "hooks": [{ "type": "command", "command": "$HOME/.config/iterm2/cc-status" }] }
+      { "hooks": [{ "type": "command", "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true" }] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "$HOME/.config/iterm2/cc-status" }] }
+      { "hooks": [{ "type": "command", "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true" }] }
     ]
   },
   "includeCoAuthoredBy": false,
