@@ -400,6 +400,10 @@ if [[ -f "${repo_dir}/lib/shell_completions" ]]; then
     # shellcheck disable=SC1091
     . "${repo_dir}/lib/shell_completions"
 fi
+if [[ -f "${repo_dir}/lib/blumkin_config" ]]; then
+    # shellcheck disable=SC1091
+    . "${repo_dir}/lib/blumkin_config"
+fi
 
 # Thin alias — discovery lives in lib/host_paths.
 homebrew_prefix()
@@ -2736,6 +2740,17 @@ maybe_link_shell_completions()
     done <<< "$out"
 }
 
+maybe_link_blumkin_config()
+{
+    [[ $quiet -eq 1 ]] && return 0
+    type init_files_blumkin_config_link_all > /dev/null 2>&1 || return 0
+    type init_files_private_config_present > /dev/null 2>&1 || return 0
+    init_files_private_config_present || return 0
+    [[ -d "$(init_files_blumkin_overlay_src_dir)" ]] || return 0
+
+    link_blumkin_config
+}
+
 maybe_install_mos_prefs()
 {
     local install_bin settings
@@ -2834,4 +2849,5 @@ maybe_install_iterm_prefs
 maybe_install_terminal_prefs
 maybe_install_mos_prefs
 maybe_link_shell_completions
+maybe_link_blumkin_config
 print_brew_bash_login_shell_tip

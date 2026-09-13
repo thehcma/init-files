@@ -1,0 +1,187 @@
+# blumkin per-file config overlay linking (personal profile only).
+# shellcheck shell=bash
+# Sourced only — do not execute. error-handling.mdc: return non-zero, never
+# exit/die (sourced by an interactive shell and by provision_init_files).
+#
+# blumkin's ~/.config/blumkin/profiles/personal/ also holds local-only runtime
+# state (OAuth token caches) that must never be tracked in the private-config
+# overlay, so — unlike domesti-bot's whole-directory symlink — this links the
+# overlay's blumkin/profiles/personal/ tree file-by-file, and never touches
+# anything under the destination that it did not itself create as a symlink
+# back to that overlay tree.
+#
+# Requires lib/config_paths (init_files_private_config_dir) to already be
+# sourced by the caller.
+
+init_files_blumkin_overlay_src_dir()
+{
+    printf '%s\n' "$(init_files_private_config_dir)/blumkin/profiles/personal"
+}
+
+init_files_blumkin_config_dest_dir()
+{
+    printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/blumkin/profiles/personal"
+}
+
+# Link every file under the overlay's blumkin/profiles/personal/ tree into
+# ~/.config/blumkin/profiles/personal/ (mirrored relative path) as a symlink.
+# Never clobbers an existing destination that is not already the expected
+# symlink — reports it as a conflict instead. Prints "<status>\t<relative-path>"
+# for every file acted on or in conflict (status: ok | conflict). Returns 0 if
+# anything is linked or already up to date; 1 when the overlay tree is absent.
+init_files_blumkin_config_link_all()
+{
+    local src dest rel file target linked=1
+
+    src="$(init_files_blumkin_overlay_src_dir)"
+    [[ -d "$src" ]] || return 1
+    dest="$(init_files_blumkin_config_dest_dir)"
+
+    while IFS= read -r file; do
+        [[ -n "$file" ]] || continue
+        rel="${file#"$src"/}"
+        target="${dest}/${rel}"
+        if [[ -L "$target" ]]; then
+            if [[ "$(readlink "$target" 2>/dev/null)" == "$file" ]]; then
+                linked=0
+                continue
+            fi
+            printf 'conflict\t%s\n' "$rel"
+            continue
+        fi
+        if [[ -e "$target" ]]; then
+            printf 'conflict\t%s\n' "$rel"
+            continue
+        fi
+        mkdir -p "$(dirname "$target")" 2>/dev/null || {
+            printf 'conflict\t%s\n' "$rel"
+            continue
+        }
+        if ln -s "$file" "$target" 2>/dev/null; then
+            linked=0
+            printf 'ok\t%s\n' "$rel"
+        else
+            printf 'conflict\t%s\n' "$rel"
+        fi
+    done < <(find "$src" -type f 2>/dev/null | sort)
+    return "$linked"
+}
+
+# Remove dangling symlinks under ~/.config/blumkin/profiles/personal/ that
+# point back into the overlay's blumkin/profiles/personal/ tree but whose
+# source file was removed upstream, then prune directories left empty by that
+# removal. Only ever removes symlinks it recognizes as pointing into the
+# overlay tree — never a real file/dir. Prints each removed relative path.
+init_files_blumkin_config_prune_dangling()
+{
+    local src dest link target rel
+
+    src="$(init_files_blumkin_overlay_src_dir)"
+    dest="$(init_files_blumkin_config_dest_dir)"
+    [[ -d "$dest" ]] || return 0
+
+    while IFS= read -r link; do
+        [[ -n "$link" ]] || continue
+        target="$(readlink "$link" 2>/dev/null || true)"
+        [[ -n "$target" ]] || continue
+        case "$target" in
+            "$src"/*) : ;;
+            *) continue ;;
+        esac
+        [[ -e "$target" ]] && continue
+        rel="${link#"$dest"/}"
+        rm -f "$link" 2>/dev/null && printf '%s\n' "$rel"
+    done < <(find "$dest" -type l 2>/dev/null | sort)
+
+    find "$dest" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+}
+
+# Print drift reasons (one per line; empty = no drift): new overlay files not
+# yet linked, dangling symlinks whose overlay source was removed, or the
+# overlay repo cached behind origin/main. Read-only — never links or prunes.
+init_files_blumkin_config_drift()
+{
+    local src dest rel file target link
+    local -a missing=() removed=()
+
+    src="$(init_files_blumkin_overlay_src_dir)"
+    [[ -d "$src" ]] || return 0
+    dest="$(init_files_blumkin_config_dest_dir)"
+
+    while IFS= read -r file; do
+        [[ -n "$file" ]] || continue
+        rel="${file#"$src"/}"
+        target="${dest}/${rel}"
+        if [[ ! -e "$target" && ! -L "$target" ]]; then
+            missing+=("$rel")
+        fi
+    done < <(find "$src" -type f 2>/dev/null | sort)
+
+    if [[ -d "$dest" ]]; then
+        while IFS= read -r link; do
+            [[ -n "$link" ]] || continue
+            target="$(readlink "$link" 2>/dev/null || true)"
+            [[ -n "$target" ]] || continue
+            case "$target" in
+                "$src"/*) : ;;
+                *) continue ;;
+            esac
+            [[ -e "$target" ]] && continue
+            rel="${link#"$dest"/}"
+            removed+=("$rel")
+        done < <(find "$dest" -type l 2>/dev/null | sort)
+    fi
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        local joined
+        joined="$(IFS=,; printf '%s' "${missing[*]}")"
+        printf 'blumkin config: new overlay file(s) not linked: %s\n' "$joined"
+    fi
+    if [[ ${#removed[@]} -gt 0 ]]; then
+        local joined
+        joined="$(IFS=,; printf '%s' "${removed[*]}")"
+        printf 'blumkin config: dangling symlink(s) for removed overlay file(s): %s\n' "$joined"
+    fi
+    if declare -F init_files_private_config_behind_cached > /dev/null 2>&1 \
+        && init_files_private_config_behind_cached; then
+        printf 'blumkin config: overlay repo behind origin/main (cached) - run: git -C %s pull --ff-only\n' \
+            "$(init_files_private_config_dir)"
+    fi
+}
+
+# Interactive-friendly repair: pull the overlay when cached-behind, link new
+# files, then prune symlinks for files removed upstream. Logs via `log` when
+# available (provision_init_files / bashrc context); silent no-op otherwise.
+link_blumkin_config()
+{
+    local out status rel removed_rel
+
+    if declare -F init_files_private_config_behind_cached > /dev/null 2>&1 \
+        && init_files_private_config_behind_cached \
+        && declare -F init_files_pull_private_config > /dev/null 2>&1; then
+        if init_files_pull_private_config > /dev/null 2>&1; then
+            declare -F log > /dev/null 2>&1 && log "OK       pulled private config overlay (blumkin)"
+        else
+            declare -F log > /dev/null 2>&1 \
+                && log "WARN     could not fast-forward private config overlay — linking with what's on disk"
+        fi
+    fi
+
+    out="$(init_files_blumkin_config_link_all 2>/dev/null || true)"
+    while IFS=$'\t' read -r status rel; do
+        [[ -n "$status" ]] || continue
+        case "$status" in
+            ok) declare -F log > /dev/null 2>&1 \
+                && log "OK       linked blumkin config: profiles/personal/${rel}" ;;
+            conflict) declare -F log > /dev/null 2>&1 \
+                && log "WARN     blumkin config profiles/personal/${rel} already exists locally (skipped)" ;;
+        esac
+    done <<< "$out"
+
+    out="$(init_files_blumkin_config_prune_dangling 2>/dev/null || true)"
+    while IFS= read -r removed_rel; do
+        [[ -n "$removed_rel" ]] || continue
+        declare -F log > /dev/null 2>&1 \
+            && log "OK       removed dangling blumkin config symlink: profiles/personal/${removed_rel} (removed upstream)"
+    done <<< "$out"
+}

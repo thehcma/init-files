@@ -84,6 +84,10 @@ if [[ -f "${_init_files_clone_dir}/lib/config_paths" ]]; then
     # shellcheck disable=SC1091
     . "${_init_files_clone_dir}/lib/config_paths"
 fi
+if [[ -f "${_init_files_clone_dir}/lib/blumkin_config" ]]; then
+    # shellcheck disable=SC1091
+    . "${_init_files_clone_dir}/lib/blumkin_config"
+fi
 if [[ -f "${_init_files_clone_dir}/lib/tool_version_cache" ]]; then
     # shellcheck disable=SC1091
     . "${_init_files_clone_dir}/lib/tool_version_cache"
@@ -7250,6 +7254,10 @@ _init_files_deploy_drift_reasons()
             printf 'shell completions missing/stale for: %s\n' "$completion_drift"
         fi
     fi
+
+    if type init_files_blumkin_config_drift > /dev/null 2>&1; then
+        init_files_blumkin_config_drift
+    fi
 }
 
 # Probe origin/main SHA for git dir $1 (optional git binary $2). Prints SHA; returns 1 if empty.
@@ -7395,7 +7403,7 @@ _init_files_offer_deploy_repairs()
 {
     local reasons
     local need_bashrc=0 need_vim=0 need_iterm=0 need_login=0 need_tools=0
-    local need_completions=0 need_claude=0
+    local need_completions=0 need_claude=0 need_blumkin_config=0
     local repair_cmd reply
     local no_dev=0
 
@@ -7412,6 +7420,7 @@ _init_files_offer_deploy_repairs()
             iTerm\ *) need_iterm=1 ;;
             login\ *) need_login=1 ;;
             shell\ completions\ *) need_completions=1 ;;
+            blumkin\ config:\ *) need_blumkin_config=1 ;;
             *) need_tools=1 ;;
         esac
     done <<< "$reasons"
@@ -7423,20 +7432,24 @@ _init_files_offer_deploy_repairs()
     # Prefer the narrowest fix when only one subsystem drifted.
     if [[ $need_bashrc -eq 0 && $need_login -eq 0 && $need_tools -eq 0 \
         && $need_completions -eq 0 && $need_vim -eq 1 && $need_iterm -eq 0 \
-        && $need_claude -eq 0 ]]; then
+        && $need_claude -eq 0 && $need_blumkin_config -eq 0 ]]; then
         repair_cmd='refresh_vimrc'
     elif [[ $need_bashrc -eq 0 && $need_login -eq 0 && $need_tools -eq 0 \
         && $need_completions -eq 0 && $need_vim -eq 0 && $need_iterm -eq 1 \
-        && $need_claude -eq 0 ]]; then
+        && $need_claude -eq 0 && $need_blumkin_config -eq 0 ]]; then
         repair_cmd='refresh_iterm_settings'
     elif [[ $need_bashrc -eq 0 && $need_login -eq 0 && $need_tools -eq 0 \
         && $need_vim -eq 0 && $need_iterm -eq 0 && $need_completions -eq 1 \
-        && $need_claude -eq 0 ]]; then
+        && $need_claude -eq 0 && $need_blumkin_config -eq 0 ]]; then
         repair_cmd='link_shell_completions'
     elif [[ $need_bashrc -eq 0 && $need_login -eq 0 && $need_tools -eq 0 \
         && $need_vim -eq 0 && $need_iterm -eq 0 && $need_completions -eq 0 \
-        && $need_claude -eq 1 ]]; then
+        && $need_claude -eq 1 && $need_blumkin_config -eq 0 ]]; then
         repair_cmd='refresh_claude_settings'
+    elif [[ $need_bashrc -eq 0 && $need_login -eq 0 && $need_tools -eq 0 \
+        && $need_vim -eq 0 && $need_iterm -eq 0 && $need_completions -eq 0 \
+        && $need_claude -eq 0 && $need_blumkin_config -eq 1 ]]; then
+        repair_cmd='link_blumkin_config'
     elif [[ $no_dev -eq 1 ]]; then
         repair_cmd='refresh_init_files --no-dev'
     else
@@ -7463,6 +7476,7 @@ _init_files_offer_deploy_repairs()
                         refresh_iterm_settings
                         ;;
                     link_shell_completions) link_shell_completions ;;
+                    link_blumkin_config) link_blumkin_config ;;
                     refresh_claude_settings)
                         # Interactive repair uses default options.
                         # shellcheck disable=SC2119
