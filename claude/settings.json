@@ -7,6 +7,7 @@
   "availableModels": ["sonnet", "haiku"],
   "editorMode": "vim",
   "enforceAvailableModels": true,
+  "remoteControlAtStartup": true,
   "hooks": {
     "Notification": [
       { "hooks": [{ "type": "command", "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true" }] }
