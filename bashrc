@@ -7828,6 +7828,8 @@ function refresh_init_files()
                 echo "            Failed ls-remote is flagged; TTY offers retry" >&2
                 echo "            (may run cache_ssh). Continues overlay/drift checks." >&2
                 echo "            Does not apply iTerm prefs unless you accept." >&2
+                echo "  A plain (non -q) run also checks/offers the private config" >&2
+                echo "  overlay update, same as the daily -q path." >&2
                 echo "  --no-dev  after pull, provision --no-dev and remember THIS" >&2
                 echo "            host as non-dev (no-dev.<hostname>; NFS-safe)." >&2
                 echo "  --dev     after pull, full provision; clear this host's non-dev mode." >&2
@@ -8074,6 +8076,12 @@ function refresh_init_files()
     fi
 
     printf '%s\n' "$now" > "$init_files_check_stamp"
+
+    # Every full run (not just the -q daily path) also checks/offers the
+    # private config overlay update.
+    if type _init_files_offer_private_config_update > /dev/null 2>&1; then
+        _init_files_offer_private_config_update || true
+    fi
 
     src="$init_files_dir/$init_files_bashrc_src"
     dest="${HOME}/.bashrc"

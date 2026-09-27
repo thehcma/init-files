@@ -396,6 +396,10 @@ is_modern_macos()
     || init_files_die "missing ${repo_dir}/lib/release_install (clone incomplete?)"
 # shellcheck disable=SC1091
 . "${repo_dir}/lib/release_install"
+[[ -f "${repo_dir}/lib/tool_version_cache" ]] \
+    || init_files_die "missing ${repo_dir}/lib/tool_version_cache (clone incomplete?)"
+# shellcheck disable=SC1091
+. "${repo_dir}/lib/tool_version_cache"
 if [[ -f "${repo_dir}/lib/shell_completions" ]]; then
     # shellcheck disable=SC1091
     . "${repo_dir}/lib/shell_completions"
@@ -1877,6 +1881,33 @@ mkdir -p "$tools_dir"
     done
 } > "$tools_file"
 log "Wrote tool paths -> $tools_file"
+
+# Every tools refresh invalidates the cached check_tool_versions report/
+# pending-updates (installed tools/paths may have just changed) so the next
+# check_tool_versions rebuilds against what was just discovered/installed,
+# instead of reprinting a stale pre-provision cache. Mirrors bashrc's
+# invalidate_tool_version_cache (keeps latest-upstream cache untouched).
+tool_version_state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/tool-version-checks/${init_files_host}"
+tool_version_lock_dir="${tool_version_state_dir}.lock"
+if init_files_mkdir_lock "$tool_version_lock_dir" 2>/dev/null; then
+    rm -f \
+        "${tool_version_state_dir}/last-check" \
+        "${tool_version_state_dir}/last-report" \
+        "${tool_version_state_dir}/pending-updates" \
+        "${tool_version_state_dir}/pending-self-names" \
+        "${tool_version_state_dir}/update-offer-done" \
+        2>/dev/null || true
+    init_files_mkdir_unlock "$tool_version_lock_dir"
+else
+    rm -f \
+        "${tool_version_state_dir}/last-check" \
+        "${tool_version_state_dir}/last-report" \
+        "${tool_version_state_dir}/pending-updates" \
+        "${tool_version_state_dir}/pending-self-names" \
+        "${tool_version_state_dir}/update-offer-done" \
+        2>/dev/null || true
+fi
+log "OK       cleared tool-version report cache (rebuilds on next check_tool_versions)"
 
 _init_files_migrate_pipx_layout
 _init_files_rewrite_stale_pipx_wrapper
