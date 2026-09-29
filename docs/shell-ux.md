@@ -4,6 +4,26 @@ How init-files configures interactive bash: history, completion, shell options, 
 
 Platform rules (brew only on modern macOS, never on older macOS) still apply — see [AGENTS.md](../AGENTS.md) and [README.md](../README.md).
 
+### GitHub API limits
+
+Use `gh_limits` to check the active GitHub CLI account, or pass a login to
+check another saved account without switching identities:
+
+```bash
+gh_limits
+gh_limits thehcma
+```
+
+It reports the account's REST core, search, and GraphQL primary quotas, then
+makes a read-only authenticated API probe. “ALL CLEAR” means those buckets
+have quota remaining and the probe succeeded; GitHub does not expose a
+secondary-quota counter, so the function also lists documented secondary
+ceilings and reports a secondary limit only when GitHub explicitly returns
+one. Primary quotas are green when more than half remains, yellow when more
+than half is used, and red when exhausted or blocked. Colors are used on
+terminals unless `NO_COLOR` is set; piped output stays plain. Secondary
+thresholds may vary or be undisclosed.
+
 ### Prompt / user badge
 
 Classic PS1 (and starship) highlight `$USER` when it is **not** on the quiet-prompt allowlist — yellow-on-red so shared-host / wrong-account mistakes are obvious.

@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Tests remote-check failure classification and origin URL reporting.
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+bashrc="${root}/bashrc"
+text="$(<"$bashrc")"
+
+printf '\n=== static: remote-check diagnostics ===\n'
+assert_contains 'defines failure diagnostic' "$text" '_init_files_describe_remote_check_failure()'
+assert_contains 'includes origin URL in retry path' "$text" \
+    "_init_files_describe_remote_check_failure \"\$label\" \"\${2:-}\" \"\${3:-}\""
+assert_contains 'offers refresh only for invalid token' "$text" \
+    'gh auth refresh -h github.com -u %s'
+assert_contains 'passes clone context for init-files' "$text" \
+    "_init_files_offer_remote_check_retry 'init-files' \"\$init_files_dir\" \"\$init_tool_git\""
+
+printf '\n=== behavioral: remote-check diagnostics ===\n'
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+mkdir -p "$tmpdir/repo/.git" "$tmpdir/bin"
+
+cat >"$tmpdir/bin/git-test" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' 'https://user:secret@github.com/owner/repo.git'
+EOF
+chmod +x "$tmpdir/bin/git-test"
+
+# shellcheck disable=SC1090
+eval "$(sed -n '/^_init_files_describe_remote_check_failure()$/,/^}$/p' "$bashrc")"
+
+_init_files_is_github_https_host() { return 0; }
+_init_files_git_https() {
+    printf '%s\n' "${REMOTE_TEST_ERROR:-fatal: Authentication failed for 'https://github.com/owner/repo.git'}" >&2
+    return 128
+}
+_init_files_gh_active_account() { printf 'personal-account\n'; }
+_init_files_gh_token_probe_status() { printf '%s\n' "${REMOTE_TEST_TOKEN_STATUS:-invalid}"; }
+command() {
+    if [[ "$1" == "-v" && "$2" == "gh" ]]; then
+        printf '%s\n' "$REMOTE_TEST_GH"
+    else
+        builtin command "$@"
+    fi
+}
+export REMOTE_TEST_GH="$tmpdir/bin/gh"
+cat >"$REMOTE_TEST_GH" <<'EOF'
+#!/usr/bin/env bash
+printf 'test-token\n'
+EOF
+chmod +x "$REMOTE_TEST_GH"
+
+got="$(_init_files_describe_remote_check_failure init-files "$tmpdir/repo" "$tmpdir/bin/git-test" 2>&1)" && rc=0 || rc=$?
+assert_exit_nonzero 'expired-token diagnosis remains a failed remote check' "$rc"
+assert_contains 'prints origin URL with embedded credentials redacted' "$got" \
+    'Remote: https://[credentials-redacted]@github.com/owner/repo.git'
+assert_not_contains 'does not print embedded URL password' "$got" 'secret'
+assert_contains 'identifies expired or revoked token' "$got" "active 'personal-account' token is expired/revoked"
+assert_contains 'gives targeted reauthentication command' "$got" 'gh auth refresh -h github.com -u personal-account'
+
+got="$(REMOTE_TEST_TOKEN_STATUS=valid _init_files_describe_remote_check_failure init-files "$tmpdir/repo" "$tmpdir/bin/git-test" 2>&1)" && rc=0 || rc=$?
+assert_exit_nonzero 'valid-token access error remains failed' "$rc"
+assert_contains 'does not recommend reauth for valid token' "$got" 'token is valid, but GitHub denied access'
+assert_not_contains 'valid-token diagnosis omits refresh command' "$got" 'gh auth refresh'
+
+got="$(REMOTE_TEST_TOKEN_STATUS=rate_limited:1234567890 _init_files_describe_remote_check_failure init-files "$tmpdir/repo" "$tmpdir/bin/git-test" 2>&1)" && rc=0 || rc=$?
+assert_exit_nonzero 'rate-limited token remains failed' "$rc"
+assert_eq 'rate limit diagnosis is distinct from auth failure' "$rc" '3'
+assert_contains 'identifies rate limit separately' "$got" 'primary API quota is exhausted'
+assert_not_contains 'rate limit does not suggest reauth' "$got" 'gh auth refresh'
+
+got="$(REMOTE_TEST_ERROR='fatal: Could not resolve host: github.com' _init_files_describe_remote_check_failure init-files "$tmpdir/repo" "$tmpdir/bin/git-test" 2>&1)" && rc=0 || rc=$?
+assert_exit_nonzero 'network error remains failed' "$rc"
+assert_contains 'identifies DNS/network problem' "$got" 'network/DNS connection'
+assert_not_contains 'network diagnosis omits reauth command' "$got" 'gh auth refresh'
+
+got="$(REMOTE_TEST_ERROR='remote: You have exceeded a secondary rate limit. fatal: HTTP 403' \
+    _init_files_describe_remote_check_failure init-files "$tmpdir/repo" "$tmpdir/bin/git-test" 2>&1)" && rc=0 || rc=$?
+assert_exit_nonzero 'secondary rate-limit error remains failed' "$rc"
+assert_eq 'secondary rate limit avoids account switching' "$rc" '3'
+assert_contains 'identifies explicit secondary rate limit' "$got" 'explicitly reported an API/abuse rate limit'
+assert_not_contains 'secondary rate limit diagnosis omits reauth' "$got" 'gh auth refresh'
+
+test_summary

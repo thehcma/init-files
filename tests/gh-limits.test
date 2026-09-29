@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# Tests gh_limits account selection and primary/secondary-limit reporting.
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+bashrc="${root}/bashrc"
+
+printf '\n=== static: gh_limits ===\n'
+text="$(<"$bashrc")"
+assert_contains 'defines gh_limits' "$text" 'gh_limits()'
+assert_contains 'uses the selected saved-account token' "$text" \
+    "auth token --hostname github.com --user \"\$login\""
+assert_contains 'prints documented secondary thresholds' "$text" '900 REST'
+assert_contains 'shows endpoint point budget' "$text" 'points/minute per endpoint'
+assert_contains 'explains secondary quota is not exposed' "$text" 'GitHub exposes no secondary-quota counter'
+
+printf '\n=== behavioral: gh_limits ===\n'
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
+cat >"$tmpdir/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "auth" && "$2" == "token" ]]; then
+    while (($#)); do
+        if [[ "$1" == "--user" ]]; then
+            printf 'token-for-%s\n' "$2"
+            exit 0
+        fi
+        shift
+    done
+    exit 1
+fi
+if [[ "$1" == "api" && "$*" == *"rate_limit"* ]]; then
+    if [[ "${GH_LIMITS_TEST_MODE:-clear}" == "secondary-rate" ]]; then
+        printf 'gh: HTTP 403: You have exceeded a secondary rate limit.\n' >&2
+        exit 1
+    elif [[ "${GH_LIMITS_TEST_MODE:-clear}" == "primary" ]]; then
+        printf 'core\t0\t5000\t2026-09-29 12:00:00 UTC\n'
+    elif [[ "${GH_LIMITS_TEST_MODE:-clear}" == "warning" ]]; then
+        printf 'core\t2499\t5000\t2026-09-29 12:00:00 UTC\n'
+    else
+        printf 'core\t4999\t5000\t2026-09-29 12:00:00 UTC\n'
+    fi
+    printf 'search\t30\t30\t2026-09-29 12:00:00 UTC\ngraphql\t4999\t5000\t2026-09-29 12:00:00 UTC\n'
+    exit 0
+fi
+if [[ "$1" == "api" && "$*" == *"user"* ]]; then
+    case "${GH_LIMITS_TEST_MODE:-clear}" in
+        secondary)
+            printf 'gh: HTTP 403: You have exceeded a secondary rate limit.\n' >&2
+            exit 1
+            ;;
+        clear|warning)
+            printf '%s\n' "${GH_LIMITS_TEST_LOGIN:-personal}"
+            exit 0
+            ;;
+    esac
+fi
+printf 'unexpected gh invocation: %s\n' "$*" >&2
+exit 2
+EOF
+chmod +x "$tmpdir/gh"
+
+# Extract only the function so the test doesn't run bashrc initialization.
+# shellcheck disable=SC1090
+eval "$(sed -n '/^gh_limits()$/,/^}$/p' "$bashrc")"
+_init_files_gh_active_account() { printf 'personal\n'; }
+PATH="$tmpdir:$PATH"
+export PATH
+
+got="$(GH_LIMITS_TEST_MODE=clear gh_limits 2>&1)"
+assert_contains 'defaults to active account and reports all clear' "$got" 'ALL CLEAR:'
+assert_contains 'reports all primary buckets' "$got" 'Primary graphql'
+assert_contains 'reports unavailable secondary counter' "$got" 'no secondary-quota counter'
+
+got="$(GH_LIMITS_TEST_MODE=warning gh_limits 2>&1)"
+assert_contains 'warns when half of a primary quota is used' "$got" 'CAUTION: more than half'
+
+got="$(GH_LIMITS_TEST_MODE=clear GH_LIMITS_TEST_LOGIN=work-account gh_limits work-account 2>&1)"
+assert_contains 'can check a non-active account' "$got" 'GitHub API limits for work-account'
+assert_not_contains 'does not expose token in output' "$got" 'token-for-work-account'
+
+got="$(GH_LIMITS_TEST_MODE=primary gh_limits 2>&1)" && rc=0 || rc=$?
+assert_exit_nonzero 'exhausted primary bucket returns failure' "$rc"
+assert_contains 'names exhausted primary bucket' "$got" 'Primary core    0/5000 remaining'
+assert_contains 'reports primary limit hit' "$got" 'LIMIT HIT: at least one primary quota is exhausted.'
+
+got="$(GH_LIMITS_TEST_MODE=secondary gh_limits 2>&1)" && rc=0 || rc=$?
+assert_exit_nonzero 'secondary limit response returns failure' "$rc"
+assert_contains 'identifies secondary limit response' "$got" 'secondary rate limit / abuse detection'
+
+got="$(GH_LIMITS_TEST_MODE=secondary-rate gh_limits 2>&1)" && rc=0 || rc=$?
+assert_exit_nonzero 'secondary rate limit on quota endpoint returns failure' "$rc"
+assert_contains 'identifies secondary quota endpoint rejection' "$got" 'LIMIT HIT: GitHub explicitly rejected the quota check'
+
+got="$(GH_LIMITS_TEST_MODE=clear GH_LIMITS_TEST_LOGIN=unexpected gh_limits personal 2>&1)" && rc=0 || rc=$?
+assert_exit_nonzero 'mismatched API identity returns failure' "$rc"
+assert_contains 'names mismatched GitHub identity' "$got" 'requested '\''personal'\'', but GitHub authenticated this token as '\''unexpected'\'''
+
+got="$(gh_limits one two 2>&1)" && rc=0 || rc=$?
+assert_eq 'invalid arguments return usage error' "$rc" '2'
+assert_contains 'shows usage for invalid arguments' "$got" 'Usage: gh_limits [github-login]'
+
+test_summary

@@ -7298,20 +7298,122 @@ _init_files_probe_origin_main()
     printf '%s\n' "$remote_head"
 }
 
+# Diagnose a failed origin/main probe and print a sanitized clone URL.
+# For HTTPS auth failures, probe the active gh token before recommending reauth.
+_init_files_describe_remote_check_failure()
+{
+    local label="${1:-remote}" dir="${2:-}" git_bin="${3:-}"
+    local remote_url='' safe_url='' fetch_error='' rc=0 is_https=0 diagnosis=1
+    local gh_bin='' account='' token='' token_status=''
+
+    if [[ -n "$dir" && -d "$dir/.git" ]]; then
+        remote_url="$("$git_bin" -C "$dir" remote get-url origin 2>/dev/null || true)"
+    fi
+    if [[ -n "$remote_url" ]]; then
+        safe_url="$(printf '%s\n' "$remote_url" | command sed -E \
+            's#(://)[^/@]+:[^/@]*@#\1[credentials-redacted]@#; s#(://)[^/@]+@#\1[credentials-redacted]@#; s#([?&](token|access_token|password|key)=)[^&]*#\1[redacted]#g')"
+        printf '  Remote: %s\n' "$safe_url" >&2
+    else
+        printf '  Remote URL: unavailable (no origin configured).\n' >&2
+    fi
+
+    [[ -n "$dir" && -n "$git_bin" ]] || {
+        printf '  Cause: could not inspect the configured remote; check the local clone and git installation.\n' >&2
+        return 1
+    }
+
+    if type _init_files_is_github_https_host > /dev/null 2>&1 \
+        && _init_files_is_github_https_host; then
+        is_https=1
+        if fetch_error="$(_init_files_git_https "$git_bin" -C "$dir" ls-remote --heads origin main 2>&1)"; then
+            printf '  Cause: the remote is reachable now; retry the update check.\n' >&2
+            return 0
+        else
+            rc=$?
+        fi
+    else
+        if fetch_error="$(GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1" \
+            "$git_bin" -C "$dir" ls-remote --heads origin main 2>&1)"; then
+            printf '  Cause: the remote is reachable now; retry the update check.\n' >&2
+            return 0
+        else
+            rc=$?
+        fi
+    fi
+
+    if [[ "$fetch_error" =~ [Ss]econdary[[:space:]]rate[[:space:]]limit|[Aa]buse[[:space:]]detection|[Rr]ate[[:space:]]limit[[:space:]]exceeded ]]; then
+        diagnosis=3
+        printf '  Cause: GitHub explicitly reported an API/abuse rate limit; wait and retry, not reauthentication.\n' >&2
+    elif [[ "$fetch_error" =~ [Aa]uthentication[[:space:]]failed|[Pp]ermission[[:space:]]denied|[Rr]equested[[:space:]]URL[[:space:]]returned[[:space:]]error:[[:space:]](401|403)|[Hh]ttp[[:space:]](401|403)|[Rr]emote:[[:space:]][Rr]epository[[:space:]]not[[:space:]]found|[Tt]erminal[[:space:]]prompts[[:space:]]disabled ]]; then
+        if [[ "$is_https" -eq 1 ]]; then
+            gh_bin="$(command -v gh 2>/dev/null || true)"
+            account="$(_init_files_gh_active_account 2>/dev/null || true)"
+            if [[ -n "$gh_bin" && -x "$gh_bin" && -n "$account" ]]; then
+                token="$("$gh_bin" auth token --hostname github.com --user "$account" 2>/dev/null || true)"
+                if [[ -n "$token" ]] && type _init_files_gh_token_probe_status > /dev/null 2>&1; then
+                    token_status="$(_init_files_gh_token_probe_status "$token" 2>/dev/null || echo unknown)"
+                else
+                    token_status=unknown
+                fi
+            else
+                token_status=unknown
+            fi
+            unset token
+            case "$token_status" in
+                invalid)
+                    diagnosis=2
+                    printf "  Cause: GitHub rejected the HTTPS request and the active '%s' token is expired/revoked.\n" \
+                        "$account" >&2
+                    printf '  Reauthenticate: gh auth refresh -h github.com -u %s\n' "$account" >&2
+                    ;;
+                rate_limited:*)
+                    printf "  Cause: the active '%s' GitHub token is valid, but its primary API quota is exhausted.\n" \
+                        "$account" >&2
+                    printf '  Check reset time: gh_limits %s\n' "$account" >&2
+                    diagnosis=3
+                    ;;
+                valid)
+                    diagnosis=2
+                    printf "  Cause: the active '%s' GitHub token is valid, but GitHub denied access to this remote.\n" \
+                        "$account" >&2
+                    printf '  Check repository access and the active gh identity; reauth is not indicated.\n' >&2
+                    ;;
+                *)
+                    diagnosis=2
+                    printf '  Cause: GitHub rejected the HTTPS request, but token validity could not be verified.\n' >&2
+                    printf '  Check gh auth status; if it reports an invalid token, reauthenticate with gh auth refresh.\n' >&2
+                    ;;
+            esac
+        else
+            printf '  Cause: SSH authentication or repository access was denied.\n' >&2
+            printf '  Check the GitHub SSH key and repository access; run cache_ssh before retrying.\n' >&2
+        fi
+    elif [[ "$fetch_error" =~ [Cc]ould[[:space:]]not[[:space:]]resolve|[Nn]ame[[:space:]]or[[:space:]]service[[:space:]]not[[:space:]]known|[Nn]etwork[[:space:]]is[[:space:]]unreachable|[Cc]onnection[[:space:]]timed[[:space:]]out|[Ff]ailed[[:space:]]to[[:space:]]connect|[Cc]ould[[:space:]]not[[:space:]]connect ]]; then
+        printf '  Cause: network/DNS connection to the remote failed; this is not evidence of expired authentication.\n' >&2
+    else
+        printf '  Cause: remote check failed (git exit %s); it was not identified as an authentication failure.\n' "$rc" >&2
+    fi
+    return "$diagnosis"
+}
+
 # Flag a failed daily remote check. On a TTY, offer retry (return 0 = retry; may run cache_ssh).
-# $1 = human label (e.g. init-files, private config).
+# $1 = human label (e.g. init-files, private config); $2 = clone dir; $3 = git binary.
 _init_files_offer_remote_check_retry()
 {
     local label="${1:-remote}"
-    local reply is_https=0
+    local reply is_https=0 diagnosis=1
 
-    echo "init-files: could not reach ${label} origin/main (offline, auth, or network)." >&2
+    echo "init-files: could not reach ${label} origin/main." >&2
+    if _init_files_describe_remote_check_failure "$label" "${2:-}" "${3:-}"; then
+        diagnosis=0
+    else
+        diagnosis=$?
+    fi
     if type _init_files_is_github_https_host > /dev/null 2>&1 && _init_files_is_github_https_host; then
         is_https=1
-        echo "  Hint: check gh auth / credential helper, then retry." >&2
         # Multiple `gh auth login` accounts: if a different account previously
         # worked for this label, offer switching gh's active identity to it.
-        if type _init_files_maybe_offer_gh_account_switch > /dev/null 2>&1; then
+        if [[ "$diagnosis" -eq 2 ]] && type _init_files_maybe_offer_gh_account_switch > /dev/null 2>&1; then
             _init_files_maybe_offer_gh_account_switch "$label" || true
         fi
     else
@@ -7373,7 +7475,7 @@ _init_files_offer_private_config_update()
 
     remote_head="$(_init_files_probe_origin_main "$dir" "$git_bin" 'private-config' 2>/dev/null || true)"
     while [[ -z "$remote_head" ]]; do
-        if _init_files_offer_remote_check_retry 'private config'; then
+        if _init_files_offer_remote_check_retry 'private config' "$dir" "$git_bin"; then
             remote_head="$(_init_files_probe_origin_main "$dir" "$git_bin" 'private-config' 2>/dev/null || true)"
             continue
         fi
@@ -7927,7 +8029,7 @@ function refresh_init_files()
         # HTTPS hosts use credential helper / gh; SSH hosts need a loaded key.
         remote_head="$(_init_files_probe_origin_main "$init_files_dir" "$init_tool_git" 'init-files' 2>/dev/null || true)"
         while [[ -z "$remote_head" ]]; do
-            if _init_files_offer_remote_check_retry 'init-files'; then
+            if _init_files_offer_remote_check_retry 'init-files' "$init_files_dir" "$init_tool_git"; then
                 remote_head="$(_init_files_probe_origin_main "$init_files_dir" "$init_tool_git" 'init-files' 2>/dev/null || true)"
                 continue
             fi
@@ -11196,6 +11298,131 @@ _init_files_gh_token_probe_status()
             return 1
             ;;
     esac
+}
+
+# Show primary API quotas for an optional github.com login (defaults to active).
+# Secondary quotas are not queryable; report published thresholds and detect an
+# explicit secondary-limit response from a lightweight authenticated REST probe.
+gh_limits()
+{
+    local gh_bin login token rate_output probe_output probe_status
+    local name remaining limit reset count=0 primary_limited=0 primary_warning=0
+    local color_red='' color_yellow='' color_green='' color_reset='' row_color=''
+
+    if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-}" != "dumb" ]]; then
+        color_red=$'\033[31m'
+        color_yellow=$'\033[33m'
+        color_green=$'\033[32m'
+        color_reset=$'\033[0m'
+    fi
+
+    if [[ $# -gt 1 || "${1-}" == "-h" || "${1-}" == "--help" ]]; then
+        printf 'Usage: gh_limits [github-login]\n' >&2
+        return 2
+    fi
+    gh_bin="$(command -v gh 2>/dev/null || true)"
+    if [[ -z "$gh_bin" || ! -x "$gh_bin" ]]; then
+        printf 'gh_limits: GitHub CLI (gh) is not available.\n' >&2
+        return 1
+    fi
+
+    login="${1:-$(_init_files_gh_active_account 2>/dev/null || true)}"
+    if [[ -z "$login" ]]; then
+        printf 'gh_limits: no active github.com account; run gh auth login or pass a login.\n' >&2
+        return 1
+    fi
+    token="$("$gh_bin" auth token --hostname github.com --user "$login" 2>/dev/null)" || {
+        printf "gh_limits: no usable gh token for '%s'; check gh auth status.\n" "$login" >&2
+        return 1
+    }
+    if [[ -z "$token" ]]; then
+        printf "gh_limits: gh returned an empty token for '%s'.\n" "$login" >&2
+        return 1
+    fi
+
+    # shellcheck disable=SC2016
+    rate_output="$(GH_TOKEN="$token" "$gh_bin" api --hostname github.com rate_limit --jq '
+        ["core", "search", "graphql"][] as $name
+        | .resources[$name] as $quota
+        | "\($name)\t\($quota.remaining)\t\($quota.limit)\t\($quota.reset | strftime("%Y-%m-%d %H:%M:%S UTC"))"
+    ' 2>&1)" || {
+        if [[ "$rate_output" =~ [Ss]econdary[[:space:]]rate[[:space:]]limit|[Aa]buse[[:space:]]detection ]]; then
+            printf 'LIMIT HIT: GitHub explicitly rejected the quota check for a secondary rate limit / abuse detection.\n' >&2
+        elif [[ "$rate_output" =~ [Rr]ate[[:space:]]limit[[:space:]]exceeded ]]; then
+            printf 'LIMIT HIT: GitHub rejected the quota check for a rate limit; primary buckets are unavailable.\n' >&2
+        fi
+        printf "gh_limits: could not read primary quotas for '%s': %s\n" "$login" "$rate_output" >&2
+        return 1
+    }
+
+    printf "GitHub API limits for %s (github.com):\n" "$login"
+    while IFS=$'\t' read -r name remaining limit reset; do
+        case "$name" in
+            core|search|graphql) ;;
+            *) continue ;;
+        esac
+        if [[ ! "$remaining" =~ ^[0-9]+$ || ! "$limit" =~ ^[0-9]+$ || "$limit" -eq 0 ]]; then
+            printf 'gh_limits: GitHub returned invalid quota data for %s.\n' "$name" >&2
+            return 1
+        fi
+        count=$((count + 1))
+        if [[ "$remaining" -eq 0 ]]; then
+            primary_limited=1
+            row_color="$color_red"
+        elif (( remaining * 2 < limit )); then
+            primary_warning=1
+            row_color="$color_yellow"
+        else
+            row_color="$color_green"
+        fi
+        printf '  %sPrimary %-7s %s/%s remaining; resets %s%s\n' \
+            "$row_color" "$name" "$remaining" "$limit" "$reset" "$color_reset"
+    done <<< "$rate_output"
+    if [[ "$count" -ne 3 ]]; then
+        printf 'gh_limits: GitHub returned incomplete primary quota data.\n' >&2
+        return 1
+    fi
+    printf 'Secondary ceilings (GitHub does not expose current usage): 100 concurrent requests; 900 REST\n'
+    printf '  points/minute per endpoint; 2,000 GraphQL points/minute; 90 seconds API CPU/minute\n'
+    printf '  (max 60 GraphQL); generally 80 content writes/minute and 500/hour.\n'
+    printf '  These limits may vary or include undisclosed controls.\n'
+    if [[ "$primary_limited" -eq 1 ]]; then
+        printf '%sLIMIT HIT: at least one primary quota is exhausted.%s\n' "$color_red" "$color_reset"
+        return 1
+    fi
+
+    probe_output="$(GH_TOKEN="$token" "$gh_bin" api --hostname github.com user --jq .login 2>&1)"
+    probe_status=$?
+    if [[ "$probe_status" -eq 0 ]]; then
+        if [[ "$probe_output" != "$login" ]]; then
+            printf "LIMIT/IDENTITY ERROR: requested '%s', but GitHub authenticated this token as '%s'.\n" \
+                "$login" "$probe_output" >&2
+            return 1
+        fi
+    elif [[ "$probe_output" =~ [Ss]econdary[[:space:]]rate[[:space:]]limit|[Aa]buse[[:space:]]detection ]]; then
+        printf '%sLIMIT HIT: GitHub explicitly rejected the REST probe for a secondary rate limit / abuse detection.%s\n' \
+            "$color_red" "$color_reset"
+        printf '  Response: %s\n' "$probe_output"
+        return 1
+    elif [[ "$probe_output" =~ [Rr]ate[[:space:]]limit[[:space:]]exceeded ]]; then
+        printf '%sLIMIT HIT: GitHub rejected the REST probe for a rate limit; compare the primary buckets above.%s\n' \
+            "$color_red" "$color_reset"
+        printf '  Response: %s\n' "$probe_output"
+        return 1
+    else
+        printf "gh_limits: authenticated API probe failed for '%s': %s\n" "$login" "$probe_output" >&2
+        return 1
+    fi
+
+    if [[ "$primary_warning" -eq 1 ]]; then
+        printf '%sCAUTION: more than half of at least one primary quota is used; API probe succeeded.%s\n' \
+            "$color_yellow" "$color_reset"
+    else
+        printf '%sALL CLEAR: primary buckets have quota remaining and the authenticated API probe succeeded.%s\n' \
+            "$color_green" "$color_reset"
+    fi
+    printf '  Secondary: no limit was reported by this probe; GitHub exposes no secondary-quota counter.\n'
+    printf '  Details: https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api\n'
 }
 
 # Per-label (e.g. init-files, private-config), per-host record of which gh
