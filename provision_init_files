@@ -428,6 +428,21 @@ resolve_tool()
     return 1
 }
 
+resolve_runnable_tool()
+{
+    local candidate
+    for candidate in "$@"; do
+        [[ -n "$candidate" ]] || continue
+        init_files_verify_tool_path "$candidate" || continue
+        if "$candidate" --version > /dev/null 2>&1; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+        log "  BROKEN   ${candidate} (does not launch; skipping)" >&2
+    done
+    return 1
+}
+
 resolve_from_path()
 {
     local name="$1"
@@ -486,7 +501,13 @@ record_tool()
         required="optional"
     fi
 
-    path="$(resolve_tool "$@" || true)"
+    if [[ "$name" == "vim" ]]; then
+        # Why: a brew vim can be present yet dead (dyld: missing keg-only ruby
+        # after a formula rename), so require that it actually launches.
+        path="$(resolve_runnable_tool "$@" || true)"
+    else
+        path="$(resolve_tool "$@" || true)"
+    fi
     if [[ -z "$path" ]]; then
         path="$(resolve_from_path "$name" || true)"
     fi
