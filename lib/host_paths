@@ -100,3 +100,21 @@ init_files_prefix_bin()
     [[ -n "$prefix" && -n "$name" ]] || return 1
     printf '%s/bin/%s\n' "$prefix" "$name"
 }
+
+# Homebrew python3 candidates (one path per line, newest first). $1 = prefix.
+# Why: python@3.x no longer links an unversioned `python3` into <prefix>/bin;
+# it lives in <prefix>/opt/python@3.N/libexec/bin (stable across patch bumps).
+# Callers verify each candidate; Apple /usr/bin/python3 (3.9) stays a later fallback.
+init_files_brew_python3_candidates()
+{
+    local prefix="${1-}"
+    local minor
+
+    [[ -n "$prefix" ]] || return 1
+    printf '%s\n' "${prefix}/bin/python3"
+    for minor in 16 15 14 13 12 11 10; do
+        printf '%s\n' \
+            "${prefix}/opt/python@3.${minor}/libexec/bin/python3" \
+            "${prefix}/bin/python3.${minor}"
+    done
+}

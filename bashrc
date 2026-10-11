@@ -22,7 +22,7 @@
 # Absolute tool paths from `provision_init_files` (see ~/.config/init-files/tools.<hostname>).
 # Host scope matches PS1: macOS ComputerName (not Bonjour LocalHostName / hostname -s).
 # Bump when provision's record_tool set changes (keep in sync with provision_init_files).
-INIT_FILES_TOOLS_REVISION=11
+INIT_FILES_TOOLS_REVISION=12
 # Defined before tools load so we do not depend on init_tool_scutil.
 _init_files_raw_host_label()
 {
@@ -777,7 +777,7 @@ function _init_fzf_wrap_history_keep_query()
     type __fzf_history_unwrapped__ > /dev/null 2>&1 && return 0
 
     case " ${FZF_CTRL_R_OPTS-} " in
-        *' --print-query '* | *' --print-query') ;;
+        *' --print-query '*) ;;
         *) return 0 ;;
     esac
 
@@ -5222,8 +5222,8 @@ EOF
     rescue="${XDG_STATE_HOME:-$HOME/.local/state}/bash-history-rescue/$(date +%Y%m%d-%H%M%S)"
     if [[ $dry -eq 0 ]]; then
         mkdir -p "$rescue" 2>/dev/null || true
-        [[ -f "$archive" ]] && cp -p "$archive" "$rescue/history.all" 2>/dev/null || true
-        [[ -f "$legacy" ]]  && cp -p "$legacy"  "$rescue/bash_history" 2>/dev/null || true
+        if [[ -f "$archive" ]]; then cp -p "$archive" "$rescue/history.all" 2>/dev/null || true; fi
+        if [[ -f "$legacy" ]]; then cp -p "$legacy" "$rescue/bash_history" 2>/dev/null || true; fi
     else
         rescue='(dry run — not created)'
     fi
@@ -5249,7 +5249,7 @@ EOF
     if [[ $rc -eq 0 && $dry -eq 0 ]]; then
         mv -f "$out_archive" "$archive" || rc=1
         [[ -f "$out_legacy" ]] && { mv -f "$out_legacy" "$legacy" || rc=1; }
-        [[ $rc -eq 0 ]] && date +%s > "$stamp" 2>/dev/null || true
+        if [[ $rc -eq 0 ]]; then date +%s > "$stamp" 2>/dev/null || true; fi
     fi
     rm -f "$merged" "$out_archive" "$out_legacy" 2>/dev/null || true
 
@@ -6530,10 +6530,11 @@ function migrate_pipx_host_layout()
     return 0
 }
 
-# Rebake host pipx wrappers that still expand $init_tool_python3 / bare python3.
+# Rebake host pipx wrappers that still expand $init_tool_python3 / bare python3,
+# or whose baked interpreter no longer exists.
 function rewrite_stale_pipx_wrappers()
 {
-    local py wrapper shim quiet_rw="${1:-}"
+    local py wrapper shim baked_py quiet_rw="${1:-}"
 
     py="${init_tool_python3:-}"
     [[ -n "$py" && -x "$py" ]] || return 0
@@ -6542,7 +6543,12 @@ function rewrite_stale_pipx_wrappers()
 
     wrapper="$(pipx_host_dir 2>/dev/null)/current/bin/pipx"
     if [[ -f "$wrapper" ]]; then
-        if grep -qE '\$\{?init_tool_python3\}?|exec env -u PIP_PREFIX python3 ' "$wrapper" 2>/dev/null; then
+        baked_py="$(sed -n 's/^exec env -u PIP_PREFIX \(.*\) -m pipx .*/\1/p' "$wrapper" 2>/dev/null | head -1)"
+        baked_py="${baked_py//\\/}"
+        # Dead interpreter (e.g. brew dropped /opt/homebrew/bin/python3): rebake only
+        # onto a python3 that can actually run pipx, never onto Apple's 3.9.
+        if grep -qE '\$\{?init_tool_python3\}?|exec env -u PIP_PREFIX python3 ' "$wrapper" 2>/dev/null \
+            || { [[ -n "$baked_py" && ! -x "$baked_py" ]] && python3_meets_minimum; }; then
             cat > "$wrapper" <<EOF || return 1
 #!/usr/bin/env bash
 set -e

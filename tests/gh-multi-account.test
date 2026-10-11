@@ -25,7 +25,9 @@ assert_contains 'defines read recorded account' "$text" '_init_files_read_record
 assert_contains 'defines record account' "$text" '_init_files_record_gh_account()'
 assert_contains 'defines maybe-offer switch' "$text" '_init_files_maybe_offer_gh_account_switch()'
 assert_contains 'switch uses identity, not a token' "$text" 'gh auth switch --hostname github.com --user'
+# shellcheck disable=SC2016 # literal source text, not an expansion
 assert_contains 'retry hint offers account switch' "$text" '_init_files_maybe_offer_gh_account_switch "$label"'
+# shellcheck disable=SC2016 # literal source text, not an expansion
 assert_contains 'probe records account on https success' "$text" '_init_files_record_gh_account "$label"'
 
 printf '\n=== behavioral: account parsing + stamp round-trip ===\n'
@@ -83,6 +85,7 @@ printf '\n=== behavioral: maybe-offer switch (non-interactive paths) ===\n'
 # No `gh` on PATH at all -> nothing to offer (force an empty PATH scope; the
 # function's own functions are still visible since bash functions are
 # inherited by subshells regardless of PATH).
+# shellcheck disable=SC2123 # intentionally empty PATH scope in a subshell
 if (PATH='/nonexistent-init-files-test-bin'; _init_files_maybe_offer_gh_account_switch 'private-config' < /dev/null); then
     fail_case 'no gh binary: nothing to offer'
 else
@@ -90,6 +93,7 @@ else
 fi
 
 # Recorded account already active -> nothing to offer.
+# shellcheck disable=SC2317,SC2329 # invoked indirectly by the function under test
 _init_files_gh_active_account() { printf '%s\n' 'work-account'; }
 if _init_files_maybe_offer_gh_account_switch 'private-config' < /dev/null; then
     fail_case 'recorded == active: nothing to offer'
