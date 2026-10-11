@@ -1386,21 +1386,24 @@ elif is_darwin; then
         "$HOME/.local/bin/fzf" \
         /usr/local/bin/fzf
 else
+    # ~/.local/bin first: bashrc puts it ahead of /usr/bin on PATH, so recording
+    # the distro copy would load its (older) fzf key-bindings next to a newer
+    # fzf binary.
     record_tool fzf optional "$hint_fzf" \
-        /usr/bin/fzf \
         "$HOME/.local/bin/fzf" \
+        /usr/bin/fzf \
         /usr/local/bin/fzf
     # Same UX helpers as modern macOS; Debian/Ubuntu may ship bat as batcat.
     record_tool bat optional "$hint_bat" \
+        "$HOME/.local/bin/bat" \
         /usr/bin/bat \
-        /usr/bin/batcat \
-        "$HOME/.local/bin/bat"
+        /usr/bin/batcat
     record_tool lsd optional "$hint_lsd" \
-        /usr/bin/lsd \
-        "$HOME/.local/bin/lsd"
+        "$HOME/.local/bin/lsd" \
+        /usr/bin/lsd
     record_tool rg optional "$hint_rg" \
-        /usr/bin/rg \
-        "$HOME/.local/bin/rg"
+        "$HOME/.local/bin/rg" \
+        /usr/bin/rg
 fi
 
 record_tool clear optional "ncurses package" \
