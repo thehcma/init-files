@@ -264,6 +264,15 @@ Bash adds an interactive line to the history list **before** it parses it, so a 
 
 Set `INIT_FILES_HISTORY_SCRUB=0` to keep everything. Works in both plain and fancy (starship) prompts — under starship the real status comes from `STARSHIP_CMD_STATUS`, since starship's `eval "$STARSHIP_PROMPT_COMMAND"` has already reset `$?`.
 
+### Deleting a history entry (`Delete` in Ctrl-R, `forget_history`)
+
+For anything the scrub missed: in fzf `Ctrl-R`, highlight an entry and press **Delete** (or **Shift-Delete**; Tab-select several first to drop them together). It disappears from the list immediately; when fzf closes, every exact copy is removed from this shell's history **and** from `history.all`, `~/.bash_history` and this session's history file, so new shells never load it again. Outside Ctrl-R: `forget_history 'exact command' …`.
+
+- Delete no longer forward-deletes a character in the Ctrl-R query (Backspace still works).
+- Needs fzf ≥ 0.60 key-bindings (`fzf --bash`, i.e. the `~/.local` fzf); with an older distro fzf both keys stay unbound.
+- Other open shells keep their in-memory copy until they restart; their own session files are left alone (rewriting them would break their copy offsets).
+- Matching is by command text, not by fzf's history number — fzf numbers entries in a subshell whose history list can be off by one, so the stock Shift-Delete could remove the wrong entry.
+
 ### Searching history
 
 - Built-in: reverse search (`Ctrl-R` in emacs mode; vi mode uses vi search bindings).
@@ -331,7 +340,7 @@ Only a tool still missing after declining/failing that offer falls through to:
 `update_fzf` / `update_bat` / `update_lsd` / `update_rg` re-run the local
 install to pick up a newer release.
 
-Implementation pointers in [`bashrc`](../bashrc): `_init_load_fzf` (prefer `fzf --bash`, else distro key-bindings), `_init_fzf_bindings_ready` (Ctrl-R must actually be bound), `_init_configure_fzf_env` / `_init_fzf_wrap_history_keep_query` (Ctrl-R keeps unmatched query), preview strings + `batcat`.
+Implementation pointers in [`bashrc`](../bashrc): `_init_load_fzf` (prefer `fzf --bash`, else distro key-bindings), `_init_fzf_bindings_ready` (Ctrl-R must actually be bound), `_init_configure_fzf_env` / `_init_fzf_wrap_history_keep_query` (Ctrl-R keeps unmatched query; Delete/Shift-Delete → `_init_history_forget_picked` → `_init_history_forget_texts` + `init_files_history_forget` in `lib/history_rotate`), preview strings + `batcat`.
 
 ---
 
