@@ -777,7 +777,7 @@ function _init_fzf_wrap_history_keep_query()
     type __fzf_history_unwrapped__ > /dev/null 2>&1 && return 0
 
     case " ${FZF_CTRL_R_OPTS-} " in
-        *' --print-query '* | *' --print-query') ;;
+        *' --print-query '*) ;;
         *) return 0 ;;
     esac
 
@@ -5222,8 +5222,8 @@ EOF
     rescue="${XDG_STATE_HOME:-$HOME/.local/state}/bash-history-rescue/$(date +%Y%m%d-%H%M%S)"
     if [[ $dry -eq 0 ]]; then
         mkdir -p "$rescue" 2>/dev/null || true
-        [[ -f "$archive" ]] && cp -p "$archive" "$rescue/history.all" 2>/dev/null || true
-        [[ -f "$legacy" ]]  && cp -p "$legacy"  "$rescue/bash_history" 2>/dev/null || true
+        if [[ -f "$archive" ]]; then cp -p "$archive" "$rescue/history.all" 2>/dev/null || true; fi
+        if [[ -f "$legacy" ]]; then cp -p "$legacy" "$rescue/bash_history" 2>/dev/null || true; fi
     else
         rescue='(dry run — not created)'
     fi
@@ -5249,7 +5249,7 @@ EOF
     if [[ $rc -eq 0 && $dry -eq 0 ]]; then
         mv -f "$out_archive" "$archive" || rc=1
         [[ -f "$out_legacy" ]] && { mv -f "$out_legacy" "$legacy" || rc=1; }
-        [[ $rc -eq 0 ]] && date +%s > "$stamp" 2>/dev/null || true
+        if [[ $rc -eq 0 ]]; then date +%s > "$stamp" 2>/dev/null || true; fi
     fi
     rm -f "$merged" "$out_archive" "$out_legacy" 2>/dev/null || true
 
