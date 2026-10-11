@@ -76,20 +76,41 @@ else
   fail_case "second is brew bin (got ${mvim_cands[1]})"
 fi
 
-printf '\n=== brew python3 candidates ===\n'
-mapfile -t py_cands < <(init_files_brew_python3_candidates /opt/homebrew)
-if [[ "${py_cands[0]}" == '/opt/homebrew/bin/python3' ]]; then
+printf '\n=== brew python3 candidates (discovered) ===\n'
+py_prefix="$(mktemp -d)"
+mkdir -p "${py_prefix}/bin"
+for ver in 3.9 3.13 3.14 3.100 4.0; do
+  mkdir -p "${py_prefix}/opt/python@${ver}/libexec/bin"
+  : > "${py_prefix}/opt/python@${ver}/libexec/bin/python3"
+done
+for ver in 3.13 3.14 3.100; do : > "${py_prefix}/bin/python${ver}"; done
+: > "${py_prefix}/bin/python3.14-config"
+mapfile -t py_cands < <(init_files_brew_python3_candidates "$py_prefix")
+if [[ "${py_cands[0]}" == "${py_prefix}/bin/python3" ]]; then
   pass_case 'unversioned python3 first'
 else
   fail_case "unversioned python3 first (got ${py_cands[0]})"
 fi
-joined="$(printf '%s\n' "${py_cands[@]}")"
-assert_contains 'python@3.14 libexec' "$joined" '/opt/homebrew/opt/python@3.14/libexec/bin/python3'
-assert_contains 'versioned bin python3.13' "$joined" '/opt/homebrew/bin/python3.13'
-if [[ "${py_cands[3]}" == '/opt/homebrew/opt/python@3.15/libexec/bin/python3' ]]; then
-  pass_case 'newest minor first'
+if [[ "${py_cands[1]}" == "${py_prefix}/opt/python@4.0/libexec/bin/python3" ]]; then
+  pass_case 'newest installed version first (4.0 > 3.100)'
 else
-  fail_case "newest minor first (got ${py_cands[3]})"
+  fail_case "newest installed version first (got ${py_cands[1]})"
+fi
+if [[ "${py_cands[2]}" == "${py_prefix}/opt/python@3.100/libexec/bin/python3" \
+    && "${py_cands[3]}" == "${py_prefix}/bin/python3.100" ]]; then
+  pass_case 'version sort is numeric (3.100 > 3.14), libexec before bin'
+else
+  fail_case "version sort numeric (got ${py_cands[2]} ${py_cands[3]})"
+fi
+joined="$(printf '%s\n' "${py_cands[@]}")"
+assert_contains 'discovers python@3.9' "$joined" "${py_prefix}/opt/python@3.9/libexec/bin/python3"
+assert_not_contains 'skips -config' "$joined" 'python3.14-config'
+rm -rf "$py_prefix"
+mapfile -t py_cands < <(init_files_brew_python3_candidates "${root}/nonexistent-prefix")
+if [[ ${#py_cands[@]} -eq 1 ]]; then
+  pass_case 'no installs: only bin/python3'
+else
+  fail_case "no installs: only bin/python3 (got ${#py_cands[@]})"
 fi
 rc=0
 init_files_brew_python3_candidates '' || rc=$?
