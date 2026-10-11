@@ -168,6 +168,57 @@ with open(dest, "w", encoding="utf-8", errors="replace") as out:
 PY
 }
 
+# Copy src → dest without entries whose command text is in targets_file
+# (NUL-separated exact texts). An entry is a "#<epoch>" line plus every line up to
+# the next stamp (multi-line commands), or a single line when unstamped. Prints
+# the number of removed entries; dest is written even when that is 0.
+# Usage: init_files_history_forget <src> <dest> <targets_file>
+init_files_history_forget()
+{
+    local src="$1" dest="$2" targets="$3"
+    local py
+
+    [[ -n "$src" && -f "$src" && -n "$dest" && -f "$targets" ]] || return 1
+    py="$(_init_files_history_python)" || return 1
+
+    "$py" - "$src" "$dest" "$targets" <<'PY'
+import re
+import sys
+
+src, dest, targets_path = sys.argv[1:4]
+with open(targets_path, "r", encoding="utf-8", errors="replace", newline="") as fh:
+    targets = {t for t in fh.read().split("\0") if t}
+
+_ts_re = re.compile(r"^#[0-9]+\r?\n?\Z")
+
+# groups: [ts_line_or_None, [command lines]]
+groups = []
+with open(src, "r", encoding="utf-8", errors="replace", newline="") as fh:
+    for line in fh:
+        if _ts_re.match(line):
+            groups.append([line, []])
+        elif groups and groups[-1][0] is not None:
+            groups[-1][1].append(line)
+        else:
+            # Unstamped lines are one entry each.
+            groups.append([None, [line]])
+
+removed = 0
+with open(dest, "w", encoding="utf-8", errors="replace", newline="") as out:
+    for ts, lines in groups:
+        text = "".join(lines).replace("\r\n", "\n")
+        if text.endswith("\n"):
+            text = text[:-1]
+        if lines and text in targets:
+            removed += 1
+            continue
+        if ts is not None:
+            out.write(ts)
+        out.writelines(lines)
+print(removed)
+PY
+}
+
 # Merge history sources into one #ts/command stream on stdout->dest, in ascending
 # trust order (least trusted first) so a later last-occurrence-wins dedupe in
 # init_files_history_rewrite_bounded keeps the most trusted / most recent copy:

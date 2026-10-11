@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Tests for deleting history entries (Ctrl-R Delete / forget_history):
+#   init_files_history_forget        - lib/history_rotate file filter
+#   _init_history_forget_texts       - in-memory + on-disk removal (bashrc)
+#   _init_history_forget_picked     - Ctrl-R picked items -> texts (bashrc)
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+
+# shellcheck disable=SC1091
+source "${root}/lib/tool_path"
+# shellcheck disable=SC1091
+source "${root}/lib/tool_version_cache"
+# shellcheck disable=SC1091
+source "${root}/lib/history_rotate"
+
+tmpdir=
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
+printf '\n=== init_files_history_forget ===\n'
+src="${tmpdir}/src"
+dest="${tmpdir}/dest"
+targets="${tmpdir}/targets"
+# Unstamped lines before the first stamp are one entry each; after a stamp they
+# continue that (lithist multi-line) entry, as bash reads them.
+# shellcheck disable=SC2016  # literal history text, not an expansion
+printf 'broken "cmd\nuntimestamped\n#100\nbroken "cmd\n#101\nls -la\n#102\nfor i in 1; do\n  echo $i\ndone\n#103\nbroken "cmd\n' > "$src"
+printf '%s\0' 'broken "cmd' $'for i in 1; do\n  echo $i\ndone' > "$targets"
+removed="$(init_files_history_forget "$src" "$dest" "$targets")"
+assert_eq 'removed count (stamped, multi-line, unstamped)' "$removed" '4'
+assert_eq 'kept entries untouched' "$(cat "$dest")" $'untimestamped\n#101\nls -la'
+
+printf '%s\0' 'no such command' > "$targets"
+removed="$(init_files_history_forget "$src" "$dest" "$targets")"
+assert_eq 'no match -> 0 removed' "$removed" '0'
+assert_files_equal 'no match -> identical copy' "$src" "$dest"
+
+# shellcheck disable=SC2016  # literal history text, not an expansion
+printf '%s\0' '  echo $i' > "$targets"
+removed="$(init_files_history_forget "$src" "$dest" "$targets")"
+assert_eq 'a line inside a multi-line entry is not an entry' "$removed" '0'
+
+printf '\n=== _init_history_forget_texts / _init_history_forget_picked ===\n'
+state="${tmpdir}/state"
+mkdir -p "$state"
+printf '#200\nkeep me\n#201\nbad one\n' > "${state}/history.all"
+printf '#199\nbad one\n#200\nkeep me\n' > "${tmpdir}/bash_history"
+
+# Child bash: history -s/-d/fc work on the list without recording the script.
+cat > "${tmpdir}/child" <<'CHILD'
+root="$1" state="$2" legacy="$3"
+shopt -s cmdhist lithist
+HISTTIMEFORMAT='%F %T '
+source "${root}/lib/tool_path"
+source "${root}/lib/tool_version_cache"
+source "${root}/lib/history_rotate"
+source <(sed -n \
+    -e '/^function _init_history_forget_texts()/,/^}$/p' \
+    -e '/^function _init_history_forget_picked()/,/^}$/p' \
+    -e '/^function forget_history()/,/^}$/p' \
+    "${root}/bashrc")
+bash_history_dir="$state"
+bash_history_archive="$state/history.all"
+bash_history_legacy_file="$legacy"
+HISTFILE="$state/history.host.1.20260101000000"
+printf '#300\nbad one\n#301\nkept session\n' > "$HISTFILE"
+history -c
+history -s 'keep me'
+history -s 'bad one'
+history -s $'multi\nbad'
+history -s 'bad one'
+history -s 'other'
+forget_history 'bad one'
+echo "mem=$(HISTTIMEFORMAT='' builtin fc -ln -2147483648 | tr '\n\t' '| ')"
+echo "offsets=${bash_history_archive_bytes}/${bash_history_legacy_bytes}/$(($(wc -c < "$HISTFILE")))"
+
+# Ctrl-R path: fzf {+f} items; the perl widget TAB-prefixes continuation lines.
+# The number is deliberately stale — matching is by text.
+printf '999\tmulti\n\tbad\n' > "$state/picked"
+_init_history_forget_picked "$state/picked" ''
+echo "mem2=$(HISTTIMEFORMAT='' builtin fc -ln -2147483648 | tr '\n\t' '| ')"
+forget_history > /dev/null 2>&1 && echo noargs=0 || echo noargs=1
+CHILD
+out="$(bash --norc --noprofile "${tmpdir}/child" "$root" "$state" "${tmpdir}/bash_history" 2>&1)"
+assert_contains 'summary line' "$out" 'removed 2 from this shell, 3 from history files'
+assert_contains 'all in-memory copies gone' "$out" 'mem=  keep me|  multi|bad|  other|'
+assert_contains 'offsets reset to session file size' "$out" 'offsets=18/18/18'
+assert_contains 'Ctrl-R numbers -> multi-line entry removed' "$out" 'mem2=  keep me|  other|'
+assert_contains 'no args -> usage error' "$out" 'noargs=1'
+assert_eq 'history.all scrubbed' "$(cat "${state}/history.all")" $'#200\nkeep me'
+assert_eq 'legacy bash_history scrubbed' "$(cat "${tmpdir}/bash_history")" $'#200\nkeep me'
+assert_eq 'session file scrubbed' "$(cat "${state}/history.host.1.20260101000000")" $'#301\nkept session'
+assert_eq 'lock released' "$([[ -d "${state}/rotate.lock" ]] && echo held || echo free)" 'free'
+
+printf '\n=== static ===\n'
+bashrc_text="$(<"${root}/bashrc")"
+assert_contains 'Delete bound in Ctrl-R' "$bashrc_text" "--bind 'del:execute-silent(cat {+f} >>"
+assert_contains 'Shift-Delete rebound to the same file' "$bashrc_text" "--bind 'shift-delete:execute-silent(cat {+f} >>"
+# shellcheck disable=SC2016  # matching a literal bashrc source line
+assert_contains 'upstream delete hook replaced' "$bashrc_text" '_init_history_forget_picked "${_init_fzf_history_delfile:-}"'
+
+test_summary

@@ -766,33 +766,61 @@ function _init_configure_fzf_env()
     fi
 }
 
-# Make Ctrl-R leave an unmatched query on the command line for edit/submit.
-# fzf --print-query prints "query" alone on no match, or "query\nselection" on a
-# hit; stock __fzf_history__ would keep both lines — drop the query line on hit.
+# Wrap fzf's Ctrl-R widget:
+# - --print-query: leave an unmatched query on the command line for edit/submit.
+#   fzf prints "query" alone on no match, or "query\nselection" on a hit; stock
+#   __fzf_history__ would keep both lines — drop the query line on hit.
+# - Delete / Shift-Delete remove the highlighted entries for good. fzf ≥0.60's
+#   key-bindings define __fzf_history_delete (Shift-Delete only, by history
+#   number, in-memory, then `history -w`, which would clobber our session
+#   HISTFILE and its copy offsets). Rebind both keys to record the picked items
+#   ({+f}: "N<TAB>text") and resolve them by text in _init_history_forget_picked —
+#   the widget numbers entries in a subshell, whose history list can be off by
+#   one from ours. Older key-bindings lack exclude-multi: leave both unbound.
+# Re-wraps after `source ~/.bashrc` (fzf --bash redefines __fzf_history__).
 function _init_fzf_wrap_history_keep_query()
 {
     local def
 
     type __fzf_history__ > /dev/null 2>&1 || return 0
-    type __fzf_history_unwrapped__ > /dev/null 2>&1 && return 0
-
-    case " ${FZF_CTRL_R_OPTS-} " in
-        *' --print-query '*) ;;
-        *) return 0 ;;
-    esac
+    declare -f __fzf_history__ | grep -q __fzf_history_unwrapped__ && return 0
 
     def="$(declare -f __fzf_history__)" || return 0
     # shellcheck disable=SC2178
     eval "${def/__fzf_history__/__fzf_history_unwrapped__}" || return 0
 
+    _init_fzf_history_delete_ok=
+    if declare -F __fzf_history_delete > /dev/null 2>&1; then
+        _init_fzf_history_delete_ok=1
+        __fzf_history_delete()
+        {
+            _init_history_forget_picked "${_init_fzf_history_delfile:-}"
+        }
+    fi
+
     __fzf_history__()
     {
-        __fzf_history_unwrapped__ || true
-        # Match: query\ncommand → keep command. No match: bare query → keep as-is.
-        if [[ ${READLINE_LINE-} == *$'\n'* ]]; then
-            READLINE_LINE="${READLINE_LINE#*$'\n'}"
-            [[ -n ${READLINE_POINT+x} ]] && READLINE_POINT=0x7fffffff
+        local FZF_CTRL_R_OPTS="${FZF_CTRL_R_OPTS-}" _init_fzf_history_delfile=
+
+        if [[ -n "${_init_fzf_history_delete_ok:-}" ]]; then
+            _init_fzf_history_delfile="$(mktemp 2> /dev/null)" || _init_fzf_history_delfile=
+            if [[ -n "$_init_fzf_history_delfile" ]]; then
+                FZF_CTRL_R_OPTS+=" --bind 'del:execute-silent(cat {+f} >> \"$_init_fzf_history_delfile\")+exclude-multi'"
+                FZF_CTRL_R_OPTS+=" --bind 'shift-delete:execute-silent(cat {+f} >> \"$_init_fzf_history_delfile\")+exclude-multi'"
+            fi
         fi
+        __fzf_history_unwrapped__ || true
+        [[ -n "$_init_fzf_history_delfile" ]] && command rm -f "$_init_fzf_history_delfile"
+
+        # Match: query\ncommand → keep command. No match: bare query → keep as-is.
+        case " $FZF_CTRL_R_OPTS " in
+            *' --print-query '*)
+                if [[ ${READLINE_LINE-} == *$'\n'* ]]; then
+                    READLINE_LINE="${READLINE_LINE#*$'\n'}"
+                    [[ -n ${READLINE_POINT+x} ]] && READLINE_POINT=0x7fffffff
+                fi
+                ;;
+        esac
     }
 }
 
@@ -5040,6 +5068,189 @@ function _init_history_scrub()
     else
         _init_hist_prev_n="$n"
     fi
+}
+
+# Remove every copy of exact command texts: this shell's history list, then
+# history.all, ~/.bash_history and this session's HISTFILE (under rotate.lock so
+# no other shell appends mid-rewrite). Flushes pending appends first and resets
+# the session copy offsets afterwards — both offsets index the rewritten file.
+# Other live shells keep their in-memory copy until they restart; their own
+# session files are left alone (shrinking them would break their offsets).
+#   _init_history_forget_texts [-q] TEXT...
+function _init_history_forget_texts()
+{
+    local quiet=0
+    if [[ "${1:-}" == -q ]]; then
+        quiet=1
+        shift
+    fi
+    (( $# > 0 )) || return 0
+
+    local -a targets=("$@") hits=()
+    local re line cur_n='' cur_text='' t i n mem=0 disk=0 rc=0
+
+    # Flush first so nothing we are about to delete is still pending a copy.
+    if declare -F history_sync > /dev/null 2>&1; then
+        history_sync
+        history_append_since "$bash_history_legacy_file" "${bash_history_legacy_bytes:-0}"
+        bash_history_legacy_bytes="$bash_history_append_result"
+    fi
+
+    # fc into a file, not a subshell: an interactive shell's subshells see the
+    # history list without its newest entry.
+    local listing
+    listing="$(mktemp 2> /dev/null)" || return 1
+    HISTTIMEFORMAT='' builtin fc -l -2147483648 > "$listing" 2> /dev/null
+
+    # fc -l: "N<TAB><space|*>text", continuation lines of a lithist entry follow raw.
+    re=$'^([0-9]+)\t[ *](.*)$'
+    _forget_match()
+    {
+        [[ -n "$cur_n" ]] || return 0
+        for t in "${targets[@]}"; do
+            if [[ "$cur_text" == "$t" ]]; then
+                hits+=("$cur_n")
+                return 0
+            fi
+        done
+    }
+    while IFS= read -r line; do
+        if [[ "$line" =~ $re ]]; then
+            _forget_match
+            cur_n="${BASH_REMATCH[1]}"
+            cur_text="${BASH_REMATCH[2]}"
+        else
+            cur_text+=$'\n'"$line"
+        fi
+    done < "$listing"
+    _forget_match
+    unset -f _forget_match
+    rm -f "$listing"
+
+    # Newest first so the remaining offsets do not shift under us.
+    for (( i = ${#hits[@]} - 1; i >= 0; i-- )); do
+        builtin history -d "${hits[i]}" 2> /dev/null && mem=$((mem + 1))
+    done
+    # _init_history_scrub compares against the last entry number it saw.
+    if [[ -n "${_init_hist_prev_n+x}" ]]; then
+        n=$(HISTTIMEFORMAT='' builtin history 1 2> /dev/null)
+        n="${n#"${n%%[![:space:]]*}"}"
+        n="${n%%[[:space:]]*}"
+        [[ "$n" =~ ^[0-9]+$ ]] && _init_hist_prev_n="$n"
+    fi
+
+    local hist_dir archive legacy lock_dir tfile f out removed tries=0 size
+    hist_dir="${bash_history_dir:-${XDG_STATE_HOME:-$HOME/.local/state}/bash}"
+    archive="${bash_history_archive:-$hist_dir/history.all}"
+    legacy="${bash_history_legacy_file:-$HOME/.bash_history}"
+    lock_dir="${hist_dir}/rotate.lock"
+
+    if ! declare -F init_files_history_forget > /dev/null 2>&1 \
+        || ! declare -F init_files_mkdir_lock > /dev/null 2>&1; then
+        echo "forget_history: helpers missing (refresh_init_files); removed from this shell only" >&2
+        return 1
+    fi
+    until init_files_mkdir_lock "$lock_dir" 900; do
+        if (( ++tries >= 10 )); then
+            echo "forget_history: history files busy (rotate.lock); removed from this shell only" >&2
+            return 1
+        fi
+        sleep 0.3
+    done
+
+    tfile="$(mktemp 2> /dev/null)" || { init_files_mkdir_unlock "$lock_dir"; return 1; }
+    printf '%s\0' "${targets[@]}" > "$tfile"
+    for f in "$archive" "$legacy" "${HISTFILE:-}"; do
+        [[ -n "$f" && -f "$f" ]] || continue
+        if [[ "$f" == "${HISTFILE:-}" && "$f" != "$hist_dir"/history.* ]]; then
+            continue
+        fi
+        out="${f}.forget.tmp.$$"
+        if removed="$(init_files_history_forget "$f" "$out" "$tfile")" \
+            && [[ "$removed" =~ ^[0-9]+$ ]]; then
+            if (( removed > 0 )); then
+                if mv -f "$out" "$f"; then
+                    disk=$((disk + removed))
+                else
+                    rc=1
+                fi
+            fi
+        else
+            rc=1
+        fi
+        rm -f "$out" 2> /dev/null || true
+    done
+    rm -f "$tfile" 2> /dev/null || true
+
+    if [[ -n "${HISTFILE:-}" && -f "$HISTFILE" ]]; then
+        size=$(wc -c < "$HISTFILE" 2> /dev/null || echo 0)
+        [[ "$size" =~ ^[0-9]+$ ]] || size=0
+        bash_history_archive_bytes=$size
+        bash_history_legacy_bytes=$size
+    fi
+    init_files_mkdir_unlock "$lock_dir"
+
+    if (( rc != 0 )); then
+        echo "forget_history: some history files could not be rewritten" >&2
+    fi
+    if (( quiet == 0 )); then
+        printf 'forget_history: removed %d from this shell, %d from history files\n' "$mem" "$disk"
+    fi
+    return "$rc"
+}
+
+# __fzf_history_delete replacement. Files hold Ctrl-R items picked with Delete,
+# one per line as fzf's {+f} writes them: "N<TAB>first line", and continuation
+# lines of a multi-line command, which the perl widget prefixes with a TAB (the
+# awk fallback does not) — so match both forms.
+function _init_history_forget_picked()
+{
+    local f line re cur='' have=0
+    local -a texts=()
+
+    re=$'^[0-9]+\t(.*)$'
+    _forget_picked_flush()
+    {
+        (( have )) || return 0
+        texts+=("$cur")
+        [[ "$cur" == *$'\n\t'* ]] && texts+=("${cur//$'\n\t'/$'\n'}")
+    }
+    for f in "$@"; do
+        [[ -n "$f" && -s "$f" ]] || continue
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            if [[ "$line" =~ $re ]]; then
+                _forget_picked_flush
+                cur="${BASH_REMATCH[1]}"
+                have=1
+            elif (( have )); then
+                cur+=$'\n'"$line"
+            fi
+        done < "$f"
+        _forget_picked_flush
+        have=0
+    done
+    unset -f _forget_picked_flush
+    (( ${#texts[@]} > 0 )) || return 0
+    _init_history_forget_texts -q "${texts[@]}"
+}
+
+function forget_history()
+{
+    case "${1:-}" in
+        '' | -h | --help)
+            cat <<'EOF' >&2
+Usage: forget_history 'exact command' ...
+
+Delete every copy of each exact command from this shell's history and from
+history.all, ~/.bash_history and this session's history file. In Ctrl-R, press
+Delete (or Shift-Delete) on a highlighted entry to do the same. Other open
+shells drop it once they restart.
+EOF
+            [[ -n "${1:-}" ]]
+            return
+            ;;
+    esac
+    _init_history_forget_texts "$@"
 }
 
 # Manual or background: dedupe/cap history.all + ~/.bash_history; prune session files.
