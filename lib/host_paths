@@ -102,19 +102,33 @@ init_files_prefix_bin()
 }
 
 # Homebrew python3 candidates (one path per line, newest first). $1 = prefix.
-# Why: python@3.x no longer links an unversioned `python3` into <prefix>/bin;
-# it lives in <prefix>/opt/python@3.N/libexec/bin (stable across patch bumps).
-# Callers verify each candidate; Apple /usr/bin/python3 (3.9) stays a later fallback.
+# Why: python@X.Y no longer links an unversioned `python3` into <prefix>/bin;
+# it lives in <prefix>/opt/python@X.Y/libexec/bin (stable across patch bumps).
+# Versions are discovered from what is installed (no hardcoded list), sorted
+# by version descending. Callers verify each candidate; Apple /usr/bin/python3
+# (3.9) stays a later fallback.
 init_files_brew_python3_candidates()
 {
     local prefix="${1-}"
-    local minor
+    local path name ver
+    local -a found=()
 
     [[ -n "$prefix" ]] || return 1
     printf '%s\n' "${prefix}/bin/python3"
-    for minor in 16 15 14 13 12 11 10; do
-        printf '%s\n' \
-            "${prefix}/opt/python@3.${minor}/libexec/bin/python3" \
-            "${prefix}/bin/python3.${minor}"
+
+    for path in "${prefix}"/opt/python@[0-9]*.[0-9]*/libexec/bin/python3; do
+        [[ -e "$path" ]] || continue
+        name="${path#"${prefix}"/opt/python@}"
+        found+=("${name%%/*}	${path}")
     done
+    for path in "${prefix}"/bin/python3.[0-9]*; do
+        [[ -e "$path" && "$path" != *-config ]] || continue
+        ver="${path##*/python}"
+        [[ "$ver" =~ ^[0-9]+\.[0-9]+$ ]] || continue
+        found+=("${ver}	${path}")
+    done
+    [[ ${#found[@]} -gt 0 ]] || return 0
+
+    # Newest version first; at equal version the libexec (python3) path sorts first.
+    printf '%s\n' "${found[@]}" | sort -t $'\t' -k1,1Vr -k2,2r | cut -f2
 }
