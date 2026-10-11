@@ -35,12 +35,15 @@ eval "$(
 
 # Stubs override helpers loaded from bashrc; invoked indirectly via eval (SC2317).
 # shellcheck disable=SC2317
+# shellcheck disable=SC2329 # test stub, invoked by the sourced code under test
 _init_is_darwin() { return 1; }
 
 # Force "cannot elevate" path regardless of this host's groups.
 # shellcheck disable=SC2317
+# shellcheck disable=SC2329 # test stub, invoked by the sourced code under test
 _init_can_sudo_nopasswd() { return 1; }
 # shellcheck disable=SC2317
+# shellcheck disable=SC2329 # test stub, invoked by the sourced code under test
 _init_user_in_sudo_group() { return 1; }
 
 rc=0
@@ -52,6 +55,7 @@ assert_contains 'handoff follow-up' "$out" 'Then re-run (as yourself): update_gi
 
 # Darwin must no-op (return 0) even when “cannot sudo”.
 # shellcheck disable=SC2317
+# shellcheck disable=SC2329 # test stub, invoked by the sourced code under test
 _init_is_darwin() { return 0; }
 rc=0
 _init_linux_sudo_or_handoff 'sudo apt upgrade git' update_git >/dev/null 2>&1 || rc=$?
@@ -61,8 +65,10 @@ printf '\n=== behavioral: proceed when sudo allowed ===\n'
 # shellcheck disable=SC2317
 _init_is_darwin() { return 1; }
 # shellcheck disable=SC2317
+# shellcheck disable=SC2329 # test stub, invoked by the sourced code under test
 _init_can_sudo_nopasswd() { return 0; }
 # shellcheck disable=SC2317
+# shellcheck disable=SC2329 # test stub, invoked by the sourced code under test
 _init_user_in_sudo_group() { return 1; }
 rc=0
 out="$(_init_linux_sudo_or_handoff 'sudo apt upgrade git' update_git 2>&1)" || rc=$?

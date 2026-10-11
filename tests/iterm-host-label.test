@@ -62,6 +62,7 @@ _assert_str_eq 'SSH_CONNECTION falls back to hostname' "$label" "$host"
 
 # Prefer the same resolver as PS1 when available (ComputerName on macOS).
 # shellcheck disable=SC2317 # stub called via declare -F from lib
+# shellcheck disable=SC2329 # test stub, invoked by the sourced code under test
 _init_host_label() { printf '%s\n' 'Prompt-Host'; }
 _reset_remote_cache
 SSH_CONNECTION='1.2.3.4 1234 5.6.7.8 22'
@@ -71,6 +72,7 @@ _assert_str_eq 'SSH uses _init_host_label when defined' "$label" 'Prompt-Host'
 unset -f _init_host_label
 
 # shellcheck disable=SC2317 # stub called via declare -F from lib
+# shellcheck disable=SC2329 # test stub, invoked by the sourced code under test
 _init_files_raw_host_label() { printf '%s\n' 'Raw-ComputerName'; }
 _reset_remote_cache
 SSH_CONNECTION='1.2.3.4 1234 5.6.7.8 22'

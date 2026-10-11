@@ -65,6 +65,7 @@ fi
 
 # Invoked indirectly by _init_files_provision_already_current.
 # shellcheck disable=SC2317
+# shellcheck disable=SC2329 # test stub, invoked by the sourced code under test
 _init_files_deploy_drift_reasons() { :; }
 if _init_files_provision_already_current "$sha"; then
     pass_case 'already-current when stamp matches and no drift'
