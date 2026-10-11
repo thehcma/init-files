@@ -22,7 +22,7 @@
 # Absolute tool paths from `provision_init_files` (see ~/.config/init-files/tools.<hostname>).
 # Host scope matches PS1: macOS ComputerName (not Bonjour LocalHostName / hostname -s).
 # Bump when provision's record_tool set changes (keep in sync with provision_init_files).
-INIT_FILES_TOOLS_REVISION=11
+INIT_FILES_TOOLS_REVISION=12
 # Defined before tools load so we do not depend on init_tool_scutil.
 _init_files_raw_host_label()
 {
@@ -6530,10 +6530,11 @@ function migrate_pipx_host_layout()
     return 0
 }
 
-# Rebake host pipx wrappers that still expand $init_tool_python3 / bare python3.
+# Rebake host pipx wrappers that still expand $init_tool_python3 / bare python3,
+# or whose baked interpreter no longer exists.
 function rewrite_stale_pipx_wrappers()
 {
-    local py wrapper shim quiet_rw="${1:-}"
+    local py wrapper shim baked_py quiet_rw="${1:-}"
 
     py="${init_tool_python3:-}"
     [[ -n "$py" && -x "$py" ]] || return 0
@@ -6542,7 +6543,12 @@ function rewrite_stale_pipx_wrappers()
 
     wrapper="$(pipx_host_dir 2>/dev/null)/current/bin/pipx"
     if [[ -f "$wrapper" ]]; then
-        if grep -qE '\$\{?init_tool_python3\}?|exec env -u PIP_PREFIX python3 ' "$wrapper" 2>/dev/null; then
+        baked_py="$(sed -n 's/^exec env -u PIP_PREFIX \(.*\) -m pipx .*/\1/p' "$wrapper" 2>/dev/null | head -1)"
+        baked_py="${baked_py//\\/}"
+        # Dead interpreter (e.g. brew dropped /opt/homebrew/bin/python3): rebake only
+        # onto a python3 that can actually run pipx, never onto Apple's 3.9.
+        if grep -qE '\$\{?init_tool_python3\}?|exec env -u PIP_PREFIX python3 ' "$wrapper" 2>/dev/null \
+            || { [[ -n "$baked_py" && ! -x "$baked_py" ]] && python3_meets_minimum; }; then
             cat > "$wrapper" <<EOF || return 1
 #!/usr/bin/env bash
 set -e

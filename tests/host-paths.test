@@ -76,6 +76,25 @@ else
   fail_case "second is brew bin (got ${mvim_cands[1]})"
 fi
 
+printf '\n=== brew python3 candidates ===\n'
+mapfile -t py_cands < <(init_files_brew_python3_candidates /opt/homebrew)
+if [[ "${py_cands[0]}" == '/opt/homebrew/bin/python3' ]]; then
+  pass_case 'unversioned python3 first'
+else
+  fail_case "unversioned python3 first (got ${py_cands[0]})"
+fi
+joined="$(printf '%s\n' "${py_cands[@]}")"
+assert_contains 'python@3.14 libexec' "$joined" '/opt/homebrew/opt/python@3.14/libexec/bin/python3'
+assert_contains 'versioned bin python3.13' "$joined" '/opt/homebrew/bin/python3.13'
+if [[ "${py_cands[3]}" == '/opt/homebrew/opt/python@3.15/libexec/bin/python3' ]]; then
+  pass_case 'newest minor first'
+else
+  fail_case "newest minor first (got ${py_cands[3]})"
+fi
+rc=0
+init_files_brew_python3_candidates '' || rc=$?
+assert_exit_nonzero 'python3 candidates empty prefix' "$rc"
+
 printf '\n=== static: helpers live in lib/ ===\n'
 lib_text="$(<"${root}/lib/host_paths")"
 assert_contains 'defines init_files_homebrew_prefix' "$lib_text" 'init_files_homebrew_prefix()'

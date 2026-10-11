@@ -465,7 +465,7 @@ fi
 
 # Bump when the record_tool set changes so refresh_init_files can detect drift.
 # Keep in sync with INIT_FILES_TOOLS_REVISION in bashrc.
-INIT_FILES_TOOLS_REVISION=11
+INIT_FILES_TOOLS_REVISION=12
 
 declare -a REQUIRED_MISSING=()
 declare -a OPTIONAL_MISSING=()
@@ -1229,8 +1229,11 @@ if is_modern_macos; then
         /usr/bin/curl \
         /bin/curl
 
+    mapfile -t brew_python3_candidates < <(
+        [[ -z "$brew_prefix" ]] || init_files_brew_python3_candidates "$brew_prefix"
+    )
     record_tool python3 required "$hint_python" \
-        ${brew_prefix:+"$brew_prefix/bin/python3"} \
+        "${brew_python3_candidates[@]}" \
         /usr/local/bin/python3 \
         /usr/bin/python3
 else
