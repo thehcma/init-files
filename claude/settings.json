@@ -42,5 +42,10 @@
   },
   "includeCoAuthoredBy": false,
   "model": "sonnet",
+  "permissions": {
+    "allow": [
+      "Bash(gh api:*)"
+    ]
+  },
   "theme": "dark"
 }
