@@ -22,7 +22,7 @@
 # Absolute tool paths from `provision_init_files` (see ~/.config/init-files/tools.<hostname>).
 # Host scope matches PS1: macOS ComputerName (not Bonjour LocalHostName / hostname -s).
 # Bump when provision's record_tool set changes (keep in sync with provision_init_files).
-INIT_FILES_TOOLS_REVISION=12
+INIT_FILES_TOOLS_REVISION=13
 # Defined before tools load so we do not depend on init_tool_scutil.
 _init_files_raw_host_label()
 {
@@ -164,6 +164,7 @@ fi
 : "${init_tool_bc:=}"
 : "${init_tool_clear:=}"
 : "${init_tool_cmp:=}"
+: "${init_tool_coderabbit:=}"
 : "${init_tool_colordiff:=}"
 : "${init_tool_corepack:=}"
 : "${init_tool_curl:=}"
@@ -10420,6 +10421,23 @@ function update_rg()
     else
         rg --version
     fi
+}
+
+# update_coderabbit: vendor installer via lib/release_install (not a release
+# binary). Also the first install; the CLI auto-updates itself afterwards, so it
+# is not tracked by check_tool_versions. Signing in (cr auth login) is manual.
+function update_coderabbit()
+{
+    invalidate_tool_version_cache
+
+    type init_files_coderabbit_install > /dev/null 2>&1 || {
+        printf 'update_coderabbit: lib/release_install not loaded (run refresh_init_files)\n' >&2
+        return 1
+    }
+    init_files_coderabbit_install > /dev/null || return
+
+    hash -r
+    "$HOME/.local/bin/coderabbit" --version
 }
 
 function update_fzf()

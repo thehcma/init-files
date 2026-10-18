@@ -117,4 +117,70 @@ else
   fail_case 'prunes older ~/.local/opt/<tool>-* installs'
 fi
 
+printf '\n=== behavioral: init_files_coderabbit_install (stubbed vendor installer) ===\n'
+cr_home="$(mktemp -d)"
+cr_stub="$(mktemp -d)"
+trap 'rm -rf "$test_home" "$stub_bin" "$cr_home" "$cr_stub"' EXIT
+
+# Stub curl serves a fake install.sh that records the environment the real
+# installer would see and drops a fake binary in CODERABBIT_INSTALL_DIR.
+cat > "${cr_stub}/curl" <<'STUB'
+#!/usr/bin/env bash
+out=""
+for ((i = 1; i <= $#; i++)); do
+    if [[ "${!i}" == "-o" ]]; then
+        j=$((i + 1))
+        out="${!j}"
+    fi
+done
+printf '%s\n' "$*" > "${CR_TEST_STATE}/curl-args"
+cat > "$out" <<'INSTALLER'
+#!/usr/bin/env sh
+printf 'skip=%s ver=%s path=%s\n' "${CR_CLI_SKIP_LOGIN:-}" "${CODERABBIT_VERSION:-}" "$PATH" > "${CR_TEST_STATE}/env"
+mkdir -p "$CODERABBIT_INSTALL_DIR"
+printf '#!/bin/sh\necho 0.9.0\n' > "${CODERABBIT_INSTALL_DIR}/coderabbit"
+chmod +x "${CODERABBIT_INSTALL_DIR}/coderabbit"
+INSTALLER
+STUB
+chmod +x "${cr_stub}/curl"
+
+if cr_out="$(HOME="$cr_home" CR_TEST_STATE="$cr_home" PATH="${cr_stub}:${PATH}" init_files_coderabbit_install 2> /dev/null)"; then
+  assert_eq 'prints the installed coderabbit path' "$cr_out" "${cr_home}/.local/bin/coderabbit"
+  cr_env="$(<"${cr_home}/env")"
+  assert_contains 'installer runs with login skipped' "$cr_env" 'skip=1'
+  assert_contains 'installer sees ~/.local/bin first on PATH (no profile edit)' \
+    "$cr_env" "path=${cr_home}/.local/bin:"
+  assert_contains 'no version pin is forwarded by default' "$cr_env" 'ver= '
+  assert_contains 'installer is downloaded to a file from cli.coderabbit.ai' \
+    "$(<"${cr_home}/curl-args")" 'https://cli.coderabbit.ai/install.sh'
+else
+  fail_case 'init_files_coderabbit_install succeeds with a stubbed installer'
+fi
+
+if HOME="$cr_home" CR_TEST_STATE="$cr_home" INIT_FILES_CODERABBIT_VERSION=0.9.0 \
+    PATH="${cr_stub}:${PATH}" init_files_local_install coderabbit > /dev/null 2>&1; then
+  assert_contains 'dispatcher routes coderabbit to the vendor installer and forwards the pin' \
+    "$(<"${cr_home}/env")" 'ver=0.9.0'
+else
+  fail_case 'init_files_local_install coderabbit succeeds'
+fi
+
+cat > "${cr_stub}/curl" <<'STUB'
+#!/usr/bin/env bash
+exit 22
+STUB
+if HOME="$cr_home" PATH="${cr_stub}:${PATH}" init_files_coderabbit_install > /dev/null 2>&1; then
+  fail_case 'install fails when the installer download fails'
+else
+  pass_case 'install fails when the installer download fails'
+fi
+
+printf '\n=== static: coderabbit is a recorded optional tool ===\n'
+prov_text="$(<"${root}/provision_init_files")"
+assert_contains 'provision records coderabbit as optional' "$prov_text" 'record_tool coderabbit optional'
+assert_contains 'provision offers the local coderabbit install' "$prov_text" 'lsd coderabbit)'
+bashrc_text="$(<"${root}/bashrc")"
+assert_contains 'bashrc defines update_coderabbit' "$bashrc_text" 'function update_coderabbit()'
+assert_contains 'bashrc defaults init_tool_coderabbit' "$bashrc_text" 'init_tool_coderabbit:='
+
 test_summary

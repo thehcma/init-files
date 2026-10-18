@@ -183,3 +183,50 @@ init_files_release_install()
 
     printf '%s\n' "$bin_path"
 }
+
+# Install the CodeRabbit CLI (coderabbit + cr) to ~/.local/bin via the vendor
+# installer. Not a bare release binary, so it cannot go through
+# init_files_release_install (same exception as install_starship). The script
+# is downloaded to a file first (never piped to sh), PATH is primed with
+# ~/.local/bin so the installer does not append to a shell profile, and
+# login is skipped: signing in (`cr auth login`) stays an operator step.
+# INIT_FILES_CODERABBIT_VERSION pins a version. Prints the binary path.
+init_files_coderabbit_install()
+{
+    local curl_bin tmp_dir script bin_dir rc=0
+
+    bin_dir="${HOME}/.local/bin"
+    curl_bin="${init_tool_curl:-$(command -v curl 2>/dev/null || true)}"
+    [[ -n "$curl_bin" && -x "$curl_bin" ]] || return 1
+
+    mkdir -p "$bin_dir" || return 1
+    tmp_dir="$(mktemp -d)" || return 1
+    script="${tmp_dir}/install.sh"
+
+    "$curl_bin" --silent --show-error --fail --location --max-time 60 \
+        -o "$script" https://cli.coderabbit.ai/install.sh \
+        || { rm -rf "$tmp_dir"; return 1; }
+
+    if [[ -n "${INIT_FILES_CODERABBIT_VERSION:-}" ]]; then
+        env PATH="${bin_dir}:${PATH}" CR_CLI_SKIP_LOGIN=1 CODERABBIT_INSTALL_DIR="$bin_dir" \
+            CODERABBIT_VERSION="$INIT_FILES_CODERABBIT_VERSION" sh "$script" < /dev/null >&2 || rc=1
+    else
+        env PATH="${bin_dir}:${PATH}" CR_CLI_SKIP_LOGIN=1 CODERABBIT_INSTALL_DIR="$bin_dir" \
+            sh "$script" < /dev/null >&2 || rc=1
+    fi
+    rm -rf "$tmp_dir"
+
+    (( rc == 0 )) || return 1
+    [[ -x "${bin_dir}/coderabbit" ]] || return 1
+    printf '%s\n' "${bin_dir}/coderabbit"
+}
+
+# Local-install dispatcher for maybe_offer_local_release_installs: tools with
+# their own installer first, everything else through the release-binary path.
+init_files_local_install()
+{
+    case "$1" in
+        coderabbit) init_files_coderabbit_install ;;
+        *) init_files_release_install "$1" ;;
+    esac
+}

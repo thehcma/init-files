@@ -465,7 +465,7 @@ fi
 
 # Bump when the record_tool set changes so refresh_init_files can detect drift.
 # Keep in sync with INIT_FILES_TOOLS_REVISION in bashrc.
-INIT_FILES_TOOLS_REVISION=12
+INIT_FILES_TOOLS_REVISION=13
 
 declare -a REQUIRED_MISSING=()
 declare -a OPTIONAL_MISSING=()
@@ -1406,6 +1406,11 @@ else
         /usr/bin/rg
 fi
 
+# CodeRabbit CLI (cr): optional pre-push review for coding agents. Vendor no-sudo
+# installer to ~/.local/bin on every tier; there is no brew formula to prefer.
+record_tool coderabbit optional "update_coderabbit   # local install to ~/.local/bin (no admin)" \
+    "$HOME/.local/bin/coderabbit"
+
 record_tool clear optional "ncurses package" \
     ${brew_prefix:+"$brew_prefix/bin/clear"} \
     /usr/bin/clear \
@@ -1765,7 +1770,7 @@ maybe_offer_meslo_user_font()
 # every OS tier. See .cursor/rules/local-install-preference.mdc.
 maybe_offer_local_release_installs()
 {
-    local -a candidates=(rg fzf bat lsd)
+    local -a candidates=(rg fzf bat lsd coderabbit)
     local tool entry name missing installed_path
     local did_install=0
 
@@ -1782,7 +1787,7 @@ maybe_offer_local_release_installs()
 
         printf '\n%s missing (optional). Install the latest release to ~/.local (no admin needed)?\n' "$tool" >&2
         if prompt_yn "Install ${tool} locally now? [Y/n]"; then
-            if installed_path="$(init_files_release_install "$tool")"; then
+            if installed_path="$(init_files_local_install "$tool")"; then
                 log "OK       ${tool} installed -> ${installed_path/#$HOME/~}"
                 did_install=1
             else
