@@ -51,11 +51,18 @@ just because it's convenient to wire up.
   `init_files_release_install`, mirroring `update_gh`/`update_rg`/etc.), wired
   into `tool_update_command` and `fetch_latest_tool_version` so
   `check_tool_versions` / `update_tools` track it like any other tool.
-- `install_starship` is the one exception to the "static binary" shape — it
+- `install_starship` is an exception to the "static binary" shape — it
   shells out to the upstream `starship.rs/install.sh -b ~/.local/bin`
   installer instead of `lib/release_install`, since starship ships its own
   no-sudo installer rather than a bare release binary. Same policy, different
   mechanism; falls back to brew/apt/dnf only if the upstream installer fails.
+- `coderabbit` / `cr` (the CodeRabbit CLI) is the second exception, and a deliberate one: it is installed by
+  `init_files_coderabbit_install` (the vendor `cli.coderabbit.ai/install.sh`, downloaded to a file over
+  https, run with `~/.local/bin` first on `PATH`, login skipped) and has no brew/apt package, so there is
+  no package-manager fallback. It self-updates, so it has **no** `update_<tool>` wiring in
+  `tool_update_command` / `fetch_latest_tool_version` and `check_tool_versions` / `update_tools` never
+  mention it; `update_coderabbit` re-runs the installer by hand. Its integrity model is trust-on-first-use
+  of the vendor script plus the vendor's own checksum step. It needs `curl`, `unzip` and `git`.
 
 ## Anti-patterns
 

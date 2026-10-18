@@ -187,31 +187,49 @@ init_files_release_install()
 # Install the CodeRabbit CLI (coderabbit + cr) to ~/.local/bin via the vendor
 # installer. Not a bare release binary, so it cannot go through
 # init_files_release_install (same exception as install_starship). The script
-# is downloaded to a file first (never piped to sh), PATH is primed with
-# ~/.local/bin so the installer does not append to a shell profile, and
-# login is skipped: signing in (`cr auth login`) stays an operator step.
-# INIT_FILES_CODERABBIT_VERSION pins a version. Prints the binary path.
+# is downloaded to a file first (never piped to sh) over https only, PATH is
+# primed with ~/.local/bin so the installer does not append to a shell profile,
+# and login is skipped: signing in (`cr auth login`) stays an operator step.
+# INIT_FILES_CODERABBIT_VERSION pins a version; ambient CODERABBIT_CHANNEL,
+# CODERABBIT_DOWNLOAD_URL and CODERABBIT_VERSION are cleared so a shell variable
+# cannot silently pin, switch channel or redirect the download.
+# Trust model: this is trust-on-first-use of the vendor script over TLS, plus
+# whatever checksum verification that script performs itself (it warns, and
+# continues, when its manifest is unavailable). Nothing here verifies the script.
+# The installer needs unzip and git; their absence fails with a clear message.
+# Prints the binary path.
 init_files_coderabbit_install()
 {
-    local curl_bin tmp_dir script bin_dir rc=0
+    local curl_bin tmp_dir script bin_dir missing tool rc=0
 
     bin_dir="${HOME}/.local/bin"
     curl_bin="${init_tool_curl:-$(command -v curl 2>/dev/null || true)}"
     [[ -n "$curl_bin" && -x "$curl_bin" ]] || return 1
 
+    missing=""
+    for tool in unzip git; do
+        command -v "$tool" >/dev/null 2>&1 || missing="${missing:+${missing} }${tool}"
+    done
+    if [[ -n "$missing" ]]; then
+        printf 'coderabbit install needs %s (not found); install them first\n' "$missing" >&2
+        return 1
+    fi
+
     mkdir -p "$bin_dir" || return 1
     tmp_dir="$(mktemp -d)" || return 1
     script="${tmp_dir}/install.sh"
 
-    "$curl_bin" --silent --show-error --fail --location --max-time 60 \
-        -o "$script" https://cli.coderabbit.ai/install.sh \
+    "$curl_bin" --silent --show-error --fail --location --proto '=https' --tlsv1.2 \
+        --max-time 60 -o "$script" https://cli.coderabbit.ai/install.sh \
         || { rm -rf "$tmp_dir"; return 1; }
 
     if [[ -n "${INIT_FILES_CODERABBIT_VERSION:-}" ]]; then
-        env PATH="${bin_dir}:${PATH}" CR_CLI_SKIP_LOGIN=1 CODERABBIT_INSTALL_DIR="$bin_dir" \
+        env -u CODERABBIT_CHANNEL -u CODERABBIT_DOWNLOAD_URL -u CODERABBIT_VERSION \
+            PATH="${bin_dir}:${PATH}" CR_CLI_SKIP_LOGIN=1 CODERABBIT_INSTALL_DIR="$bin_dir" \
             CODERABBIT_VERSION="$INIT_FILES_CODERABBIT_VERSION" sh "$script" < /dev/null >&2 || rc=1
     else
-        env PATH="${bin_dir}:${PATH}" CR_CLI_SKIP_LOGIN=1 CODERABBIT_INSTALL_DIR="$bin_dir" \
+        env -u CODERABBIT_CHANNEL -u CODERABBIT_DOWNLOAD_URL -u CODERABBIT_VERSION \
+            PATH="${bin_dir}:${PATH}" CR_CLI_SKIP_LOGIN=1 CODERABBIT_INSTALL_DIR="$bin_dir" \
             sh "$script" < /dev/null >&2 || rc=1
     fi
     rm -rf "$tmp_dir"

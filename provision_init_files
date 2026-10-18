@@ -1790,6 +1790,9 @@ maybe_offer_local_release_installs()
             if installed_path="$(init_files_local_install "$tool")"; then
                 log "OK       ${tool} installed -> ${installed_path/#$HOME/~}"
                 did_install=1
+            elif [[ "$tool" == coderabbit ]]; then
+                # No brew/apt package exists for it, so there is nothing to fall back to.
+                echo "WARNING: local install failed for coderabbit (needs curl, unzip and git; no package-manager fallback exists; re-run ./provision_init_files after fixing)" >&2
             else
                 echo "WARNING: local install failed for ${tool} (will fall back to brew/apt if available)" >&2
             fi
