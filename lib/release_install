@@ -201,10 +201,21 @@ init_files_release_install()
 init_files_coderabbit_install()
 {
     local curl_bin tmp_dir script bin_dir missing tool rc=0
+    local -a bounded=()
 
     bin_dir="${HOME}/.local/bin"
     curl_bin="${init_tool_curl:-$(command -v curl 2>/dev/null || true)}"
-    [[ -n "$curl_bin" && -x "$curl_bin" ]] || return 1
+    if [[ -z "$curl_bin" || ! -x "$curl_bin" ]]; then
+        printf 'coderabbit install needs curl (not found); install it first\n' >&2
+        return 1
+    fi
+    # The vendor script's own downloads set no timeout, so bound the whole run.
+    for tool in timeout gtimeout; do
+        if command -v "$tool" >/dev/null 2>&1; then
+            bounded=("$tool" 600)
+            break
+        fi
+    done
 
     missing=""
     for tool in unzip git; do
@@ -224,11 +235,11 @@ init_files_coderabbit_install()
         || { rm -rf "$tmp_dir"; return 1; }
 
     if [[ -n "${INIT_FILES_CODERABBIT_VERSION:-}" ]]; then
-        env -u CODERABBIT_CHANNEL -u CODERABBIT_DOWNLOAD_URL -u CODERABBIT_VERSION \
+        ${bounded[@]+"${bounded[@]}"} env -u CODERABBIT_CHANNEL -u CODERABBIT_DOWNLOAD_URL -u CODERABBIT_VERSION \
             PATH="${bin_dir}:${PATH}" CR_CLI_SKIP_LOGIN=1 CODERABBIT_INSTALL_DIR="$bin_dir" \
             CODERABBIT_VERSION="$INIT_FILES_CODERABBIT_VERSION" sh "$script" < /dev/null >&2 || rc=1
     else
-        env -u CODERABBIT_CHANNEL -u CODERABBIT_DOWNLOAD_URL -u CODERABBIT_VERSION \
+        ${bounded[@]+"${bounded[@]}"} env -u CODERABBIT_CHANNEL -u CODERABBIT_DOWNLOAD_URL -u CODERABBIT_VERSION \
             PATH="${bin_dir}:${PATH}" CR_CLI_SKIP_LOGIN=1 CODERABBIT_INSTALL_DIR="$bin_dir" \
             sh "$script" < /dev/null >&2 || rc=1
     fi

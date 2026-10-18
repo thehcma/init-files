@@ -264,12 +264,30 @@ done
 cr_rc=0
 HOME="$cr_home" init_tool_curl='' PATH="$cr_min" init_files_coderabbit_install > /dev/null 2>&1 || cr_rc=$?
 assert_eq 'a host without curl fails the install' "$cr_rc" '1'
+cr_msg="$(HOME="$cr_home" init_tool_curl='' PATH="$cr_min" init_files_coderabbit_install 2>&1 > /dev/null)" || true
+assert_contains 'the missing curl is named' "$cr_msg" 'needs curl'
 cp "${cr_stub}/curl" "${cr_min}/curl"
 cr_rc=0
 cr_msg="$(HOME="$cr_home" CR_TEST_STATE="$cr_home" PATH="$cr_min" init_files_coderabbit_install 2>&1 > /dev/null)" || cr_rc=$?
 assert_eq 'a host without unzip and git fails the install' "$cr_rc" '1'
 assert_contains 'the missing prerequisites are named' "$cr_msg" 'needs unzip git'
 rm -rf "$cr_min"
+
+# The vendor installer run is bounded by timeout when one exists.
+cr_to="$(mktemp -d)"
+cat > "${cr_to}/timeout" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$1" > "${CR_TEST_STATE}/timeout-arg"
+shift
+exec "$@"
+STUB
+chmod +x "${cr_to}/timeout"
+rm -rf "${cr_home}/.local"
+hash -r
+HOME="$cr_home" CR_TEST_STATE="$cr_home" PATH="${cr_to}:${cr_stub}:${PATH}" \
+  init_files_coderabbit_install > /dev/null 2>&1 || true
+assert_eq 'the vendor installer runs under a 600s timeout' "$(cat "${cr_home}/timeout-arg" 2> /dev/null)" '600'
+rm -rf "$cr_to"
 
 printf '\n=== static: coderabbit is a recorded optional tool ===\n'
 prov_text="$(<"${root}/provision_init_files")"

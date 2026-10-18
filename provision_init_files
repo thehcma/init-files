@@ -1409,7 +1409,9 @@ fi
 # CodeRabbit CLI (cr): optional pre-push review for coding agents. Vendor no-sudo
 # installer to ~/.local/bin on every tier; there is no brew formula to prefer.
 record_tool coderabbit optional "update_coderabbit   # local install to ~/.local/bin (no admin)" \
-    "$HOME/.local/bin/coderabbit"
+    "$HOME/.local/bin/coderabbit" \
+    ${brew_prefix:+"$brew_prefix/bin/coderabbit"} \
+    /usr/local/bin/coderabbit
 
 record_tool clear optional "ncurses package" \
     ${brew_prefix:+"$brew_prefix/bin/clear"} \
