@@ -5926,19 +5926,21 @@ function init_files_doctor()
         fi
     fi
 
-    # 9) claude settings
-    if [[ -f "${clone_dir}/claude/settings.json" ]]; then
-        if [[ -L "${HOME}/.claude/settings.json" ]]; then
-            link_target=$(readlink "${HOME}/.claude/settings.json" 2>/dev/null || true)
-            if [[ "$link_target" == "${clone_dir}/claude/settings.json" ]]; then
-                _doc_ok "claude settings -> $link_target"
+    # 9) claude settings.json + CLAUDE.md
+    local claude_name
+    for claude_name in settings.json CLAUDE.md; do
+        [[ -f "${clone_dir}/claude/${claude_name}" ]] || continue
+        if [[ -L "${HOME}/.claude/${claude_name}" ]]; then
+            link_target=$(readlink "${HOME}/.claude/${claude_name}" 2>/dev/null || true)
+            if [[ "$link_target" == "${clone_dir}/claude/${claude_name}" ]]; then
+                _doc_ok "claude ${claude_name} -> $link_target"
             else
-                _doc_warn "claude settings symlink is $link_target (expected ${clone_dir}/claude/settings.json); run: refresh_claude_settings"
+                _doc_warn "claude ${claude_name} symlink is $link_target (expected ${clone_dir}/claude/${claude_name}); run: refresh_claude_settings"
             fi
         else
-            _doc_warn "$HOME/.claude/settings.json not a symlink to clone; run: refresh_claude_settings"
+            _doc_warn "$HOME/.claude/${claude_name} not a symlink to clone; run: refresh_claude_settings"
         fi
-    fi
+    done
 
     # 10) login-shell bashrc hook
     if type _init_files_login_hook_ok > /dev/null 2>&1; then
@@ -7431,19 +7433,21 @@ _init_files_deploy_drift_reasons()
         fi
     fi
 
-    if [[ -f "${clone_dir}/claude/settings.json" ]]; then
-        expected="${clone_dir}/claude/settings.json"
-        if [[ -L "${HOME}/.claude/settings.json" ]]; then
-            link_target=$(readlink "${HOME}/.claude/settings.json" 2>/dev/null || true)
+    local claude_name
+    for claude_name in settings.json CLAUDE.md; do
+        [[ -f "${clone_dir}/claude/${claude_name}" ]] || continue
+        expected="${clone_dir}/claude/${claude_name}"
+        if [[ -L "${HOME}/.claude/${claude_name}" ]]; then
+            link_target=$(readlink "${HOME}/.claude/${claude_name}" 2>/dev/null || true)
             if [[ "$link_target" != "$expected" ]]; then
-                printf 'claude settings symlink is %s (expected %s)\n' "$link_target" "$expected"
+                printf 'claude %s symlink is %s (expected %s)\n' "$claude_name" "$link_target" "$expected"
             fi
-        elif [[ -e "${HOME}/.claude/settings.json" ]]; then
-            printf '%s/.claude/settings.json is not a symlink (expected -> %s)\n' "$HOME" "$expected"
+        elif [[ -e "${HOME}/.claude/${claude_name}" ]]; then
+            printf 'claude %s is not a symlink (expected -> %s)\n' "$claude_name" "$expected"
         else
-            printf '%s/.claude/settings.json missing (expected symlink -> %s)\n' "$HOME" "$expected"
+            printf 'claude %s missing (expected symlink -> %s)\n' "$claude_name" "$expected"
         fi
-    fi
+    done
 
     if ! _init_files_login_hook_ok; then
         printf 'login profile missing init-files bashrc hook (~/.bash_profile / ~/.profile)\n'
@@ -7735,7 +7739,7 @@ _init_files_offer_deploy_repairs()
         case "$line" in
             bashrc\ *|\~/.bashrc\ *) need_bashrc=1 ;;
             vimrc\ *|\~/.vimrc\ *|\~/.gvimrc\ *) need_vim=1 ;;
-            claude\ settings\ *|\~/.claude/settings.json\ *) need_claude=1 ;;
+            claude\ *|\~/.claude/*) need_claude=1 ;;
             iTerm\ *) need_iterm=1 ;;
             login\ *) need_login=1 ;;
             shell\ completions\ *) need_completions=1 ;;
@@ -9130,7 +9134,7 @@ EOF
 # shellcheck disable=SC2120
 function refresh_claude_settings()
 {
-    local repo_dir claude_settings_src claude_settings_dest backup_dir stamp current backup
+    local repo_dir name src dest backup_dir stamp current backup rc=0
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -9138,10 +9142,10 @@ function refresh_claude_settings()
                 cat <<'EOF'
 Usage: refresh_claude_settings
 
-Repair the ~/.claude/settings.json symlink into init-files (claude/settings.json).
-Backs up a non-canonical ~/.claude/settings.json to
-~/.claude/settings.json.bak.<timestamp> and
-~/.local/state/init-files/claude-backup/. Does not touch any other file
+Repair the ~/.claude/settings.json and ~/.claude/CLAUDE.md symlinks into
+init-files (claude/settings.json, claude/CLAUDE.md; CLAUDE.md only when the
+clone has it). Backs up a non-canonical file to ~/.claude/<name>.bak.<timestamp>
+and ~/.local/state/init-files/claude-backup/. Does not touch any other file
 under ~/.claude/ (history, sessions, cache, projects, plugins are local
 runtime state, not tracked here).
 EOF
@@ -9155,47 +9159,52 @@ EOF
     done
 
     repo_dir="${init_files_dir:-${XDG_DATA_HOME:-$HOME/.local/share}/init-files}"
-    claude_settings_src="$repo_dir/claude/settings.json"
-    claude_settings_dest="${HOME}/.claude/settings.json"
     backup_dir="${XDG_STATE_HOME:-$HOME/.local/state}/init-files/claude-backup"
 
-    if [[ ! -f "$claude_settings_src" ]]; then
-        printf 'refresh_claude_settings: missing %s (refresh_init_files first?)\n' "$claude_settings_src" >&2
+    if [[ ! -f "$repo_dir/claude/settings.json" ]]; then
+        printf 'refresh_claude_settings: missing %s (refresh_init_files first?)\n' "$repo_dir/claude/settings.json" >&2
         return 1
     fi
 
-    mkdir -p "$(dirname "$claude_settings_dest")" || return 1
+    for name in settings.json CLAUDE.md; do
+        src="$repo_dir/claude/$name"
+        dest="${HOME}/.claude/$name"
+        [[ -f "$src" ]] || continue
 
-    if [[ -L "$claude_settings_dest" ]]; then
-        current=$(readlink "$claude_settings_dest" 2>/dev/null || true)
-        if [[ "$current" == "$claude_settings_src" ]]; then
-            printf 'refresh_claude_settings: already linked -> %s\n' "$claude_settings_src"
-            return 0
+        mkdir -p "$(dirname "$dest")" || return 1
+
+        if [[ -L "$dest" ]]; then
+            current=$(readlink "$dest" 2>/dev/null || true)
+            if [[ "$current" == "$src" ]]; then
+                printf 'refresh_claude_settings: already linked -> %s\n' "$src"
+                continue
+            fi
+            stamp="$(date +%Y%m%d-%H%M%S)"
+            mkdir -p "$backup_dir" 2>/dev/null || true
+            printf '%s\n' "$current" > "${dest}.bak.${stamp}.linktarget"
+            printf '%s\n' "$current" > "${backup_dir}/${name}.${stamp}.linktarget" 2>/dev/null || true
+            rm -f "$dest" || return 1
+            ln -s "$src" "$dest" || return 1
+            printf 'refresh_claude_settings: repaired ~/.claude/%s symlink -> %s\n' "$name" "$src"
+        elif [[ -f "$dest" ]]; then
+            stamp="$(date +%Y%m%d-%H%M%S)"
+            backup="${dest}.bak.${stamp}"
+            mkdir -p "$backup_dir" 2>/dev/null || true
+            cp -p "$dest" "$backup" || return 1
+            cp -p "$dest" "${backup_dir}/${name}.${stamp}" 2>/dev/null || true
+            rm -f "$dest" || return 1
+            ln -s "$src" "$dest" || return 1
+            printf 'refresh_claude_settings: backed up previous ~/.claude/%s -> %s\n' "$name" "$backup"
+            printf 'refresh_claude_settings: linked ~/.claude/%s -> %s\n' "$name" "$src"
+        elif [[ ! -e "$dest" ]]; then
+            ln -s "$src" "$dest" || return 1
+            printf 'refresh_claude_settings: linked ~/.claude/%s -> %s\n' "$name" "$src"
+        else
+            printf 'refresh_claude_settings: ~/.claude/%s exists and is not a file/symlink\n' "$name" >&2
+            rc=1
         fi
-        stamp="$(date +%Y%m%d-%H%M%S)"
-        mkdir -p "$backup_dir" 2>/dev/null || true
-        printf '%s\n' "$current" > "${claude_settings_dest}.bak.${stamp}.linktarget"
-        printf '%s\n' "$current" > "${backup_dir}/settings.json.${stamp}.linktarget" 2>/dev/null || true
-        rm -f "$claude_settings_dest" || return 1
-        ln -s "$claude_settings_src" "$claude_settings_dest" || return 1
-        printf 'refresh_claude_settings: repaired ~/.claude/settings.json symlink -> %s\n' "$claude_settings_src"
-    elif [[ -f "$claude_settings_dest" ]]; then
-        stamp="$(date +%Y%m%d-%H%M%S)"
-        backup="${claude_settings_dest}.bak.${stamp}"
-        mkdir -p "$backup_dir" 2>/dev/null || true
-        cp -p "$claude_settings_dest" "$backup" || return 1
-        cp -p "$claude_settings_dest" "${backup_dir}/settings.json.${stamp}" 2>/dev/null || true
-        rm -f "$claude_settings_dest" || return 1
-        ln -s "$claude_settings_src" "$claude_settings_dest" || return 1
-        printf 'refresh_claude_settings: backed up previous ~/.claude/settings.json -> %s\n' "$backup"
-        printf 'refresh_claude_settings: linked ~/.claude/settings.json -> %s\n' "$claude_settings_src"
-    elif [[ ! -e "$claude_settings_dest" ]]; then
-        ln -s "$claude_settings_src" "$claude_settings_dest" || return 1
-        printf 'refresh_claude_settings: linked ~/.claude/settings.json -> %s\n' "$claude_settings_src"
-    else
-        printf 'refresh_claude_settings: ~/.claude/settings.json exists and is not a file/symlink\n' >&2
-        return 1
-    fi
+    done
+    return "$rc"
 }
 
 # --- Cursor Agent session recovery -------------------------------------------
