@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# refresh_claude_settings links claude/settings.json and the optional
+# claude/CLAUDE.md into ~/.claude, in a throwaway HOME (never the real one).
+set -euo pipefail
+
+script_dir="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+# Pull just the function out of bashrc so the test never sources the whole file.
+eval "$(sed -n '/^function refresh_claude_settings()/,/^}/p' "${root}/bashrc")"
+
+new_home()
+{
+    HOME="${tmp}/home.$1"
+    export HOME
+    init_files_dir="${tmp}/repo.$1"
+    export init_files_dir
+    mkdir -p "${HOME}/.claude" "${init_files_dir}/claude"
+    printf '{}\n' > "${init_files_dir}/claude/settings.json"
+    export XDG_STATE_HOME="${HOME}/.state"
+}
+
+printf '\n=== settings.json only: CLAUDE.md is optional ===\n'
+new_home a
+refresh_claude_settings > /dev/null
+assert_eq 'settings.json linked' "$(readlink "${HOME}/.claude/settings.json")" "${init_files_dir}/claude/settings.json"
+if [[ ! -e "${HOME}/.claude/CLAUDE.md" && ! -L "${HOME}/.claude/CLAUDE.md" ]]; then
+    pass_case 'no CLAUDE.md link when the clone has none'
+else
+    fail_case 'no CLAUDE.md link when the clone has none'
+fi
+
+printf '\n=== both files: missing links are created ===\n'
+new_home b
+printf '# guidelines\n' > "${init_files_dir}/claude/CLAUDE.md"
+refresh_claude_settings > /dev/null
+assert_eq 'CLAUDE.md linked' "$(readlink "${HOME}/.claude/CLAUDE.md")" "${init_files_dir}/claude/CLAUDE.md"
+out="$(refresh_claude_settings)"
+assert_eq 'second run is idempotent' "$(grep -c 'already linked' <<< "$out")" 2
+
+printf '\n=== regular file is backed up, then replaced ===\n'
+new_home c
+printf '# guidelines\n' > "${init_files_dir}/claude/CLAUDE.md"
+printf 'local edits\n' > "${HOME}/.claude/CLAUDE.md"
+refresh_claude_settings > /dev/null
+assert_eq 'CLAUDE.md replaced by symlink' "$(readlink "${HOME}/.claude/CLAUDE.md")" "${init_files_dir}/claude/CLAUDE.md"
+bak="$(find "${HOME}/.claude" -name 'CLAUDE.md.bak.*' -type f | head -1)"
+assert_eq 'backup keeps the old content' "$(cat "$bak")" 'local edits'
+
+printf '\n=== wrong symlink target is repaired ===\n'
+new_home d
+printf '# guidelines\n' > "${init_files_dir}/claude/CLAUDE.md"
+ln -s /nonexistent "${HOME}/.claude/CLAUDE.md"
+refresh_claude_settings > /dev/null
+assert_eq 'CLAUDE.md retargeted' "$(readlink "${HOME}/.claude/CLAUDE.md")" "${init_files_dir}/claude/CLAUDE.md"
+
+test_summary
