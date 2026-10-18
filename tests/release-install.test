@@ -117,4 +117,184 @@ else
   fail_case 'prunes older ~/.local/opt/<tool>-* installs'
 fi
 
+printf '\n=== behavioral: init_files_coderabbit_install (stubbed vendor installer) ===\n'
+cr_home="$(mktemp -d)"
+cr_stub="$(mktemp -d)"
+trap 'rm -rf "$test_home" "$stub_bin" "$cr_home" "$cr_stub"' EXIT
+
+# Stub curl serves a fake install.sh that records the environment the real
+# installer would see and drops a fake binary in CODERABBIT_INSTALL_DIR.
+cat > "${cr_stub}/curl" <<'STUB'
+#!/usr/bin/env bash
+out=""
+for ((i = 1; i <= $#; i++)); do
+    if [[ "${!i}" == "-o" ]]; then
+        j=$((i + 1))
+        out="${!j}"
+    fi
+done
+printf '%s\n' "$*" > "${CR_TEST_STATE}/curl-args"
+cat > "$out" <<'INSTALLER'
+#!/usr/bin/env sh
+printf 'skip=%s ver=%s channel=%s url=%s path=%s\n' "${CR_CLI_SKIP_LOGIN:-}" "${CODERABBIT_VERSION:-}" "${CODERABBIT_CHANNEL:-}" "${CODERABBIT_DOWNLOAD_URL:-}" "$PATH" > "${CR_TEST_STATE}/env"
+mkdir -p "$CODERABBIT_INSTALL_DIR"
+printf '#!/bin/sh\necho 0.9.0\n' > "${CODERABBIT_INSTALL_DIR}/coderabbit"
+chmod +x "${CODERABBIT_INSTALL_DIR}/coderabbit"
+INSTALLER
+STUB
+chmod +x "${cr_stub}/curl"
+for prereq in unzip git; do
+  printf "#!/bin/sh\nexit 0\n" > "${cr_stub}/${prereq}"
+  chmod +x "${cr_stub}/${prereq}"
+done
+
+if cr_out="$(HOME="$cr_home" CR_TEST_STATE="$cr_home" PATH="${cr_stub}:${PATH}" init_files_coderabbit_install 2> /dev/null)"; then
+  assert_eq 'prints the installed coderabbit path' "$cr_out" "${cr_home}/.local/bin/coderabbit"
+  cr_env="$(<"${cr_home}/env")"
+  assert_contains 'installer runs with login skipped' "$cr_env" 'skip=1'
+  assert_contains 'installer sees ~/.local/bin first on PATH (no profile edit)' \
+    "$cr_env" "path=${cr_home}/.local/bin:"
+  assert_contains 'no version pin is forwarded by default' "$cr_env" 'ver= '
+  assert_contains 'installer is downloaded to a file from cli.coderabbit.ai' \
+    "$(<"${cr_home}/curl-args")" 'https://cli.coderabbit.ai/install.sh'
+else
+  fail_case 'init_files_coderabbit_install succeeds with a stubbed installer'
+fi
+
+if HOME="$cr_home" CR_TEST_STATE="$cr_home" INIT_FILES_CODERABBIT_VERSION=0.9.0 \
+    PATH="${cr_stub}:${PATH}" init_files_local_install coderabbit > /dev/null 2>&1; then
+  assert_contains 'dispatcher routes coderabbit to the vendor installer and forwards the pin' \
+    "$(<"${cr_home}/env")" 'ver=0.9.0'
+else
+  fail_case 'init_files_local_install coderabbit succeeds'
+fi
+
+cat > "${cr_stub}/curl" <<'STUB'
+#!/usr/bin/env bash
+exit 22
+STUB
+if HOME="$cr_home" PATH="${cr_stub}:${PATH}" init_files_coderabbit_install > /dev/null 2>&1; then
+  fail_case 'install fails when the installer download fails'
+else
+  pass_case 'install fails when the installer download fails'
+fi
+
+printf '\n=== behavioral: coderabbit installer hardening and failure paths ===\n'
+# Re-create the serving curl (the stub above was replaced by one that always fails).
+cat > "${cr_stub}/curl" <<'STUB'
+#!/usr/bin/env bash
+out=""
+for ((i = 1; i <= $#; i++)); do
+    if [[ "${!i}" == "-o" ]]; then
+        j=$((i + 1))
+        out="${!j}"
+    fi
+done
+printf '%s\n' "$*" > "${CR_TEST_STATE}/curl-args"
+cat > "$out" <<'INSTALLER'
+#!/usr/bin/env sh
+printf 'skip=%s ver=%s channel=%s url=%s\n' "${CR_CLI_SKIP_LOGIN:-}" "${CODERABBIT_VERSION:-}" "${CODERABBIT_CHANNEL:-}" "${CODERABBIT_DOWNLOAD_URL:-}" > "${CR_TEST_STATE}/env"
+[ -z "${CR_TEST_INSTALLER_EXIT:-}" ] || exit "$CR_TEST_INSTALLER_EXIT"
+[ -z "${CR_TEST_INSTALLER_NO_BINARY:-}" ] || exit 0
+mkdir -p "$CODERABBIT_INSTALL_DIR"
+printf '#!/bin/sh\necho 0.9.0\n' > "${CODERABBIT_INSTALL_DIR}/coderabbit"
+chmod +x "${CODERABBIT_INSTALL_DIR}/coderabbit"
+INSTALLER
+STUB
+chmod +x "${cr_stub}/curl"
+rm -rf "${cr_home}/.local"
+
+# The download is https-only, TLS 1.2+, and fails on HTTP errors.
+HOME="$cr_home" CR_TEST_STATE="$cr_home" PATH="${cr_stub}:${PATH}" init_files_coderabbit_install > /dev/null 2>&1 || true
+cr_curl_args="$(<"${cr_home}/curl-args")"
+assert_contains 'download refuses non-https protocols' "$cr_curl_args" "--proto =https"
+assert_contains 'download requires TLS 1.2 or newer' "$cr_curl_args" '--tlsv1.2'
+assert_contains 'download fails on HTTP errors instead of saving an error page' "$cr_curl_args" '--fail'
+assert_contains 'download has an explicit timeout' "$cr_curl_args" '--max-time 60'
+
+# Ambient installer variables from the user's shell never reach the installer.
+rm -rf "${cr_home}/.local"
+HOME="$cr_home" CR_TEST_STATE="$cr_home" PATH="${cr_stub}:${PATH}" \
+  CODERABBIT_CHANNEL=nightly CODERABBIT_DOWNLOAD_URL=http://example.invalid/releases CODERABBIT_VERSION=9.9.9 \
+  init_files_coderabbit_install > /dev/null 2>&1 || true
+cr_env="$(<"${cr_home}/env")"
+assert_contains 'an ambient CODERABBIT_VERSION does not pin the install' "$cr_env" 'ver= '
+assert_contains 'an ambient CODERABBIT_CHANNEL is cleared' "$cr_env" 'channel= '
+assert_not_contains 'an ambient CODERABBIT_DOWNLOAD_URL is cleared' "$cr_env" 'example.invalid'
+
+# The explicit pin still wins over the cleared environment.
+rm -rf "${cr_home}/.local"
+HOME="$cr_home" CR_TEST_STATE="$cr_home" PATH="${cr_stub}:${PATH}" CODERABBIT_VERSION=9.9.9 \
+  INIT_FILES_CODERABBIT_VERSION=0.9.0 init_files_coderabbit_install > /dev/null 2>&1 || true
+assert_contains 'INIT_FILES_CODERABBIT_VERSION is the only pin that is forwarded' "$(<"${cr_home}/env")" 'ver=0.9.0'
+
+# An installer that exits non-zero fails the install and prints no path.
+rm -rf "${cr_home}/.local"
+cr_scratch="$(mktemp -d)"
+cr_rc=0
+cr_out="$(HOME="$cr_home" CR_TEST_STATE="$cr_home" CR_TEST_INSTALLER_EXIT=1 TMPDIR="$cr_scratch" \
+  PATH="${cr_stub}:${PATH}" init_files_coderabbit_install 2> /dev/null)" || cr_rc=$?
+assert_eq 'a failing vendor installer fails the install' "$cr_rc" '1'
+assert_eq 'a failing vendor installer prints no binary path' "$cr_out" ''
+assert_eq 'the temp dir is removed after a failed install' "$(find "$cr_scratch" -mindepth 1 | wc -l | tr -d '[:space:]')" '0'
+
+# An installer that "succeeds" without leaving a binary is still a failure.
+rm -rf "${cr_home}/.local"
+cr_rc=0
+cr_out="$(HOME="$cr_home" CR_TEST_STATE="$cr_home" CR_TEST_INSTALLER_NO_BINARY=1 TMPDIR="$cr_scratch" \
+  PATH="${cr_stub}:${PATH}" init_files_coderabbit_install 2> /dev/null)" || cr_rc=$?
+assert_eq 'a missing binary after a successful installer fails the install' "$cr_rc" '1'
+assert_eq 'a missing binary prints no path' "$cr_out" ''
+
+# The temp dir is removed after a good install too.
+rm -rf "${cr_home}/.local"
+HOME="$cr_home" CR_TEST_STATE="$cr_home" TMPDIR="$cr_scratch" PATH="${cr_stub}:${PATH}" \
+  init_files_coderabbit_install > /dev/null 2>&1 || true
+assert_eq 'the temp dir is removed after a good install' "$(find "$cr_scratch" -mindepth 1 | wc -l | tr -d '[:space:]')" '0'
+rm -rf "$cr_scratch"
+
+# Prerequisites: a PATH without curl, or without unzip/git, fails clearly instead of half-installing.
+cr_min="$(mktemp -d)"
+for tool in env mktemp mkdir rm sh bash cat dirname; do
+  tool_path="$(command -v "$tool" 2> /dev/null || true)"
+  if [[ -n "$tool_path" ]]; then
+    ln -sf "$tool_path" "${cr_min}/${tool}"
+  fi
+done
+cr_rc=0
+HOME="$cr_home" init_tool_curl='' PATH="$cr_min" init_files_coderabbit_install > /dev/null 2>&1 || cr_rc=$?
+assert_eq 'a host without curl fails the install' "$cr_rc" '1'
+cr_msg="$(HOME="$cr_home" init_tool_curl='' PATH="$cr_min" init_files_coderabbit_install 2>&1 > /dev/null)" || true
+assert_contains 'the missing curl is named' "$cr_msg" 'needs curl'
+cp "${cr_stub}/curl" "${cr_min}/curl"
+cr_rc=0
+cr_msg="$(HOME="$cr_home" CR_TEST_STATE="$cr_home" PATH="$cr_min" init_files_coderabbit_install 2>&1 > /dev/null)" || cr_rc=$?
+assert_eq 'a host without unzip and git fails the install' "$cr_rc" '1'
+assert_contains 'the missing prerequisites are named' "$cr_msg" 'needs unzip git'
+rm -rf "$cr_min"
+
+# The vendor installer run is bounded by timeout when one exists.
+cr_to="$(mktemp -d)"
+cat > "${cr_to}/timeout" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$1" > "${CR_TEST_STATE}/timeout-arg"
+shift
+exec "$@"
+STUB
+chmod +x "${cr_to}/timeout"
+rm -rf "${cr_home}/.local"
+hash -r
+HOME="$cr_home" CR_TEST_STATE="$cr_home" PATH="${cr_to}:${cr_stub}:${PATH}" \
+  init_files_coderabbit_install > /dev/null 2>&1 || true
+assert_eq 'the vendor installer runs under a 600s timeout' "$(cat "${cr_home}/timeout-arg" 2> /dev/null)" '600'
+rm -rf "$cr_to"
+
+printf '\n=== static: coderabbit is a recorded optional tool ===\n'
+prov_text="$(<"${root}/provision_init_files")"
+assert_contains 'provision records coderabbit as optional' "$prov_text" 'record_tool coderabbit optional'
+assert_contains 'provision offers the local coderabbit install' "$prov_text" 'lsd coderabbit)'
+bashrc_text="$(<"${root}/bashrc")"
+assert_contains 'bashrc defines update_coderabbit' "$bashrc_text" 'function update_coderabbit()'
+assert_contains 'bashrc defaults init_tool_coderabbit' "$bashrc_text" 'init_tool_coderabbit:='
+
 test_summary

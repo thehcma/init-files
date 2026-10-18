@@ -51,7 +51,7 @@ Tracked content is shared. Host-specific absolute tool paths are **generated on 
 | `claude/` | Canonical Claude Code CLI `settings.json` (model/theme/editor mode; no secrets/runtime state) and optional personal `CLAUDE.md` guidelines; `~/.claude/settings.json` + `~/.claude/CLAUDE.md` symlinks; `refresh_claude_settings` — see [claude/README.md](claude/README.md). |
 | `lib/tool_path` | Sole `init_files_verify_tool_path` (provision + bashrc). Clean break — no legacy dual validators. |
 | `lib/host_paths` | Shared Homebrew prefix / brew-bin / MacVim discovery probes (provision + bashrc). No env overrides. |
-| `lib/release_install` | Shared "install a GitHub-release binary under `~/.local`" mechanism (provision + bashrc) — see [.cursor/rules/local-install-preference.mdc](.cursor/rules/local-install-preference.mdc). |
+| `lib/release_install` | Shared "install a GitHub-release binary under `~/.local`" mechanism (provision + bashrc), plus the vendor-installer path for the CodeRabbit CLI (`init_files_coderabbit_install`, `init_files_local_install`) — see [.cursor/rules/local-install-preference.mdc](.cursor/rules/local-install-preference.mdc). |
 | `lib/shell_completions` | Link personal CLIs' own completion output into the bash-completion v2 user dir (provision + bashrc `link_shell_completions`). Registry: builtin list + `~/.config/init-files/shell-completions`. Nothing vendored. |
 | `lib/error` | Script-only `init_files_die` / `warn` / `log`. Not sourced from bashrc. |
 | `lib/interactive_input` | `bt` / `cache_ssh` path and timeout checks (sourced by bashrc). |
