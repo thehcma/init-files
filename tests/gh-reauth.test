@@ -68,13 +68,25 @@ _init_files_describe_remote_check_failure() {
 # shellcheck disable=SC2317
 _init_files_offer_gh_reauth() { return "${STUB_OFFER_RC:-0}"; }
 
-STUB_DESCRIBE_RC=0 _init_files_gh_auth_recover init-files "$tmpdir" git \
-    && pass_case 'reachable again: caller retries' || fail_case 'reachable again: caller retries'
-STUB_HANDLE=thehcma STUB_OFFER_RC=0 _init_files_gh_auth_recover init-files "$tmpdir" git \
-    && pass_case 'reauth accepted: caller retries' || fail_case 'reauth accepted: caller retries'
-STUB_HANDLE=thehcma STUB_OFFER_RC=1 _init_files_gh_auth_recover init-files "$tmpdir" git \
-    && fail_case 'reauth declined: no retry' || pass_case 'reauth declined: no retry'
-STUB_HANDLE='' _init_files_gh_auth_recover init-files "$tmpdir" git \
-    && fail_case 'no reauthable handle: no retry' || pass_case 'no reauthable handle: no retry'
+if STUB_DESCRIBE_RC=0 _init_files_gh_auth_recover init-files "$tmpdir" git; then
+    pass_case 'reachable again: caller retries'
+else
+    fail_case 'reachable again: caller retries'
+fi
+if STUB_HANDLE=thehcma STUB_OFFER_RC=0 _init_files_gh_auth_recover init-files "$tmpdir" git; then
+    pass_case 'reauth accepted: caller retries'
+else
+    fail_case 'reauth accepted: caller retries'
+fi
+if STUB_HANDLE=thehcma STUB_OFFER_RC=1 _init_files_gh_auth_recover init-files "$tmpdir" git; then
+    fail_case 'reauth declined: no retry'
+else
+    pass_case 'reauth declined: no retry'
+fi
+if STUB_HANDLE='' _init_files_gh_auth_recover init-files "$tmpdir" git; then
+    fail_case 'no reauthable handle: no retry'
+else
+    pass_case 'no reauthable handle: no retry'
+fi
 
 test_summary
