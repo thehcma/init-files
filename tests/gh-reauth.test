@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Tests the remembered gh handle + reauth-offer helpers shared by the
+# refresh_* flows when GitHub HTTPS auth fails.
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+bashrc="${root}/bashrc"
+text="$(<"$bashrc")"
+
+printf '\n=== static: reauth wiring ===\n'
+assert_contains 'refresh fetch offers reauth' "$text" \
+    "_init_files_offer_gh_reauth \"\$_init_files_reauth_handle\" 'init-files'"
+assert_contains 'refresh_init_config recovers' "$text" \
+    "_init_files_gh_auth_recover 'private-config'"
+assert_contains 'refresh_vimrc recovers' "$text" \
+    "_init_files_gh_auth_recover 'init-files' \"\$repo_dir\""
+assert_contains 'iterm git helper recovers' "$text" \
+    "_init_files_gh_auth_recover 'init-files' \"\$dir\""
+assert_not_contains 'refresh never passes --user/-u' "$text" 'auth refresh -h github.com -u'
+
+printf '\n=== behavioral: handle + recovery helpers ===\n'
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
+# shellcheck disable=SC1090
+eval "$(sed -n \
+    '/^_init_files_gh_account_stamp_path()$/,/^}$/p; /^_init_files_read_recorded_gh_account()$/,/^}$/p; /^_init_files_expected_gh_handle()$/,/^}$/p; /^_init_files_remember_gh_handle()$/,/^}$/p; /^_init_files_gh_auth_recover()$/,/^}$/p; /^_init_files_offer_gh_reauth()$/,/^}$/p' \
+    "$bashrc")"
+
+# shellcheck disable=SC2034
+init_files_state_dir="$tmpdir/state"
+# shellcheck disable=SC2034
+init_files_host="testhost"
+
+_init_files_remember_gh_handle 'private config' 'thehcma'
+assert_eq 'label with space maps to the private-config stamp' \
+    "$(_init_files_read_recorded_gh_account 'private-config')" 'thehcma'
+
+assert_eq 'recorded handle wins over URL owner' \
+    "$(_init_files_expected_gh_handle 'private-config' 'https://github.com/other/config.git')" 'thehcma'
+assert_eq 'URL owner is the fallback handle' \
+    "$(_init_files_expected_gh_handle 'init-files' 'https://github.com/thehcma/init-files.git')" 'thehcma'
+assert_eq 'ssh-style URL owner is parsed' \
+    "$(_init_files_expected_gh_handle 'unseen' 'git@github.com:acme/repo.git')" 'acme'
+assert_eq 'no recorded handle or URL yields nothing' \
+    "$(_init_files_expected_gh_handle 'unseen' '')" ''
+
+if _init_files_offer_gh_reauth 'thehcma' 'init-files' < /dev/null 2>/dev/null; then
+    fail_case 'non-TTY never starts a browser reauth'
+else
+    pass_case 'non-TTY never starts a browser reauth'
+fi
+
+# Stubs for recovery decisions.
+# shellcheck disable=SC2317
+_init_files_describe_remote_check_failure() {
+    _init_files_reauth_handle="${STUB_HANDLE:-}"
+    return "${STUB_DESCRIBE_RC:-2}"
+}
+# shellcheck disable=SC2317
+_init_files_offer_gh_reauth() { return "${STUB_OFFER_RC:-0}"; }
+
+if STUB_DESCRIBE_RC=0 _init_files_gh_auth_recover init-files "$tmpdir" git; then
+    pass_case 'reachable again: caller retries'
+else
+    fail_case 'reachable again: caller retries'
+fi
+if STUB_HANDLE=thehcma STUB_OFFER_RC=0 _init_files_gh_auth_recover init-files "$tmpdir" git; then
+    pass_case 'reauth accepted: caller retries'
+else
+    fail_case 'reauth accepted: caller retries'
+fi
+if STUB_HANDLE=thehcma STUB_OFFER_RC=1 _init_files_gh_auth_recover init-files "$tmpdir" git; then
+    fail_case 'reauth declined: no retry'
+else
+    pass_case 'reauth declined: no retry'
+fi
+if STUB_HANDLE='' _init_files_gh_auth_recover init-files "$tmpdir" git; then
+    fail_case 'no reauthable handle: no retry'
+else
+    pass_case 'no reauthable handle: no retry'
+fi
+
+test_summary

@@ -19,7 +19,7 @@ assert_contains 'defines failure diagnostic' "$text" '_init_files_describe_remot
 assert_contains 'includes origin URL in retry path' "$text" \
     "_init_files_describe_remote_check_failure \"\$label\" \"\${2:-}\" \"\${3:-}\""
 assert_contains 'offers refresh only for invalid token' "$text" \
-    'gh auth refresh -h github.com -u %s'
+    'gh auth switch -u %s && gh auth refresh -h github.com'
 assert_contains 'passes clone context for init-files' "$text" \
     "_init_files_offer_remote_check_retry 'init-files' \"\$init_files_dir\" \"\$init_tool_git\""
 
@@ -36,6 +36,10 @@ chmod +x "$tmpdir/bin/git-test"
 
 # shellcheck disable=SC1090
 eval "$(sed -n '/^_init_files_describe_remote_check_failure()$/,/^}$/p' "$bashrc")"
+eval "$(sed -n '/^_init_files_expected_gh_handle()$/,/^}$/p;/^_init_files_print_gh_identity_hints()$/,/^}$/p' "$bashrc")"
+_init_files_read_recorded_gh_account() { [[ -n "${REMOTE_TEST_RECORDED:-}" ]] && printf '%s\n' "$REMOTE_TEST_RECORDED"; }
+_init_files_gh_accounts_detailed() { printf '%b' "${REMOTE_TEST_ACCOUNTS:-}"; }
+unset GH_TOKEN GITHUB_TOKEN
 
 _init_files_is_github_https_host() { return 0; }
 _init_files_git_https() {
@@ -63,8 +67,8 @@ assert_exit_nonzero 'expired-token diagnosis remains a failed remote check' "$rc
 assert_contains 'prints origin URL with embedded credentials redacted' "$got" \
     'Remote: https://[credentials-redacted]@github.com/owner/repo.git'
 assert_not_contains 'does not print embedded URL password' "$got" 'secret'
-assert_contains 'identifies expired or revoked token' "$got" "active 'personal-account' token is expired/revoked"
-assert_contains 'gives targeted reauthentication command' "$got" 'gh auth refresh -h github.com -u personal-account'
+assert_contains 'identifies expired or revoked token' "$got" "'owner' token is expired/revoked"
+assert_contains 'gives targeted reauthentication command' "$got" 'gh auth switch -u owner && gh auth refresh -h github.com'
 
 got="$(REMOTE_TEST_TOKEN_STATUS=valid _init_files_describe_remote_check_failure init-files "$tmpdir/repo" "$tmpdir/bin/git-test" 2>&1)" && rc=0 || rc=$?
 assert_exit_nonzero 'valid-token access error remains failed' "$rc"
@@ -88,5 +92,13 @@ assert_exit_nonzero 'secondary rate-limit error remains failed' "$rc"
 assert_eq 'secondary rate limit avoids account switching' "$rc" '3'
 assert_contains 'identifies explicit secondary rate limit' "$got" 'explicitly reported an API/abuse rate limit'
 assert_not_contains 'secondary rate limit diagnosis omits reauth' "$got" 'gh auth refresh'
+
+got="$(REMOTE_TEST_RECORDED=thehcma REMOTE_TEST_ACCOUNTS='thehcma\t0\t0\n' \
+    _init_files_describe_remote_check_failure init-files "$tmpdir/repo" "$tmpdir/bin/git-test" 2>&1)" && rc=0 || rc=$?
+assert_contains 'names the remembered handle for reauth' "$got" "'thehcma' token is expired"
+assert_contains 'reports invalid stored account' "$got" 'gh auth switch -u thehcma && gh auth refresh -h github.com'
+
+got="$(GH_TOKEN=x REMOTE_TEST_TOKEN_STATUS=valid _init_files_describe_remote_check_failure init-files "$tmpdir/repo" "$tmpdir/bin/git-test" 2>&1)" && rc=0 || rc=$?
+assert_contains 'flags GH_TOKEN override' "$got" 'GH_TOKEN/GITHUB_TOKEN is set'
 
 test_summary

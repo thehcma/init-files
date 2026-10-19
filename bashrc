@@ -2709,7 +2709,11 @@ function copilot()
                         read -r reply
                         case "$reply" in
                             ''|y|Y|yes|YES)
-                                if gh auth refresh -h github.com -u "$login"; then
+                                if gh auth switch --hostname github.com --user "$login" >/dev/null 2>&1 \
+                                    && gh auth refresh -h github.com; then
+                                    # refresh only targets the active account; restore the previous one.
+                                    [[ -n "$active_login" && "$active_login" != "$login" ]] \
+                                        && gh auth switch --hostname github.com --user "$active_login" >/dev/null 2>&1
                                     echo "Reauthenticated '$login'." >&2
                                 else
                                     echo "Reauthentication failed; using the active account instead." >&2
@@ -2722,7 +2726,7 @@ function copilot()
                                 ;;
                         esac
                     else
-                        echo "Run: gh auth refresh -h github.com -u $login" >&2
+                        echo "Run: gh auth switch -u $login && gh auth refresh -h github.com" >&2
                         login="$active_login"
                     fi
                     ;;
@@ -7520,6 +7524,111 @@ _init_files_probe_origin_main()
     printf '%s\n' "$remote_head"
 }
 
+# The gh login this host is expected to use for remote label $1: the account
+# that last succeeded (recorded), else the owner in the sanitized remote URL $2.
+# Prints nothing when neither is known.
+_init_files_expected_gh_handle()
+{
+    local label="${1:-}" url="${2:-}" handle=''
+
+    handle="$(_init_files_read_recorded_gh_account "$label" 2>/dev/null || true)"
+    if [[ -z "$handle" && "$url" =~ github\.com[:/]([^/]+)/ ]]; then
+        handle="${BASH_REMATCH[1]}"
+    fi
+    [[ -n "$handle" ]] && printf '%s\n' "$handle"
+    return 0
+}
+
+# Persist handle $2 for remote label $1 (same stamp the success path writes).
+_init_files_remember_gh_handle()
+{
+    local label="${1:-}" handle="${2:-}" path
+
+    [[ -n "$label" && -n "$handle" ]] || return 0
+    path="$(_init_files_gh_account_stamp_path "$label")" || return 0
+    mkdir -p "$(dirname -- "$path")" 2>/dev/null || true
+    printf '%s\n' "$handle" >"$path" 2>/dev/null || true
+    return 0
+}
+
+# Name the usual multi-account culprits behind an HTTPS auth rejection: a
+# GH_TOKEN/GITHUB_TOKEN env var overriding gh's stored accounts (and thus the
+# repo owner's identity), and stored accounts whose keyring token is invalid.
+_init_files_print_gh_identity_hints()
+{
+    local login valid active
+
+    if [[ -n "${GH_TOKEN:-}" || -n "${GITHUB_TOKEN:-}" ]]; then
+        printf '  Note: GH_TOKEN/GITHUB_TOKEN is set and overrides gh stored accounts (gh auth switch has no effect).\n' >&2
+        printf '        Unset it (e.g. unset GH_TOKEN GITHUB_TOKEN) to use the account that owns the remote.\n' >&2
+    fi
+    while IFS=$'\t' read -r login valid active; do
+        [[ -n "$login" && "$valid" == 0 ]] || continue
+        printf "  gh account '%s' has an invalid token: gh auth switch -u %s && gh auth refresh -h github.com\n" "$login" "$login" >&2
+    done < <(_init_files_gh_accounts_detailed 2>/dev/null || true)
+    return 0
+}
+
+# Offer to reauthenticate gh handle $1 (set by the remote-check diagnosis when
+# its token is invalid/unverifiable), then make it the identity git uses.
+# Returns 0 when the handle was refreshed.
+_init_files_offer_gh_reauth()
+{
+    local handle="${1:-}" label="${2:-}" gh_bin reply shadowed=0 known=0 login valid active
+
+    [[ -n "$handle" && -t 0 && -t 2 ]] || return 1
+    gh_bin="$(command -v gh 2>/dev/null || true)"
+    [[ -n "$gh_bin" && -x "$gh_bin" ]] || return 1
+    [[ -n "${GH_TOKEN:-}" || -n "${GITHUB_TOKEN:-}" ]] && shadowed=1
+    while IFS=$'\t' read -r login valid active; do
+        [[ "$login" == "$handle" ]] && known=1
+    done < <(_init_files_gh_accounts_detailed 2>/dev/null || true)
+
+    if [[ $known -eq 1 ]]; then
+        printf "Reauthenticate gh account '%s' now (gh auth refresh)? [Y/n] " "$handle" >&2
+    else
+        printf "gh has no login for '%s'. Log in now (gh auth login)? [Y/n] " "$handle" >&2
+    fi
+    read -r reply || reply=n
+    case "$reply" in
+        ''|y|Y|yes|YES) ;;
+        *) return 1 ;;
+    esac
+    # gh refuses to manage stored credentials while GH_TOKEN is exported.
+    if [[ $known -eq 1 ]]; then
+        # This gh's refresh has no --user; it refreshes the active account.
+        env -u GH_TOKEN -u GITHUB_TOKEN "$gh_bin" auth switch --hostname github.com --user "$handle" >/dev/null 2>&1 || true
+        env -u GH_TOKEN -u GITHUB_TOKEN "$gh_bin" auth refresh -h github.com || return 1
+    else
+        env -u GH_TOKEN -u GITHUB_TOKEN "$gh_bin" auth login -h github.com -p https -w || return 1
+    fi
+    env -u GH_TOKEN -u GITHUB_TOKEN "$gh_bin" auth switch --hostname github.com --user "$handle" >/dev/null 2>&1 || true
+    if [[ $shadowed -eq 1 ]]; then
+        printf "GH_TOKEN is exported and would still override '%s'. Unset it in this shell? [Y/n] " "$handle" >&2
+        read -r reply || reply=n
+        case "$reply" in
+            ''|y|Y|yes|YES) unset GH_TOKEN GITHUB_TOKEN ;;
+        esac
+    fi
+    _init_files_remember_gh_handle "$label" "$handle"
+    return 0
+}
+
+# After an HTTPS git failure in clone $2: diagnose, and offer gh reauth for the
+# remembered handle of label $1. Returns 0 when the caller should retry once
+# (reauthenticated, or the remote is reachable again).
+_init_files_gh_auth_recover()
+{
+    local label="${1:-}" dir="${2:-}" git_bin="${3:-}" rc=0 handle
+
+    _init_files_reauth_handle=''
+    _init_files_describe_remote_check_failure "$label" "$dir" "$git_bin" || rc=$?
+    handle="${_init_files_reauth_handle:-}"
+    _init_files_reauth_handle=''
+    [[ $rc -eq 0 ]] && return 0
+    [[ -n "$handle" ]] && _init_files_offer_gh_reauth "$handle" "$label"
+}
+
 # Diagnose a failed origin/main probe and print a sanitized clone URL.
 # For HTTPS auth failures, probe the active gh token before recommending reauth.
 _init_files_describe_remote_check_failure()
@@ -7569,9 +7678,9 @@ _init_files_describe_remote_check_failure()
     elif [[ "$fetch_error" =~ [Aa]uthentication[[:space:]]failed|[Pp]ermission[[:space:]]denied|[Rr]equested[[:space:]]URL[[:space:]]returned[[:space:]]error:[[:space:]](401|403)|[Hh]ttp[[:space:]](401|403)|[Rr]emote:[[:space:]][Rr]epository[[:space:]]not[[:space:]]found|[Tt]erminal[[:space:]]prompts[[:space:]]disabled ]]; then
         if [[ "$is_https" -eq 1 ]]; then
             gh_bin="$(command -v gh 2>/dev/null || true)"
-            account="$(_init_files_gh_active_account 2>/dev/null || true)"
+            account="$(_init_files_expected_gh_handle "$label" "$safe_url")"
             if [[ -n "$gh_bin" && -x "$gh_bin" && -n "$account" ]]; then
-                token="$("$gh_bin" auth token --hostname github.com --user "$account" 2>/dev/null || true)"
+                token="$(env -u GH_TOKEN -u GITHUB_TOKEN "$gh_bin" auth token --hostname github.com --user "$account" 2>/dev/null || true)"
                 if [[ -n "$token" ]] && type _init_files_gh_token_probe_status > /dev/null 2>&1; then
                     token_status="$(_init_files_gh_token_probe_status "$token" 2>/dev/null || echo unknown)"
                 else
@@ -7581,12 +7690,14 @@ _init_files_describe_remote_check_failure()
                 token_status=unknown
             fi
             unset token
+            _init_files_reauth_handle=''
             case "$token_status" in
                 invalid)
                     diagnosis=2
-                    printf "  Cause: GitHub rejected the HTTPS request and the active '%s' token is expired/revoked.\n" \
+                    _init_files_reauth_handle="$account"
+                    printf "  Cause: GitHub rejected the HTTPS request and the '%s' token is expired/revoked.\n" \
                         "$account" >&2
-                    printf '  Reauthenticate: gh auth refresh -h github.com -u %s\n' "$account" >&2
+                    printf '  Reauthenticate: gh auth switch -u %s && gh auth refresh -h github.com\n' "$account" >&2
                     ;;
                 rate_limited:*)
                     printf "  Cause: the active '%s' GitHub token is valid, but its primary API quota is exhausted.\n" \
@@ -7599,11 +7710,14 @@ _init_files_describe_remote_check_failure()
                     printf "  Cause: the active '%s' GitHub token is valid, but GitHub denied access to this remote.\n" \
                         "$account" >&2
                     printf '  Check repository access and the active gh identity; reauth is not indicated.\n' >&2
+                    _init_files_print_gh_identity_hints
                     ;;
                 *)
                     diagnosis=2
+                    [[ -n "$account" ]] && _init_files_reauth_handle="$account"
                     printf '  Cause: GitHub rejected the HTTPS request, but token validity could not be verified.\n' >&2
                     printf '  Check gh auth status; if it reports an invalid token, reauthenticate with gh auth refresh.\n' >&2
+                    _init_files_print_gh_identity_hints
                     ;;
             esac
         else
@@ -7638,6 +7752,14 @@ _init_files_offer_remote_check_retry()
         if [[ "$diagnosis" -eq 2 ]] && type _init_files_maybe_offer_gh_account_switch > /dev/null 2>&1; then
             _init_files_maybe_offer_gh_account_switch "$label" || true
         fi
+        if [[ "$diagnosis" -eq 2 && -n "${_init_files_reauth_handle:-}" ]]; then
+            if _init_files_offer_gh_reauth "$_init_files_reauth_handle" "$label"; then
+                echo "  Reauthenticated '${_init_files_reauth_handle}'; retrying." >&2
+                _init_files_reauth_handle=''
+                return 0
+            fi
+        fi
+        _init_files_reauth_handle=''
     else
         echo "  Hint: run cache_ssh (BatchMode needs a loaded key), then retry." >&2
     fi
@@ -7901,7 +8023,10 @@ function refresh_init_config()
         _init_files_git_https "$git_bin" -C "$dir" fetch --quiet origin \
             '+refs/heads/main:refs/remotes/origin/main' || {
             echo "refresh_init_config: fetch failed" >&2
-            return 1
+            _init_files_gh_auth_recover 'private-config' "$dir" "$git_bin" \
+                && _init_files_git_https "$git_bin" -C "$dir" fetch --quiet origin \
+                    '+refs/heads/main:refs/remotes/origin/main' \
+                || return 1
         }
         type _init_files_record_gh_account > /dev/null 2>&1 && _init_files_record_gh_account 'private-config'
     elif ! GIT_TERMINAL_PROMPT=0 "$git_bin" -C "$dir" fetch --quiet origin \
@@ -8125,6 +8250,7 @@ function refresh_init_files()
     local remote_head local_short remote_short
     local reply fetch_err fetch_err_file fetch_ok
     local skip_provision=0
+    local orig_args=("$@")
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -f|--force) force=1; shift ;;
@@ -8313,7 +8439,10 @@ function refresh_init_files()
     if [[ ! -d "$init_files_dir/.git" ]]; then
         mkdir -p "$(dirname "$init_files_dir")" || return 1
         if [[ $github_https -eq 1 ]]; then
-            if ! _init_files_git_https "$init_tool_git" clone --depth 1 --branch main "$init_files_repo" "$init_files_dir" >/dev/null 2>&1; then
+            if ! _init_files_git_https "$init_tool_git" clone --depth 1 --branch main "$init_files_repo" "$init_files_dir" >/dev/null 2>&1 \
+                && ! { [[ $quiet -eq 0 ]] \
+                    && _init_files_offer_gh_reauth "$(_init_files_expected_gh_handle 'init-files' "$init_files_repo")" 'init-files' \
+                    && _init_files_git_https "$init_tool_git" clone --depth 1 --branch main "$init_files_repo" "$init_files_dir" >/dev/null 2>&1; }; then
                 if [[ $quiet -eq 0 ]]; then
                     echo "refresh_init_files: failed to clone $init_files_repo" >&2
                     echo "  Fix credentials, then retry: gh auth login && refresh_init_files --github-https" >&2
@@ -8368,6 +8497,18 @@ function refresh_init_files()
                 if printf '%s' "$fetch_err" | command grep -qiE 'permission denied|publickey|could not read from remote|authentication failed|401|403|terminal prompts disabled'; then
                     if [[ $github_https -eq 1 ]]; then
                         echo "refresh_init_files: git fetch failed (GitHub HTTPS auth)." >&2
+                        _init_files_reauth_handle=''
+                        _init_files_describe_remote_check_failure 'init-files' "$init_files_dir" "$init_tool_git" || true
+                        if [[ -n "${_init_files_reauth_handle:-}" && -z "${_init_files_refresh_reauthed:-}" ]] \
+                            && _init_files_offer_gh_reauth "$_init_files_reauth_handle" 'init-files'; then
+                            _init_files_reauth_handle=''
+                            _init_files_refresh_reauthed=1
+                            refresh_init_files "${orig_args[@]}"
+                            fetch_ok=$?
+                            unset _init_files_refresh_reauthed
+                            return "$fetch_ok"
+                        fi
+                        _init_files_reauth_handle=''
                         echo "  Fix credentials, then retry:" >&2
                         echo "    gh auth login" >&2
                         echo "    ~/.local/share/init-files/provision_init_files --github-https" >&2
@@ -8661,8 +8802,20 @@ function _init_iterm2_git_run()
 
     url="$("$git_bin" -C "$dir" remote get-url origin 2>/dev/null || true)"
     if [[ "$url" == https://* ]] && type _init_files_git_https > /dev/null 2>&1; then
-        _init_files_git_https "$git_bin" -C "$dir" "$@"
-        return $?
+        local rc=0 err_file
+        err_file="$(mktemp "${TMPDIR:-/tmp}/iterm2-git.err.XXXXXX")" || {
+            _init_files_git_https "$git_bin" -C "$dir" "$@"
+            return $?
+        }
+        _init_files_git_https "$git_bin" -C "$dir" "$@" 2>"$err_file" || rc=$?
+        if [[ $rc -ne 0 ]] && command grep -qiE 'authentication failed|401|403|terminal prompts disabled|repository not found' "$err_file" \
+            && _init_files_gh_auth_recover 'init-files' "$dir" "$git_bin"; then
+            rc=0
+            _init_files_git_https "$git_bin" -C "$dir" "$@" 2>"$err_file" || rc=$?
+        fi
+        cat "$err_file" >&2
+        rm -f "$err_file"
+        return "$rc"
     fi
     GIT_TERMINAL_PROMPT=0 "$git_bin" -C "$dir" "$@"
 }
@@ -9016,7 +9169,13 @@ EOF
                 origin_url="$("$init_tool_git" -C "$repo_dir" remote get-url origin 2>/dev/null || true)"
                 if [[ "$origin_url" == https://* ]]; then
                     _init_files_git_https "$init_tool_git" -C "$repo_dir" fetch --quiet origin main 2>/dev/null \
-                        || printf 'refresh_vimrc: warning: git fetch failed\n' >&2
+                        || {
+                            printf 'refresh_vimrc: warning: git fetch failed\n' >&2
+                            if _init_files_gh_auth_recover 'init-files' "$repo_dir" "$init_tool_git"; then
+                                _init_files_git_https "$init_tool_git" -C "$repo_dir" fetch --quiet origin main 2>/dev/null \
+                                    || printf 'refresh_vimrc: warning: git fetch failed\n' >&2
+                            fi
+                        }
                 else
                     GIT_TERMINAL_PROMPT=0 "$init_tool_git" -C "$repo_dir" fetch --quiet origin main 2>/dev/null \
                         || printf 'refresh_vimrc: warning: git fetch failed\n' >&2
@@ -11679,6 +11838,7 @@ _init_files_gh_account_stamp_path()
     local state_dir host
 
     [[ -n "$label" ]] || return 1
+    label="${label// /-}"
     state_dir="${init_files_state_dir:-${XDG_STATE_HOME:-$HOME/.local/state}/init-files}"
     host="${init_files_host:-$(_init_files_sanitize_host "$(_init_files_raw_host_label)" 2>/dev/null || hostname -s 2>/dev/null || echo host)}"
     printf '%s/gh-account.%s.%s' "$state_dir" "$label" "$host"
