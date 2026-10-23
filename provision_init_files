@@ -2658,6 +2658,87 @@ link_claude_files_to_repo()
 
 link_claude_files_to_repo
 
+# ~/.copilot/copilot-instructions.md symlink (Copilot CLI user-level personal
+# guidelines, loaded each session — no secrets). Preserves any pre-existing
+# regular file as ~/.copilot/<name>.bak.<timestamp> (and a copy under
+# ~/.local/state/init-files/copilot-backup/). Does not touch anything else
+# under ~/.copilot/ (settings.json, sessions, logs are managed elsewhere or
+# local runtime state).
+copilot_tracked_files=(copilot-instructions.md)
+copilot_backup_dir="${XDG_STATE_HOME:-$HOME/.local/state}/init-files/copilot-backup"
+
+backup_existing_copilot_file()
+{
+    local name="$1"
+    local src="$repo_dir/copilot/$name"
+    local dest="${HOME}/.copilot/$name"
+    local backup stamp state_copy current
+
+    [[ -e "$dest" || -L "$dest" ]] || return 0
+
+    # Already our symlink — nothing to save.
+    if [[ -L "$dest" ]]; then
+        current=$(readlink "$dest" 2>/dev/null || true)
+        if [[ "$current" == "$src" ]]; then
+            return 0
+        fi
+    fi
+
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$copilot_backup_dir" 2>/dev/null || true
+
+    if [[ -L "$dest" ]]; then
+        backup="${dest}.bak.${stamp}"
+        printf '%s\n' "$(readlink "$dest" 2>/dev/null || true)" > "${backup}.linktarget"
+        rm -f "$dest" || return 1
+        log "Removed previous ~/.copilot/$name symlink (target saved in ${backup}.linktarget)"
+        return 0
+    fi
+
+    if [[ ! -f "$dest" ]]; then
+        init_files_warn "$dest exists and is not a regular file or symlink"
+        return 1
+    fi
+
+    backup="${dest}.bak.${stamp}"
+    cp -p "$dest" "$backup" || return 1
+    state_copy="${copilot_backup_dir}/${name}.${stamp}"
+    cp -p "$dest" "$state_copy" 2>/dev/null || true
+    log "Backed up existing ~/.copilot/$name -> $backup"
+    [[ -f "$state_copy" ]] && log "         (also $state_copy)"
+    rm -f "$dest" || return 1
+}
+
+link_copilot_files_to_repo()
+{
+    local name src dest current
+
+    for name in "${copilot_tracked_files[@]}"; do
+        src="$repo_dir/copilot/$name"
+        dest="${HOME}/.copilot/$name"
+
+        if [[ ! -f "$src" ]]; then
+            log "Skip copilot $name: missing $src"
+            continue
+        fi
+
+        if [[ -L "$dest" ]]; then
+            current=$(readlink "$dest" 2>/dev/null || true)
+            if [[ "$current" == "$src" ]]; then
+                log "OK       ~/.copilot/$name -> $src"
+                continue
+            fi
+        fi
+
+        mkdir -p "$(dirname "$dest")" || return 1
+        backup_existing_copilot_file "$name" || return 1
+        ln -s "$src" "$dest" || return 1
+        log "Linked   ~/.copilot/$name -> $src"
+    done
+}
+
+link_copilot_files_to_repo
+
 # Login shells (Debian/Ubuntu SSH, macOS Terminal) read ~/.profile or
 # ~/.bash_profile — not ~/.bashrc — unless those files source it.
 # Always install our marker when missing. bashrc is idempotent

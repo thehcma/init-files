@@ -8,6 +8,7 @@ Canonical interactive **bash** init for macOS (Darwin 21.6+) and Linux (Ubuntu, 
 | History, Tab completion, `**` globs, fzf, bash upgrades | **[docs/shell-ux.md](docs/shell-ux.md)** |
 | iTerm2 font / colors / keys (macOS) | **[iterm2/README.md](iterm2/README.md)** (`export_iterm_settings` / `upload_iterm_settings` / `test_iterm_settings` / `refresh_iterm_settings`) |
 | Vim 9 + plugins (cross-platform) | **[vim/README.md](vim/README.md)** (`refresh_vimrc`) |
+| Copilot CLI personal guidelines (`~/.copilot/copilot-instructions.md`) | **[copilot/README.md](copilot/README.md)** (`refresh_copilot_instructions`) |
 | Agent / platform-isolation rules | [AGENTS.md](AGENTS.md) |
 | Private config overlay (SSH + user policy) | [Private config overlay (SSH)](#private-config-overlay-ssh) |
 
