@@ -4,43 +4,145 @@
     "pr": "",
     "sessionUrl": false
   },
-  "availableModels": ["sonnet", "haiku"],
-  "editorMode": "vim",
-  "enforceAvailableModels": true,
-  "remoteControlAtStartup": true,
-  "hooks": {
-    "Notification": [
-      { "hooks": [{ "type": "command", "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true" }] }
-    ],
-    "PermissionRequest": [
-      { "hooks": [{ "type": "command", "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true" }] }
-    ],
-    "PostToolUse": [
-      { "hooks": [{ "type": "command", "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true" }] }
-    ],
-    "PreToolUse": [
-      { "hooks": [{ "type": "command", "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true" }] }
-    ],
-    "SessionEnd": [
-      { "hooks": [{ "type": "command", "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true" }] }
-    ],
-    "SessionStart": [
-      { "hooks": [{ "type": "command", "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true" }] }
-    ],
-    "Stop": [
-      { "hooks": [{ "type": "command", "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true" }] }
-    ],
-    "StopFailure": [
-      { "hooks": [{ "type": "command", "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true" }] }
-    ],
-    "SubagentStop": [
-      { "hooks": [{ "type": "command", "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true" }] }
-    ],
-    "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true" }] }
-    ]
-  },
   "includeCoAuthoredBy": false,
   "model": "sonnet",
-  "theme": "dark"
+  "availableModels": [
+    "sonnet",
+    "haiku"
+  ],
+  "enforceAvailableModels": true,
+  "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true"
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true"
+          }
+        ]
+      }
+    ]
+  },
+  "theme": "dark",
+  "editorMode": "vim",
+  "remoteControlAtStartup": true,
+  "autoMode": {
+    "environment": [
+      "### Org-wide",
+      "**Organization**: BRK Tech (brk-oss org on GitHub; repo references BRK Tech DevEx and BRK Tech Labs/opcos) — scoped to this repo (brk-oss/octosentry) and its remote only",
+      "**Cloud provider(s)**: None configured",
+      "**Repository visibility**: Private (confirmed via gh)",
+      "**Internal sharing / snippet hosting**: None configured — treat public paste/gist services as outside the trust boundary",
+      "**Secrets management**: None configured",
+      "**Default / protected branches**: Default branch is main; no branch protection rules or rulesets listed via gh for brk-oss/octosentry",
+      "**CI/CD deploy targets**: None configured",
+      "**Network posture**: None configured",
+      "**Host containment**: None configured — assume Claude Code runs on an ordinary developer machine or CI runner with open internet",
+      "**Source control**: The trusted repo (brk-oss/octosentry) and its origin remote only — no additional orgs configured",
+      "**Trusted internal domains**: None configured",
+      "**Trusted cloud buckets**: None configured",
+      "**Key internal services**: None configured",
+      "**Internal package registry**: None configured",
+      "**Sensitive data locations & audiences**: any file or store holding personal data, confidential business data, credentials, regulated data, or similarly sensitive material; preserve exact handles when known and share only with audiences cleared at the [named+specifics] bar. Note: this repo's own docs state tool code must never contain live configuration (enterprise names, org lists, credentials) — that lives in the separate brk-tech-labs/configurator (or brk-tech-oss/configurator per CONTRIBUTING.md) repo, which is out of scope here",
+      "**Data retention / declassification**: None configured",
+      "**Sensitive remote targets**: any namespace, host, or container whose name carries 'prod' or 'production' as a whole word or name segment",
+      "**Protected deployment namespaces / environments**: None configured — fall back to the Sensitive remote targets heuristic",
+      "**Protected IaC scopes**: IAM, RBAC, networking, quota, and node-pool resources; anything whose name or tag carries 'prod' or 'production' as a whole word or name segment",
+      "### User-specific",
+      "**Primary use of Claude Code**: software development — GitHub governance/hygiene tooling (octosentry) for this repo",
+      "**Trusted repo**: /Users/Henrique.Andrade/work/brk-tech/repos/octosentry (brk-oss/octosentry), private, and its origin remote",
+      "**Org-specific CLIs**: None configured",
+      "\"routine under <user>/ prefix\" qualifiers: none found"
+    ]
+  }
 }
