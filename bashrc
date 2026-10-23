@@ -5947,6 +5947,23 @@ function init_files_doctor()
         fi
     done
 
+    # 9b) copilot copilot-instructions.md
+    local copilot_name
+    local -a copilot_files=(copilot-instructions.md)
+    for copilot_name in "${copilot_files[@]}"; do
+        [[ -f "${clone_dir}/copilot/${copilot_name}" ]] || continue
+        if [[ -L "${HOME}/.copilot/${copilot_name}" ]]; then
+            link_target=$(readlink "${HOME}/.copilot/${copilot_name}" 2>/dev/null || true)
+            if [[ "$link_target" == "${clone_dir}/copilot/${copilot_name}" ]]; then
+                _doc_ok "copilot ${copilot_name} -> $link_target"
+            else
+                _doc_warn "copilot ${copilot_name} symlink is $link_target (expected ${clone_dir}/copilot/${copilot_name}); run: refresh_copilot_instructions"
+            fi
+        else
+            _doc_warn "$HOME/.copilot/${copilot_name} not a symlink to clone; run: refresh_copilot_instructions"
+        fi
+    done
+
     # 10) login-shell bashrc hook
     if type _init_files_login_hook_ok > /dev/null 2>&1; then
         if _init_files_login_hook_ok; then
@@ -7454,6 +7471,23 @@ _init_files_deploy_drift_reasons()
         fi
     done
 
+    local copilot_name
+    local -a copilot_files=(copilot-instructions.md)
+    for copilot_name in "${copilot_files[@]}"; do
+        [[ -f "${clone_dir}/copilot/${copilot_name}" ]] || continue
+        expected="${clone_dir}/copilot/${copilot_name}"
+        if [[ -L "${HOME}/.copilot/${copilot_name}" ]]; then
+            link_target=$(readlink "${HOME}/.copilot/${copilot_name}" 2>/dev/null || true)
+            if [[ "$link_target" != "$expected" ]]; then
+                printf 'copilot %s symlink is %s (expected %s)\n' "$copilot_name" "$link_target" "$expected"
+            fi
+        elif [[ -e "${HOME}/.copilot/${copilot_name}" ]]; then
+            printf 'copilot %s is not a symlink (expected -> %s)\n' "$copilot_name" "$expected"
+        else
+            printf 'copilot %s missing (expected symlink -> %s)\n' "$copilot_name" "$expected"
+        fi
+    done
+
     if ! _init_files_login_hook_ok; then
         printf 'login profile missing init-files bashrc hook (~/.bash_profile / ~/.profile)\n'
     fi
@@ -7849,7 +7883,7 @@ _init_files_offer_deploy_repairs()
 {
     local reasons
     local need_bashrc=0 need_vim=0 need_iterm=0 need_login=0 need_tools=0
-    local need_completions=0 need_claude=0 need_blumkin_config=0
+    local need_completions=0 need_claude=0 need_copilot=0 need_blumkin_config=0
     local repair_cmd reply
     local no_dev=0
 
@@ -7863,6 +7897,7 @@ _init_files_offer_deploy_repairs()
             bashrc\ *|\~/.bashrc\ *) need_bashrc=1 ;;
             vimrc\ *|\~/.vimrc\ *|\~/.gvimrc\ *) need_vim=1 ;;
             claude\ *|\~/.claude/*) need_claude=1 ;;
+            copilot\ *|\~/.copilot/*) need_copilot=1 ;;
             iTerm\ *) need_iterm=1 ;;
             login\ *) need_login=1 ;;
             shell\ completions\ *) need_completions=1 ;;
@@ -7878,15 +7913,15 @@ _init_files_offer_deploy_repairs()
     # Prefer the narrowest fix when only one subsystem drifted.
     if [[ $need_bashrc -eq 0 && $need_login -eq 0 && $need_tools -eq 0 \
         && $need_completions -eq 0 && $need_vim -eq 1 && $need_iterm -eq 0 \
-        && $need_claude -eq 0 && $need_blumkin_config -eq 0 ]]; then
+        && $need_claude -eq 0 && $need_copilot -eq 0 && $need_blumkin_config -eq 0 ]]; then
         repair_cmd='refresh_vimrc'
     elif [[ $need_bashrc -eq 0 && $need_login -eq 0 && $need_tools -eq 0 \
         && $need_completions -eq 0 && $need_vim -eq 0 && $need_iterm -eq 1 \
-        && $need_claude -eq 0 && $need_blumkin_config -eq 0 ]]; then
+        && $need_claude -eq 0 && $need_copilot -eq 0 && $need_blumkin_config -eq 0 ]]; then
         repair_cmd='refresh_iterm_settings'
     elif [[ $need_bashrc -eq 0 && $need_login -eq 0 && $need_tools -eq 0 \
         && $need_vim -eq 0 && $need_iterm -eq 0 && $need_completions -eq 1 \
-        && $need_claude -eq 0 && $need_blumkin_config -eq 0 ]]; then
+        && $need_claude -eq 0 && $need_copilot -eq 0 && $need_blumkin_config -eq 0 ]]; then
         repair_cmd='link_shell_completions'
     elif [[ $need_bashrc -eq 0 && $need_login -eq 0 && $need_tools -eq 0 \
         && $need_vim -eq 0 && $need_iterm -eq 0 && $need_completions -eq 0 \
@@ -7894,7 +7929,11 @@ _init_files_offer_deploy_repairs()
         repair_cmd='refresh_claude_settings'
     elif [[ $need_bashrc -eq 0 && $need_login -eq 0 && $need_tools -eq 0 \
         && $need_vim -eq 0 && $need_iterm -eq 0 && $need_completions -eq 0 \
-        && $need_claude -eq 0 && $need_blumkin_config -eq 1 ]]; then
+        && $need_claude -eq 0 && $need_copilot -eq 1 && $need_blumkin_config -eq 0 ]]; then
+        repair_cmd='refresh_copilot_instructions'
+    elif [[ $need_bashrc -eq 0 && $need_login -eq 0 && $need_tools -eq 0 \
+        && $need_vim -eq 0 && $need_iterm -eq 0 && $need_completions -eq 0 \
+        && $need_claude -eq 0 && $need_copilot -eq 0 && $need_blumkin_config -eq 1 ]]; then
         repair_cmd='link_blumkin_config'
     elif [[ $no_dev -eq 1 ]]; then
         repair_cmd='refresh_init_files --no-dev'
@@ -7927,6 +7966,11 @@ _init_files_offer_deploy_repairs()
                         # Interactive repair uses default options.
                         # shellcheck disable=SC2119
                         refresh_claude_settings
+                        ;;
+                    refresh_copilot_instructions)
+                        # Interactive repair uses default options.
+                        # shellcheck disable=SC2119
+                        refresh_copilot_instructions
                         ;;
                     'refresh_init_files --no-dev') refresh_init_files --no-dev ;;
                     *) refresh_init_files ;;
@@ -8266,7 +8310,7 @@ function refresh_init_files()
                 echo "                     [--github-https|--github-ssh] [--iterm|--no-iterm]" >&2
                 echo "  Default: pull init-files main into $init_files_dir," >&2
                 echo "  ensure ~/.bashrc is a symlink, run provision_init_files" >&2
-                echo "  when HEAD is new or deploy drifted (tools/ssh/vimrc/claude/iTerm)," >&2
+                echo "  when HEAD is new or deploy drifted (tools/ssh/vimrc/claude/copilot/iTerm)," >&2
                 echo "  merge curated iTerm2 prefs on macOS when provisioning," >&2
                 echo "  and reload ~/.bashrc in this shell when needed." >&2
                 echo "  -f        always re-run provision_init_files (even if HEAD" >&2
@@ -9361,6 +9405,83 @@ EOF
             printf 'refresh_claude_settings: linked ~/.claude/%s -> %s\n' "$name" "$src"
         else
             printf 'refresh_claude_settings: ~/.claude/%s exists and is not a file/symlink\n' "$name" >&2
+            rc=1
+        fi
+    done
+    return "$rc"
+}
+
+# Only bare calls appear in this repo; --help works when invoked manually.
+# shellcheck disable=SC2120
+function refresh_copilot_instructions()
+{
+    local repo_dir name src dest backup_dir stamp current backup rc=0
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<'EOF'
+Usage: refresh_copilot_instructions
+
+Repair the ~/.copilot/copilot-instructions.md symlink into init-files
+(copilot/copilot-instructions.md). Backs up a non-canonical file to
+~/.copilot/<name>.bak.<timestamp> and ~/.local/state/init-files/copilot-backup/.
+Does not touch any other file under ~/.copilot/ (settings.json, sessions, logs are managed elsewhere or
+local runtime state).
+EOF
+                return 0
+                ;;
+            *)
+                printf 'refresh_copilot_instructions: unknown option: %s\n' "$1" >&2
+                return 1
+                ;;
+        esac
+    done
+
+    repo_dir="${init_files_dir:-${XDG_DATA_HOME:-$HOME/.local/share}/init-files}"
+    backup_dir="${XDG_STATE_HOME:-$HOME/.local/state}/init-files/copilot-backup"
+
+    if [[ ! -f "$repo_dir/copilot/copilot-instructions.md" ]]; then
+        printf 'refresh_copilot_instructions: missing %s (refresh_init_files first?)\n' "$repo_dir/copilot/copilot-instructions.md" >&2
+        return 1
+    fi
+
+    local -a copilot_files=(copilot-instructions.md)
+    for name in "${copilot_files[@]}"; do
+        src="$repo_dir/copilot/$name"
+        dest="${HOME}/.copilot/$name"
+        [[ -f "$src" ]] || continue
+
+        mkdir -p "$(dirname "$dest")" || return 1
+
+        if [[ -L "$dest" ]]; then
+            current=$(readlink "$dest" 2>/dev/null || true)
+            if [[ "$current" == "$src" ]]; then
+                printf 'refresh_copilot_instructions: already linked -> %s\n' "$src"
+                continue
+            fi
+            stamp="$(date +%Y%m%d-%H%M%S)"
+            mkdir -p "$backup_dir" 2>/dev/null || true
+            printf '%s\n' "$current" > "${dest}.bak.${stamp}.linktarget"
+            printf '%s\n' "$current" > "${backup_dir}/${name}.${stamp}.linktarget" 2>/dev/null || true
+            rm -f "$dest" || return 1
+            ln -s "$src" "$dest" || return 1
+            printf 'refresh_copilot_instructions: repaired ~/.copilot/%s symlink -> %s\n' "$name" "$src"
+        elif [[ -f "$dest" ]]; then
+            stamp="$(date +%Y%m%d-%H%M%S)"
+            backup="${dest}.bak.${stamp}"
+            mkdir -p "$backup_dir" 2>/dev/null || true
+            cp -p "$dest" "$backup" || return 1
+            cp -p "$dest" "${backup_dir}/${name}.${stamp}" 2>/dev/null || true
+            rm -f "$dest" || return 1
+            ln -s "$src" "$dest" || return 1
+            printf 'refresh_copilot_instructions: backed up previous ~/.copilot/%s -> %s\n' "$name" "$backup"
+            printf 'refresh_copilot_instructions: linked ~/.copilot/%s -> %s\n' "$name" "$src"
+        elif [[ ! -e "$dest" ]]; then
+            ln -s "$src" "$dest" || return 1
+            printf 'refresh_copilot_instructions: linked ~/.copilot/%s -> %s\n' "$name" "$src"
+        else
+            printf 'refresh_copilot_instructions: ~/.copilot/%s exists and is not a file/symlink\n' "$name" >&2
             rc=1
         fi
     done

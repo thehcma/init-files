@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# link_copilot_files_to_repo (provision), refresh_copilot_instructions and the
+# deploy-drift check manage ~/.copilot/copilot-instructions.md, in a throwaway
+# HOME (never the real one).
+set -euo pipefail
+
+script_dir="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+# Pull just the functions out so the test never sources the whole files.
+eval "$(sed -n '/^function refresh_copilot_instructions()/,/^}/p' "${root}/bashrc")"
+eval "$(sed -n '/^_init_files_deploy_drift_reasons()/,/^}/p' "${root}/bashrc")"
+eval "$(sed -n '/^copilot_tracked_files=/,/^link_copilot_files_to_repo$/p' "${root}/provision_init_files" | sed '$d')"
+log() { :; }
+init_files_warn() { printf 'WARN: %s\n' "$*" >&2; }
+
+name=copilot-instructions.md
+
+new_home()
+{
+    HOME="${tmp}/home.$1"
+    export HOME
+    init_files_dir="${tmp}/repo.$1"
+    export init_files_dir
+    repo_dir="$init_files_dir"
+    export repo_dir
+    mkdir -p "${HOME}/.copilot" "${init_files_dir}/copilot"
+    printf '# guidelines\n' > "${init_files_dir}/copilot/${name}"
+    export XDG_STATE_HOME="${HOME}/.state"
+    copilot_backup_dir="${XDG_STATE_HOME}/init-files/copilot-backup"
+}
+
+drift()
+{
+    (set +e; _init_files_deploy_drift_reasons 2> /dev/null | grep '^copilot ' || true)
+}
+
+printf '\n=== provision: link is created, backed up, idempotent ===\n'
+new_home a
+link_copilot_files_to_repo
+assert_eq 'symlink created' "$(readlink "${HOME}/.copilot/${name}")" "${init_files_dir}/copilot/${name}"
+link_copilot_files_to_repo
+assert_eq 'idempotent re-run keeps link' "$(readlink "${HOME}/.copilot/${name}")" "${init_files_dir}/copilot/${name}"
+assert_eq 'no backup when already linked' "$(find "${HOME}/.copilot" -name "${name}.bak.*" | wc -l | tr -d ' ')" 0
+
+new_home b
+printf 'local edits\n' > "${HOME}/.copilot/${name}"
+link_copilot_files_to_repo
+assert_eq 'regular file replaced by symlink' "$(readlink "${HOME}/.copilot/${name}")" "${init_files_dir}/copilot/${name}"
+bak="$(find "${HOME}/.copilot" -name "${name}.bak.*" -type f | head -1)"
+assert_eq 'backup keeps the old content' "$(cat "$bak")" 'local edits'
+assert_eq 'state backup copy exists' "$(find "$copilot_backup_dir" -type f | wc -l | tr -d ' ')" 1
+
+printf '\n=== refresh_copilot_instructions ===\n'
+new_home c
+refresh_copilot_instructions > /dev/null
+assert_eq 'missing link created' "$(readlink "${HOME}/.copilot/${name}")" "${init_files_dir}/copilot/${name}"
+out="$(refresh_copilot_instructions)"
+assert_eq 'second run is idempotent' "$(grep -c 'already linked' <<< "$out")" 1
+
+new_home d
+printf 'local edits\n' > "${HOME}/.copilot/${name}"
+refresh_copilot_instructions > /dev/null
+assert_eq 'regular file replaced by symlink' "$(readlink "${HOME}/.copilot/${name}")" "${init_files_dir}/copilot/${name}"
+bak="$(find "${HOME}/.copilot" -name "${name}.bak.*" -type f | head -1)"
+assert_eq 'backup keeps the old content' "$(cat "$bak")" 'local edits'
+
+new_home e
+ln -s /nonexistent "${HOME}/.copilot/${name}"
+refresh_copilot_instructions > /dev/null
+assert_eq 'wrong symlink retargeted' "$(readlink "${HOME}/.copilot/${name}")" "${init_files_dir}/copilot/${name}"
+
+printf '\n=== other ~/.copilot files are left alone ===\n'
+new_home f
+printf 'keep\n' > "${HOME}/.copilot/settings.json"
+refresh_copilot_instructions > /dev/null
+assert_eq 'settings.json untouched' "$(cat "${HOME}/.copilot/settings.json")" keep
+
+printf '\n=== drift check ===\n'
+new_home g
+assert_eq 'missing link flagged' "$(drift | grep -c 'copilot copilot-instructions.md missing')" 1
+printf 'x\n' > "${HOME}/.copilot/${name}"
+assert_eq 'regular file flagged' "$(drift | grep -c 'is not a symlink')" 1
+rm -f "${HOME}/.copilot/${name}"
+ln -s /nonexistent "${HOME}/.copilot/${name}"
+assert_eq 'wrong link flagged' "$(drift | grep -c 'symlink is /nonexistent')" 1
+rm -f "${HOME}/.copilot/${name}"
+ln -s "${init_files_dir}/copilot/${name}" "${HOME}/.copilot/${name}"
+assert_eq 'correct link is clean' "$(drift)" ''
+
+test_summary
