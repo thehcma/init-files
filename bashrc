@@ -2791,7 +2791,7 @@ function _init_files_agent_session_watch()
 # Args: kind, then the CLI argv. Runs the CLI (via _init_files_${kind}_run).
 function _init_files_run_session_agent()
 {
-    local kind="$1" runner="$2" ttydev marker="" watcher="" id="" prev="" a rc
+    local kind="$1" runner="$2" ttydev marker="" watcher="" id="" prev="" prev_active a rc
     shift 2
     ttydev="$(_init_files_find_iterm_tty 2>/dev/null || true)"
     if [[ -z "$ttydev" || ! -t 0 ]]; then
@@ -2812,13 +2812,25 @@ function _init_files_run_session_agent()
     else
         marker="$(mktemp 2>/dev/null || true)"
         if [[ -n "$marker" ]]; then
-            { (_init_files_agent_session_watch "$kind" "$marker" "$ttydev" > /dev/null 2>&1 &) } 2>/dev/null
-            watcher=1
+            { _init_files_agent_session_watch "$kind" "$marker" "$ttydev" > /dev/null 2>&1 & } 2>/dev/null
+            watcher=$!
         fi
     fi
+    # Shells started inside the CLI must not wipe agentsession.
+    prev_active="${init_files_iterm_agent_active:-}"
+    export init_files_iterm_agent_active=1
     "$runner" "$@"
     rc=$?
-    [[ -n "$watcher" ]] && rm -f "$marker"
+    if [[ -n "$watcher" ]]; then
+        kill "$watcher" 2>/dev/null
+        wait "$watcher" 2>/dev/null
+        rm -f "$marker"
+    fi
+    if [[ -n "$prev_active" ]]; then
+        export init_files_iterm_agent_active="$prev_active"
+    else
+        unset init_files_iterm_agent_active
+    fi
     clear_agent_iterm_badge
     return "$rc"
 }
