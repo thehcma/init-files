@@ -2629,6 +2629,15 @@ function check_tool_versions()
     _tool_version_finish_report_print "$pending_tool_count"
 }
 
+function _init_files_copilot_run()
+{
+    if [[ -n "${_init_files_copilot_token:-}" ]]; then
+        GH_TOKEN="$_init_files_copilot_token" command gh copilot "$@"
+    else
+        command gh copilot "$@"
+    fi
+}
+
 # Shortcut for the Copilot CLI (`gh copilot`). Whenever gh knows about more
 # than one github.com account (even ones whose keyring token has gone
 # invalid/expired), prompt which one this invocation should use. A non-active
@@ -2743,13 +2752,114 @@ function copilot()
         token="$(gh auth token --hostname github.com --user "$login" 2>/dev/null || true)"
         if [[ -n "$token" ]]; then
             echo "Using gh account '$login' for this copilot session (active gh identity unchanged)." >&2
-            GH_TOKEN="$token" command gh copilot "$@"
+            _init_files_copilot_token="$token" _init_files_run_session_agent copilot _init_files_copilot_run "$@"
             return
         fi
         echo "Could not get a token for '$login'; using the active gh account instead." >&2
     fi
 
-    command gh copilot "$@"
+    _init_files_run_session_agent copilot _init_files_copilot_run "$@"
+}
+
+# iTerm pane status (user.agentsession) for Copilot / Claude CLIs, mirroring
+# the Cursor agent: show the short session id while running, clear on exit.
+function _init_files_agent_chrome_set()
+{
+    local ttydev="$1" label="$2" b64
+    command -v base64 > /dev/null 2>&1 || return 0
+    b64="$(printf '%s' "$label" | base64 | tr -d '\n')"
+    printf '\033]1337;SetUserVar=%s=%s\007' agentsession "$b64" >"$ttydev" 2>/dev/null || true
+    printf '\033]1;%s\007' "$label" >"$ttydev" 2>/dev/null || true
+}
+
+# Args: kind (copilot|claude) marker-file tty. Polls for the session this
+# launch created (newer than the marker) and publishes its short id.
+function _init_files_agent_session_watch()
+{
+    local kind="$1" marker="$2" ttydev="$3" i sid="" proj
+    for ((i = 0; i < 120; i++)); do
+        if [[ "$kind" == copilot ]]; then
+            sid="$(find "${COPILOT_HOME:-$HOME/.copilot}/session-state" -mindepth 1 -maxdepth 1 -type d -newer "$marker" \
+                -exec ls -dt {} + 2>/dev/null | head -1)"
+            sid="${sid##*/}"
+        else
+            proj="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/${PWD//[^A-Za-z0-9]/-}"
+            sid="$(find "$proj" -maxdepth 1 -name '*.jsonl' -newer "$marker" \
+                -exec ls -t {} + 2>/dev/null | head -1)"
+            sid="${sid##*/}"
+            sid="${sid%.jsonl}"
+        fi
+        if [[ -n "$sid" ]]; then
+            _init_files_agent_chrome_set "$ttydev" "${sid:0:8}"
+            return 0
+        fi
+        sleep 0.5
+    done
+}
+
+# Args: kind, then the CLI argv. Runs the CLI (via _init_files_${kind}_run).
+function _init_files_run_session_agent()
+{
+    local kind="$1" runner="$2" ttydev marker="" watcher="" id="" prev="" prev_active a rc
+    shift 2
+    ttydev="$(_init_files_find_iterm_tty 2>/dev/null || true)"
+    if [[ -z "$ttydev" || ! -t 0 ]]; then
+        "$runner" "$@"
+        return
+    fi
+    for a in "$@"; do
+        case "$prev" in
+            --resume | -r | --session-id) [[ "$a" != -* ]] && id="$a" ;;
+        esac
+        case "$a" in
+            --resume=* | --session-id=*) id="${a#*=}" ;;
+        esac
+        prev="$a"
+    done
+    # A --resume value may be a session name; only a UUID is a usable id.
+    [[ "$id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || id=""
+    # Fresh claude chat: pin our own id so concurrent sessions can't be mistaken for it.
+    if [[ -z "$id" && "$kind" == claude && $# -eq 0 ]] && command -v uuidgen > /dev/null 2>&1; then
+        id="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+        set -- --session-id "$id"
+    fi
+    if [[ -n "$id" ]]; then
+        _init_files_agent_chrome_set "$ttydev" "${id:0:8}"
+    else
+        marker="$(mktemp 2>/dev/null || true)"
+        if [[ -n "$marker" ]]; then
+            { _init_files_agent_session_watch "$kind" "$marker" "$ttydev" > /dev/null 2>&1 & } 2>/dev/null
+            watcher=$!
+            disown "$watcher" 2>/dev/null
+        fi
+    fi
+    # Shells started inside the CLI must not wipe agentsession.
+    prev_active="${init_files_iterm_agent_active:-}"
+    export init_files_iterm_agent_active=1
+    "$runner" "$@"
+    rc=$?
+    if [[ -n "$watcher" ]]; then
+        kill "$watcher" 2>/dev/null
+        wait "$watcher" 2>/dev/null
+        rm -f "$marker"
+    fi
+    if [[ -n "$prev_active" ]]; then
+        export init_files_iterm_agent_active="$prev_active"
+    else
+        unset init_files_iterm_agent_active
+    fi
+    clear_agent_iterm_badge
+    return "$rc"
+}
+
+function _init_files_claude_run()
+{
+    command claude "$@"
+}
+
+function claude()
+{
+    _init_files_run_session_agent claude _init_files_claude_run "$@"
 }
 
 # Unique SSH destinations: Host aliases from ~/.ssh/config (+ config.d) and
@@ -3709,6 +3819,9 @@ function _init_can_sudo_nopasswd()
 {
     [[ "$(id -u 2>/dev/null || echo 1)" -eq 0 ]] && return 0
     command -v sudo > /dev/null 2>&1 || return 1
+    # Never probe sudo for accounts outside a sudoers group: the failed attempt
+    # is logged and triggers admin alert emails.
+    _init_user_in_sudo_group || return 1
     sudo -n true > /dev/null 2>&1
 }
 
