@@ -2629,6 +2629,15 @@ function check_tool_versions()
     _tool_version_finish_report_print "$pending_tool_count"
 }
 
+function _init_files_copilot_run()
+{
+    if [[ -n "${_init_files_copilot_token:-}" ]]; then
+        GH_TOKEN="$_init_files_copilot_token" command gh copilot "$@"
+    else
+        command gh copilot "$@"
+    fi
+}
+
 # Shortcut for the Copilot CLI (`gh copilot`). Whenever gh knows about more
 # than one github.com account (even ones whose keyring token has gone
 # invalid/expired), prompt which one this invocation should use. A non-active
@@ -2637,7 +2646,7 @@ function check_tool_versions()
 # host's active gh identity. Picking an account that needs reauth offers
 # `gh auth refresh` on the spot. Non-interactive shells and hosts with 0-1
 # known accounts fall straight through to the active account.
-function _init_files_copilot_launch()
+function copilot()
 {
     local logins=() valids=() actives=() active_login="" login="" token=""
     local choice i idx reply f_login f_valid f_active mark
@@ -2743,13 +2752,13 @@ function _init_files_copilot_launch()
         token="$(gh auth token --hostname github.com --user "$login" 2>/dev/null || true)"
         if [[ -n "$token" ]]; then
             echo "Using gh account '$login' for this copilot session (active gh identity unchanged)." >&2
-            GH_TOKEN="$token" command gh copilot "$@"
+            _init_files_copilot_token="$token" _init_files_run_session_agent copilot _init_files_copilot_run "$@"
             return
         fi
         echo "Could not get a token for '$login'; using the active gh account instead." >&2
     fi
 
-    command gh copilot "$@"
+    _init_files_run_session_agent copilot _init_files_copilot_run "$@"
 }
 
 # iTerm pane status (user.agentsession) for Copilot / Claude CLIs, mirroring
@@ -2770,11 +2779,11 @@ function _init_files_agent_session_watch()
     local kind="$1" marker="$2" ttydev="$3" i sid="" proj
     for ((i = 0; i < 120; i++)); do
         if [[ "$kind" == copilot ]]; then
-            sid="$(find "$HOME/.copilot/session-state" -mindepth 1 -maxdepth 1 -type d -newer "$marker" \
+            sid="$(find "${COPILOT_HOME:-$HOME/.copilot}/session-state" -mindepth 1 -maxdepth 1 -type d -newer "$marker" \
                 -exec ls -dt {} + 2>/dev/null | head -1)"
             sid="${sid##*/}"
         else
-            proj="$HOME/.claude/projects/${PWD//[^A-Za-z0-9]/-}"
+            proj="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/${PWD//[^A-Za-z0-9]/-}"
             sid="$(find "$proj" -maxdepth 1 -name '*.jsonl' -newer "$marker" \
                 -exec ls -t {} + 2>/dev/null | head -1)"
             sid="${sid##*/}"
@@ -2807,6 +2816,13 @@ function _init_files_run_session_agent()
         esac
         prev="$a"
     done
+    # A --resume value may be a session name; only a UUID is a usable id.
+    [[ "$id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || id=""
+    # Fresh claude chat: pin our own id so concurrent sessions can't be mistaken for it.
+    if [[ -z "$id" && "$kind" == claude && $# -eq 0 ]] && command -v uuidgen > /dev/null 2>&1; then
+        id="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+        set -- --session-id "$id"
+    fi
     if [[ -n "$id" ]]; then
         _init_files_agent_chrome_set "$ttydev" "${id:0:8}"
     else
@@ -2814,6 +2830,7 @@ function _init_files_run_session_agent()
         if [[ -n "$marker" ]]; then
             { _init_files_agent_session_watch "$kind" "$marker" "$ttydev" > /dev/null 2>&1 & } 2>/dev/null
             watcher=$!
+            disown "$watcher" 2>/dev/null
         fi
     fi
     # Shells started inside the CLI must not wipe agentsession.
@@ -2843,11 +2860,6 @@ function _init_files_claude_run()
 function claude()
 {
     _init_files_run_session_agent claude _init_files_claude_run "$@"
-}
-
-function copilot()
-{
-    _init_files_run_session_agent copilot _init_files_copilot_launch "$@"
 }
 
 # Unique SSH destinations: Host aliases from ~/.ssh/config (+ config.d) and
