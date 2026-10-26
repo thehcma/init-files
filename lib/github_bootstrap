@@ -17,6 +17,8 @@ bootstrap_can_sudo_nopasswd()
 {
     [[ "$(id -u 2>/dev/null || echo 1)" -eq 0 ]] && return 0
     command -v sudo >/dev/null 2>&1 || return 1
+    # Avoid logged (alert-triggering) sudo attempts for non-sudoers.
+    bootstrap_user_in_sudo_group || return 1
     sudo -n true >/dev/null 2>&1
 }
 
