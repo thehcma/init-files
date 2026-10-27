@@ -3737,11 +3737,8 @@ function _init_is_macos_admin()
     [[ "$(id -u)" -eq 0 ]] && return 0
     user="$(id -un 2>/dev/null || true)"
     [[ -n "$user" ]] || return 1
-    if command -v dseditgroup >/dev/null 2>&1; then
-        dseditgroup -o checkmember -m "$user" admin >/dev/null 2>&1 && return 0
-        return 1
-    fi
-    id -Gn 2>/dev/null | grep -qw admin
+    # Session groups (not the directory record) decide whether sudo works.
+    id -Gn 2>/dev/null | grep -Eq '(^|[[:space:]])admin([[:space:]]|$)'
 }
 
 # Multi-line admin cut-paste for tools that need Homebrew on modern macOS.

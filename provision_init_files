@@ -746,12 +746,9 @@ is_macos_admin()
     user="$(id -un 2>/dev/null || true)"
     [[ -n "$user" ]] || return 1
 
-    if command -v dseditgroup >/dev/null 2>&1; then
-        dseditgroup -o checkmember -m "$user" admin >/dev/null 2>&1 && return 0
-        return 1
-    fi
-    # Fallback when dseditgroup is unavailable.
-    id -Gn 2>/dev/null | grep -qw admin
+    # Effective groups of this session decide whether sudo works; a directory
+    # record (dseditgroup) can say "admin" while the session cannot elevate.
+    id -Gn 2>/dev/null | grep -Eq '(^|[[:space:]])admin([[:space:]]|$)'
 }
 
 # Print a forwardable Homebrew handoff for IT / an admin (MDM non-admin Macs).
@@ -1847,10 +1844,31 @@ if ((${#VERIFY_FAILED[@]} > 0)); then
     init_files_die "fix recorded tool paths (or re-run with --force after fixing)"
 fi
 
+# Reminder for non-admins that missing Homebrew packages were NOT installed.
+# Also called before the fatal exit when required packages are missing.
+print_non_admin_brew_reminder()
+{
+    local -a final_specs=()
+    local line spec
+
+    is_modern_macos && ! is_macos_admin || return 0
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && final_specs+=("$line")
+    done < <(brew_specs_from_missing \
+        "${REQUIRED_MISSING[@]+"${REQUIRED_MISSING[@]}"}" \
+        "${OPTIONAL_MISSING[@]+"${OPTIONAL_MISSING[@]}"}")
+    ((${#final_specs[@]} > 0)) || return 0
+    init_files_warn "not an admin on this Mac: these Homebrew packages were NOT installed. Ask your administrator to install them if you want them:"
+    for spec in "${final_specs[@]}"; do
+        printf '  %s\n' "$spec" >&2
+    done
+}
+
 if ((${#REQUIRED_MISSING[@]} > 0)); then
     print_install_suggestions "Required tools missing — install them, then re-run ./provision_init_files:" \
         "${REQUIRED_MISSING[@]}"
     if [[ $force -eq 0 ]]; then
+        print_non_admin_brew_reminder
         if is_modern_macos && ! is_macos_admin && (( admin_handoff_emitted == 1 )); then
             init_files_die "refusing to provision; forward the ADMIN HANDOFF above to IT, then re-run ./provision_init_files (or use --force)"
         else
@@ -3009,3 +3027,5 @@ maybe_install_mos_prefs
 maybe_link_shell_completions
 maybe_link_blumkin_config
 print_brew_bash_login_shell_tip
+
+print_non_admin_brew_reminder
