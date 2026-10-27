@@ -2676,6 +2676,20 @@ link_claude_files_to_repo()
 
 link_claude_files_to_repo
 
+# settings.json hooks call $HOME/.config/iterm2/cc-status unwrapped (iTerm2's
+# health check rejects wrapped commands). Off Darwin nothing creates it, so
+# leave a no-op stub to keep every hook event silent. Never overwrite a real file.
+ensure_cc_status_stub()
+{
+    local stub="${HOME}/.config/iterm2/cc-status"
+    [[ "$(uname -s)" == Darwin ]] && return 0
+    [[ -e "$stub" || -L "$stub" ]] && return 0
+    mkdir -p "${stub%/*}" 2>/dev/null || return 0
+    printf '#!/bin/sh\nexit 0\n' >"$stub" 2>/dev/null && chmod +x "$stub" 2>/dev/null
+    log "Created  no-op $stub (iTerm2 cc-status hooks, non-Darwin)"
+}
+ensure_cc_status_stub
+
 # ~/.copilot/copilot-instructions.md symlink (Copilot CLI user-level personal
 # guidelines, loaded each session — no secrets). Preserves any pre-existing
 # regular file as ~/.copilot/<name>.bak.<timestamp> (and a copy under
