@@ -748,7 +748,7 @@ is_macos_admin()
 
     # Effective groups of this session decide whether sudo works; a directory
     # record (dseditgroup) can say "admin" while the session cannot elevate.
-    id -Gn 2>/dev/null | grep -qw admin
+    id -Gn 2>/dev/null | grep -Eq '(^|[[:space:]])admin([[:space:]]|$)'
 }
 
 # Print a forwardable Homebrew handoff for IT / an admin (MDM non-admin Macs).

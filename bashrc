@@ -3738,7 +3738,7 @@ function _init_is_macos_admin()
     user="$(id -un 2>/dev/null || true)"
     [[ -n "$user" ]] || return 1
     # Session groups (not the directory record) decide whether sudo works.
-    id -Gn 2>/dev/null | grep -qw admin
+    id -Gn 2>/dev/null | grep -Eq '(^|[[:space:]])admin([[:space:]]|$)'
 }
 
 # Multi-line admin cut-paste for tools that need Homebrew on modern macOS.
