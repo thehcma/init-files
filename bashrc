@@ -2772,6 +2772,15 @@ function _init_files_agent_chrome_set()
     printf '\033]1;%s\007' "$label" >"$ttydev" 2>/dev/null || true
 }
 
+# Args: jsonl-file entry-type key. Prints the last such entry's JSON string
+# value, honoring \" and \\ escapes (ERE only; no python needed).
+function _init_files_json_title()
+{
+    grep -a "\"type\":\"$2\"" "$1" | tail -1 \
+        | sed -nE "s/.*\"$3\":\"(([^\"\\\\]|\\\\.)*)\".*/\\1/p" \
+        | sed -e 's/\\"/"/g' -e 's/\\\\/\\/g'
+}
+
 # Args: kind (copilot|claude) session-id. Prints the human title the CLI has
 # recorded for that session (empty when none yet).
 function _init_files_agent_session_title()
@@ -2784,8 +2793,8 @@ function _init_files_agent_session_title()
         f="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/${PWD//[^A-Za-z0-9]/-}/$sid.jsonl"
         if [[ -r "$f" ]]; then
             # A /rename title wins over the auto-generated one.
-            t="$(grep -a '"type":"custom-title"' "$f" | tail -1 | sed -n 's/.*"customTitle":"\([^"]*\)".*/\1/p')"
-            [[ -n "$t" ]] || t="$(grep -a '"type":"ai-title"' "$f" | tail -1 | sed -n 's/.*"aiTitle":"\([^"]*\)".*/\1/p')"
+            t="$(_init_files_json_title "$f" custom-title customTitle)"
+            [[ -n "$t" ]] || t="$(_init_files_json_title "$f" ai-title aiTitle)"
         fi
     fi
     t="${t#\"}"
