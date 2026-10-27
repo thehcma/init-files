@@ -2772,28 +2772,71 @@ function _init_files_agent_chrome_set()
     printf '\033]1;%s\007' "$label" >"$ttydev" 2>/dev/null || true
 }
 
-# Args: kind (copilot|claude) marker-file tty. Polls for the session this
-# launch created (newer than the marker) and publishes its short id.
+# Args: jsonl-file entry-type key. Prints the last such entry's JSON string
+# value, honoring \" and \\ escapes (ERE only; no python needed).
+function _init_files_json_title()
+{
+    "${init_tool_grep:-grep}" -aE "\"type\"[[:space:]]*:[[:space:]]*\"$2\"" "$1" | tail -1 \
+        | sed -nE "s/.*\"$3\"[[:space:]]*:[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\".*/\\1/p" \
+        | sed -e 's/\\"/"/g' -e 's/\\\\/\\/g'
+}
+
+# Args: kind (copilot|claude) session-id. Prints the human title the CLI has
+# recorded for that session (empty when none yet).
+function _init_files_agent_session_title()
+{
+    local kind="$1" sid="$2" f t=""
+    if [[ "$kind" == copilot ]]; then
+        f="${COPILOT_HOME:-$HOME/.copilot}/session-state/$sid/workspace.yaml"
+        if [[ -r "$f" ]]; then
+            t="$(sed -n 's/^name: *//p' "$f" | head -1)"
+            t="${t#\"}"
+            t="${t%\"}"
+        fi
+    else
+        f="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/${PWD//[^A-Za-z0-9]/-}/$sid.jsonl"
+        if [[ -r "$f" ]]; then
+            # A /rename title wins over the auto-generated one.
+            t="$(_init_files_json_title "$f" custom-title customTitle)"
+            [[ -n "$t" ]] || t="$(_init_files_json_title "$f" ai-title aiTitle)"
+        fi
+    fi
+    printf '%s' "${t:0:40}"
+}
+
+# Args: kind (copilot|claude) marker-file tty [known-session-id] [parent-pid]. Publishes the
+# short id (finding the session this launch created when not known) and keeps
+# refreshing "id:title" while the CLI renames the session. Exits when the
+# launching shell (parent-pid) is gone, e.g. killed before it could reap us.
 function _init_files_agent_session_watch()
 {
-    local kind="$1" marker="$2" ttydev="$3" i sid="" proj
-    for ((i = 0; i < 120; i++)); do
-        if [[ "$kind" == copilot ]]; then
-            sid="$(find "${COPILOT_HOME:-$HOME/.copilot}/session-state" -mindepth 1 -maxdepth 1 -type d -newer "$marker" \
-                -exec ls -dt {} + 2>/dev/null | head -1)"
-            sid="${sid##*/}"
-        else
-            proj="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/${PWD//[^A-Za-z0-9]/-}"
-            sid="$(find "$proj" -maxdepth 1 -name '*.jsonl' -newer "$marker" \
-                -exec ls -t {} + 2>/dev/null | head -1)"
-            sid="${sid##*/}"
-            sid="${sid%.jsonl}"
+    local kind="$1" marker="$2" ttydev="$3" sid="${4:-}" parent_pid="${5:-}" i proj title label last=""
+    for ((i = 0; i < 100000; i++)); do
+        [[ -z "$parent_pid" ]] || kill -0 "$parent_pid" 2> /dev/null || return 0
+        if [[ -z "$sid" && -n "$marker" ]]; then
+            if [[ "$kind" == copilot ]]; then
+                sid="$(find "${COPILOT_HOME:-$HOME/.copilot}/session-state" -mindepth 1 -maxdepth 1 -type d -newer "$marker" \
+                    -exec ls -dt {} + 2>/dev/null | head -1)"
+                sid="${sid##*/}"
+            else
+                proj="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/${PWD//[^A-Za-z0-9]/-}"
+                sid="$(find "$proj" -maxdepth 1 -name '*.jsonl' -newer "$marker" \
+                    -exec ls -t {} + 2>/dev/null | head -1)"
+                sid="${sid##*/}"
+                sid="${sid%.jsonl}"
+            fi
         fi
         if [[ -n "$sid" ]]; then
-            _init_files_agent_chrome_set "$ttydev" "${sid:0:8}"
-            return 0
+            title="$(_init_files_agent_session_title "$kind" "$sid")"
+            label="${sid:0:8}${title:+:$title}"
+            if [[ "$label" != "$last" ]]; then
+                _init_files_agent_chrome_set "$ttydev" "$label"
+                last="$label"
+            fi
+            sleep 5
+        else
+            sleep 0.5
         fi
-        sleep 0.5
     done
 }
 
@@ -2825,13 +2868,12 @@ function _init_files_run_session_agent()
     fi
     if [[ -n "$id" ]]; then
         _init_files_agent_chrome_set "$ttydev" "${id:0:8}"
-    else
-        marker="$(mktemp 2>/dev/null || true)"
-        if [[ -n "$marker" ]]; then
-            { _init_files_agent_session_watch "$kind" "$marker" "$ttydev" > /dev/null 2>&1 & } 2>/dev/null
-            watcher=$!
-            disown "$watcher" 2>/dev/null
-        fi
+    fi
+    marker="$(mktemp 2>/dev/null || true)"
+    if [[ -n "$marker" ]]; then
+        { _init_files_agent_session_watch "$kind" "$marker" "$ttydev" "$id" "$$" > /dev/null 2>&1 & } 2>/dev/null
+        watcher=$!
+        disown "$watcher" 2>/dev/null
     fi
     # Shells started inside the CLI must not wipe agentsession.
     prev_active="${init_files_iterm_agent_active:-}"
