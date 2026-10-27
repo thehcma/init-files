@@ -42,8 +42,10 @@ status-bar helper (a symlink iTerm2 manages itself, normally pointing at
 `/Applications/iTerm.app/Contents/Resources/utilities/cc-status`). The
 command uses `$HOME` rather than a literal `/Users/<name>` path so it stays
 portable across accounts/hosts, consistent with the tool-path-consistency
-rule. If iTerm2 isn't installed, or that symlink doesn't exist yet, the hook
-command just no-ops/fails harmlessly.
+rule. The command must stay unwrapped (no `uname` guard): iTerm2's health check
+rejects commands that run more than cc-status and keeps prompting to
+reinstall. On non-Darwin hosts `provision_init_files` creates a no-op
+`~/.config/iterm2/cc-status` stub instead.
 
 iTerm2 sometimes rewrites `~/.claude/settings.json` in place when
 (re)installing this integration, which can replace the symlink with a plain

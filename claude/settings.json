@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true"
+            "command": "\"$HOME/.config/iterm2/cc-status\""
           }
         ]
       }
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true"
+            "command": "\"$HOME/.config/iterm2/cc-status\""
           }
         ]
       }
@@ -37,7 +37,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true"
+            "command": "\"$HOME/.config/iterm2/cc-status\""
           }
         ]
       }
@@ -47,7 +47,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true"
+            "command": "\"$HOME/.config/iterm2/cc-status\""
           }
         ]
       }
@@ -57,7 +57,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true"
+            "command": "\"$HOME/.config/iterm2/cc-status\""
           }
         ]
       }
@@ -67,7 +67,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true"
+            "command": "\"$HOME/.config/iterm2/cc-status\""
           }
         ]
       }
@@ -77,7 +77,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true"
+            "command": "\"$HOME/.config/iterm2/cc-status\""
           }
         ]
       }
@@ -87,7 +87,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true"
+            "command": "\"$HOME/.config/iterm2/cc-status\""
           }
         ]
       }
@@ -97,7 +97,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true"
+            "command": "\"$HOME/.config/iterm2/cc-status\""
           }
         ]
       }
@@ -107,7 +107,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"$(uname -s)\" = Darwin ] && exec \"$HOME/.config/iterm2/cc-status\"; true"
+            "command": "\"$HOME/.config/iterm2/cc-status\""
           }
         ]
       }
