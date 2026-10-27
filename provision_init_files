@@ -2683,9 +2683,23 @@ ensure_cc_status_stub()
 {
     local stub="${HOME}/.config/iterm2/cc-status"
     [[ "$(uname -s)" == Darwin ]] && return 0
-    [[ -e "$stub" || -L "$stub" ]] && return 0
-    mkdir -p "${stub%/*}" 2>/dev/null || return 0
-    printf '#!/bin/sh\nexit 0\n' >"$stub" 2>/dev/null && chmod +x "$stub" 2>/dev/null
+    [[ -e "$stub" ]] && return 0
+    # A dangling symlink (e.g. a Darwin iTerm2 link on a shared home) would
+    # still break the hook, so replace it.
+    if [[ -L "$stub" ]] && ! rm -f "$stub" 2>/dev/null; then
+        init_files_warn "cannot replace dangling $stub"
+        return 0
+    fi
+    # Restrictive umask so a new parent dir / stub is not group/other-writable.
+    if ! (umask 077 && mkdir -p "${stub%/*}") 2>/dev/null; then
+        init_files_warn "cannot create ${stub%/*} for the iTerm2 cc-status stub"
+        return 0
+    fi
+    if ! (umask 077 && printf '#!/bin/sh\nexit 0\n' >"$stub") 2>/dev/null \
+        || ! chmod 700 "$stub" 2>/dev/null; then
+        init_files_warn "cannot create executable no-op $stub"
+        return 0
+    fi
     log "Created  no-op $stub (iTerm2 cc-status hooks, non-Darwin)"
 }
 ensure_cc_status_stub
