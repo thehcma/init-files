@@ -2793,13 +2793,15 @@ function _init_files_agent_session_title()
     printf '%s' "${t:0:40}"
 }
 
-# Args: kind (copilot|claude) marker-file tty [known-session-id]. Publishes the
+# Args: kind (copilot|claude) marker-file tty [known-session-id] [parent-pid]. Publishes the
 # short id (finding the session this launch created when not known) and keeps
-# refreshing "id:title" while the CLI renames the session.
+# refreshing "id:title" while the CLI renames the session. Exits when the
+# launching shell (parent-pid) is gone, e.g. killed before it could reap us.
 function _init_files_agent_session_watch()
 {
-    local kind="$1" marker="$2" ttydev="$3" sid="${4:-}" i proj title label last=""
+    local kind="$1" marker="$2" ttydev="$3" sid="${4:-}" parent_pid="${5:-}" i proj title label last=""
     for ((i = 0; i < 100000; i++)); do
+        [[ -z "$parent_pid" ]] || kill -0 "$parent_pid" 2> /dev/null || return 0
         if [[ -z "$sid" && -n "$marker" ]]; then
             if [[ "$kind" == copilot ]]; then
                 sid="$(find "${COPILOT_HOME:-$HOME/.copilot}/session-state" -mindepth 1 -maxdepth 1 -type d -newer "$marker" \
@@ -2858,7 +2860,7 @@ function _init_files_run_session_agent()
     fi
     marker="$(mktemp 2>/dev/null || true)"
     if [[ -n "$marker" ]]; then
-        { _init_files_agent_session_watch "$kind" "$marker" "$ttydev" "$id" > /dev/null 2>&1 & } 2>/dev/null
+        { _init_files_agent_session_watch "$kind" "$marker" "$ttydev" "$id" "$$" > /dev/null 2>&1 & } 2>/dev/null
         watcher=$!
         disown "$watcher" 2>/dev/null
     fi
