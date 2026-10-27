@@ -1860,8 +1860,7 @@ print_non_admin_brew_reminder()
     ((${#final_specs[@]} > 0)) || return 0
     init_files_warn "not an admin on this Mac: these Homebrew packages were NOT installed. Ask your administrator to install them if you want them:"
     for spec in "${final_specs[@]}"; do
-        printf '  ' >&2
-        brew_install_display "$spec" >&2
+        printf '  %s\n' "$spec" >&2
     done
 }
 
