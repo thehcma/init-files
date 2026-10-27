@@ -2776,8 +2776,8 @@ function _init_files_agent_chrome_set()
 # value, honoring \" and \\ escapes (ERE only; no python needed).
 function _init_files_json_title()
 {
-    grep -a "\"type\":\"$2\"" "$1" | tail -1 \
-        | sed -nE "s/.*\"$3\":\"(([^\"\\\\]|\\\\.)*)\".*/\\1/p" \
+    "${init_tool_grep:-grep}" -aE "\"type\"[[:space:]]*:[[:space:]]*\"$2\"" "$1" | tail -1 \
+        | sed -nE "s/.*\"$3\"[[:space:]]*:[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\".*/\\1/p" \
         | sed -e 's/\\"/"/g' -e 's/\\\\/\\/g'
 }
 
@@ -2788,7 +2788,11 @@ function _init_files_agent_session_title()
     local kind="$1" sid="$2" f t=""
     if [[ "$kind" == copilot ]]; then
         f="${COPILOT_HOME:-$HOME/.copilot}/session-state/$sid/workspace.yaml"
-        [[ -r "$f" ]] && t="$(sed -n 's/^name: *//p' "$f" | head -1)"
+        if [[ -r "$f" ]]; then
+            t="$(sed -n 's/^name: *//p' "$f" | head -1)"
+            t="${t#\"}"
+            t="${t%\"}"
+        fi
     else
         f="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/${PWD//[^A-Za-z0-9]/-}/$sid.jsonl"
         if [[ -r "$f" ]]; then
@@ -2797,8 +2801,6 @@ function _init_files_agent_session_title()
             [[ -n "$t" ]] || t="$(_init_files_json_title "$f" ai-title aiTitle)"
         fi
     fi
-    t="${t#\"}"
-    t="${t%\"}"
     printf '%s' "${t:0:40}"
 }
 
