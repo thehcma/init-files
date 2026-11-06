@@ -116,7 +116,25 @@
   "theme": "dark",
   "editorMode": "vim",
   "remoteControlAtStartup": true,
+  "permissions": {
+    "allow": [
+      "mcp__blumkin__mail_reply",
+      "mcp__blumkin__mail_draft",
+      "mcp__blumkin__mail_update-draft",
+      "mcp__blumkin__mail_edit-draft",
+      "mcp__blumkin__chat_draft",
+      "mcp__blumkin__chat_edit-draft",
+      "Bash(*/scripts/dev/blumkin * mail reply*)",
+      "Bash(*/scripts/dev/blumkin * mail draft*)",
+      "Bash(*/scripts/dev/blumkin * mail update-draft*)",
+      "Bash(*/scripts/dev/blumkin * chat draft*)"
+    ]
+  },
   "autoMode": {
+    "allow": [
+      "$defaults",
+      "Creating, updating, or reading an email/chat DRAFT via blumkin (mail_draft, mail_reply, mail_update-draft, mail_edit-draft, chat_draft, chat_edit-draft, or the equivalent `blumkin mail reply|draft|update-draft` / `blumkin chat draft` dev-CLI subcommands) is always allowed. A draft is not sent and is not visible to anyone until a separate, explicit send action (mail_send-draft, chat_send, `blumkin mail send-draft --yes`) runs - that send action still goes through its own review/confirmation and is not covered by this rule."
+    ],
     "environment": [
       "### Org-wide",
       "**Organization**: BRK Tech (brk-oss org on GitHub; repo references BRK Tech DevEx and BRK Tech Labs/opcos) — scoped to this repo (brk-oss/octosentry) and its remote only",
