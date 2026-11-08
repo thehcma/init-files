@@ -775,7 +775,7 @@ function _init_configure_fzf_env()
 # the backup is created exclusively (noclobber) so nothing is ever overwritten.
 function _init_crypt_backup()
 {
-    local src dir dest base hash packets snap n
+    local src dir dest base hash name packets snap ghome n
 
     src="$1"
     [[ -e "$src" ]] || return 0
@@ -795,12 +795,26 @@ function _init_crypt_backup()
         return 1
     fi
 
-    # list-packets still attempts decryption; pinentry-mode error keeps it from
-    # prompting. Only top-level packet lines (column 0) count: indented detail
-    # lines carry attacker-controlled text such as literal-data filenames.
-    packets=$("$init_tool_gpg" --batch --pinentry-mode error --no-symkey-cache --list-packets -- "$snap" 2>&1 < /dev/null)
-    if ! grep -qE '^:(encrypted data|symkey enc|pubkey enc)' <<< "$packets" \
-        || grep -qE '^:(literal data|compressed|signature|one-pass sig)' <<< "$packets"; then
+    # An empty homedir without an agent means gpg can never decrypt (no secret
+    # keys, no passphrase prompt), so only the outer packets are ever listed.
+    # Require exactly: session-key packet(s) then one encrypted-data packet at
+    # column 0 (indented detail lines carry attacker-controlled text), and no
+    # parse errors (e.g. a session-key packet followed by raw plaintext).
+    ghome=$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/crypt-backup-gpg.XXXXXX") || {
+        /bin/rm -f -- "$snap"
+        return 1
+    }
+    packets=$("$init_tool_gpg" --homedir "$ghome" --batch --no-autostart --pinentry-mode error --no-symkey-cache --list-packets -- "$snap" 2>&1 < /dev/null)
+    /bin/rm -rf -- "$ghome"
+    if grep -qiE 'invalid packet|malformed' <<< "$packets" \
+        || ! awk '
+            /^:/ {
+                if ($0 ~ /^:(symkey|pubkey) enc packet/) { if (data) bad = 1; keys++ }
+                else if ($0 ~ /^:encrypted data packet/) { if (data) bad = 1; data = 1 }
+                else bad = 1
+            }
+            END { exit !(keys >= 1 && data && !bad) }
+        ' <<< "$packets"; then
         /bin/rm -f -- "$snap"
         echo "ERROR: crypt backup: '$src' is not gpg-encrypted; refusing to copy it into ~/backup-crypt" >&2
         return 1
@@ -814,12 +828,16 @@ function _init_crypt_backup()
     chmod 700 "$dir" 2> /dev/null || true
 
     # Hash of the absolute directory keeps same-named files from different
-    # directories apart.
+    # directories apart; the basename is truncated so the backup name stays
+    # under the 255-byte filesystem limit (uniqueness comes from the suffixes).
     hash=$(printf '%s' "$(cd -- "$(dirname -- "$src")" && pwd -P)" | cksum | awk '{print $1}')
-    base="$dir/$(basename -- "$src").${hash}.$(date +%Y%m%d%H%M%S)"
+    name=$(basename -- "$src" | LC_ALL=C cut -b1-120)
+    base="$dir/${name}.${hash}.$(date +%Y%m%d%H%M%S)"
     dest="$base"
     n=0
-    until (set -o noclobber && umask 077 && cat -- "$snap" > "$dest") 2> /dev/null; do
+    # Reserve the name exclusively first so a collision (retry) is never
+    # confused with a write failure (remove our partial file and stop).
+    until (set -o noclobber && umask 077 && : > "$dest") 2> /dev/null; do
         n=$((n + 1))
         if (( n > 1000 )); then
             /bin/rm -f -- "$snap"
@@ -828,6 +846,11 @@ function _init_crypt_backup()
         fi
         dest="${base}.${n}"
     done
+    if ! cat -- "$snap" > "$dest"; then
+        /bin/rm -f -- "$snap" "$dest"
+        echo "ERROR: crypt backup: could not write '$dest'" >&2
+        return 1
+    fi
     touch -r "$src" "$dest" 2> /dev/null || true
     /bin/rm -f -- "$snap"
     echo "backed up '$src' -> '$dest'" >&2

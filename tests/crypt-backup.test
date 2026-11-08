@@ -28,7 +28,8 @@ init_tool_gpg="$(command -v gpg)"
 export GNUPGHOME="$tmp/gnupg"
 mkdir -m 700 "$GNUPGHOME"
 export HOME="$tmp/home"
-mkdir -p "$HOME" "$tmp/work"
+export TMPDIR="$tmp/tmpdir"
+mkdir -p "$HOME" "$tmp/work" "$TMPDIR"
 
 # Batch passphrase instead of the interactive pinentry used by the real wrapper.
 gpg_symmetric()
@@ -72,6 +73,25 @@ rc=0
 encrypt "$tmp/work/baz" 2> /dev/null || rc=$?
 assert_exit_nonzero "encrypt refuses spoofed literal packet" "$rc"
 assert_eq "no spoofed plaintext in backups" "0" "$(grep -rl 'spoof secret' "$HOME/backup-crypt" | wc -l | tr -d ' ')"
-assert_eq "no temp snapshots left behind" "0" "$(count_in "${TMPDIR:-/tmp}" 'crypt-backup.*')"
+assert_eq "no temp snapshots left behind" "0" "$(count_in "$TMPDIR" 'crypt-backup*')"
+
+# A valid session-key packet followed by raw plaintext must be refused.
+head -c 15 "$tmp/first.crypt" > "$tmp/work/qux.crypt"
+printf 'trailing secret\n' >> "$tmp/work/qux.crypt"
+printf 'qux\n' > "$tmp/work/qux"
+rc=0
+encrypt "$tmp/work/qux" 2> /dev/null || rc=$?
+assert_exit_nonzero "encrypt refuses session key + raw plaintext" "$rc"
+assert_eq "no trailing plaintext in backups" "0" "$(grep -rl 'trailing secret' "$HOME/backup-crypt" | wc -l | tr -d ' ')"
+
+# Long basenames still back up (backup name stays under NAME_MAX).
+long="$(printf 'a%.0s' $(seq 1 240))"
+printf 'l1\n' > "$tmp/work/$long"
+encrypt "$tmp/work/$long" 2> /dev/null
+printf 'l2\n' > "$tmp/work/$long"
+rc=0
+encrypt "$tmp/work/$long" 2> /dev/null || rc=$?
+assert_eq "long basename backs up" "0" "$rc"
+assert_eq "long basename backup exists" "1" "$(count_in "$HOME/backup-crypt" 'aaaa*')"
 
 test_summary
