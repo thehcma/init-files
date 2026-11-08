@@ -767,6 +767,95 @@ function _init_configure_fzf_env()
     fi
 }
 
+# Copy an existing .crypt file into ~/backup-crypt before encrypt() overwrites
+# it. Invariant: that directory only ever holds OpenPGP-encrypted files, so a
+# file that is not verifiably encrypted is refused (the caller must then not
+# overwrite it) rather than copied in the clear. The source is snapshotted into
+# a private temp file first so the bytes validated are the bytes backed up, and
+# the backup is created exclusively (noclobber) so nothing is ever overwritten.
+function _init_crypt_backup()
+{
+    local src dir dest base hash name packets snap ghome n
+
+    src="$1"
+    [[ -e "$src" ]] || return 0
+
+    if [[ ! -f "$src" ]]; then
+        echo "ERROR: crypt backup: '$src' is not a regular file" >&2
+        return 1
+    fi
+    if [[ -z "${init_tool_gpg:-}" || ! -x "$init_tool_gpg" ]]; then
+        echo "ERROR: crypt backup: gpg not found (run provision_init_files)" >&2
+        return 1
+    fi
+
+    snap=$(umask 077 && mktemp "${TMPDIR:-/tmp}/crypt-backup.XXXXXX") || return 1
+    if ! cat -- "$src" > "$snap"; then
+        /bin/rm -f -- "$snap"
+        return 1
+    fi
+
+    # An empty homedir without an agent means gpg can never decrypt (no secret
+    # keys, no passphrase prompt), so only the outer packets are ever listed.
+    # Require exactly: session-key packet(s) then one encrypted-data packet at
+    # column 0 (indented detail lines carry attacker-controlled text), and no
+    # parse errors (e.g. a session-key packet followed by raw plaintext).
+    ghome=$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/crypt-backup-gpg.XXXXXX") || {
+        /bin/rm -f -- "$snap"
+        return 1
+    }
+    packets=$("$init_tool_gpg" --homedir "$ghome" --batch --no-autostart --pinentry-mode error --no-symkey-cache --list-packets -- "$snap" 2>&1 < /dev/null)
+    /bin/rm -rf -- "$ghome"
+    if grep -qiE 'invalid packet|malformed' <<< "$packets" \
+        || ! awk '
+            /^:/ {
+                if ($0 ~ /^:(symkey|pubkey) enc packet/) { if (data) bad = 1; keys++ }
+                else if ($0 ~ /^:encrypted data packet/) { if (data) bad = 1; data = 1 }
+                else bad = 1
+            }
+            END { exit !(keys >= 1 && data && !bad) }
+        ' <<< "$packets"; then
+        /bin/rm -f -- "$snap"
+        echo "ERROR: crypt backup: '$src' is not gpg-encrypted; refusing to copy it into ~/backup-crypt" >&2
+        return 1
+    fi
+
+    dir="$HOME/backup-crypt"
+    if ! (umask 077 && mkdir -p -- "$dir"); then
+        /bin/rm -f -- "$snap"
+        return 1
+    fi
+    chmod 700 "$dir" 2> /dev/null || true
+
+    # Hash of the absolute directory keeps same-named files from different
+    # directories apart; the basename is truncated so the backup name stays
+    # under the 255-byte filesystem limit (uniqueness comes from the suffixes).
+    hash=$(printf '%s' "$(cd -- "$(dirname -- "$src")" && pwd -P)" | cksum | awk '{print $1}')
+    name=$(basename -- "$src" | LC_ALL=C cut -b1-120)
+    base="$dir/${name}.${hash}.$(date +%Y%m%d%H%M%S)"
+    dest="$base"
+    n=0
+    # Reserve the name exclusively first so a collision (retry) is never
+    # confused with a write failure (remove our partial file and stop).
+    until (set -o noclobber && umask 077 && : > "$dest") 2> /dev/null; do
+        n=$((n + 1))
+        if (( n > 1000 )); then
+            /bin/rm -f -- "$snap"
+            echo "ERROR: crypt backup: could not create a backup file in '$dir'" >&2
+            return 1
+        fi
+        dest="${base}.${n}"
+    done
+    if ! cat -- "$snap" > "$dest"; then
+        /bin/rm -f -- "$snap" "$dest"
+        echo "ERROR: crypt backup: could not write '$dest'" >&2
+        return 1
+    fi
+    touch -r "$src" "$dest" 2> /dev/null || true
+    /bin/rm -f -- "$snap"
+    echo "backed up '$src' -> '$dest'" >&2
+}
+
 # Wrap fzf's Ctrl-R widget:
 # - --print-query: leave an unmatched query on the command line for edit/submit.
 #   fzf prints "query" alone on no match, or "query\nselection" on a hit; stock
@@ -4112,6 +4201,8 @@ function encrypt()
 Usage: encrypt <name>
 
 Tar <name>, encrypt to <name>.crypt (AES256), and remove the original and .tar.
+An existing <name>.crypt is first copied to ~/backup-crypt (encrypted files
+only; backups accumulate and are never pruned).
 Example: encrypt /tmp/foo   # writes /tmp/foo.crypt
 EOF
             [[ -n "${1:-}" ]]
@@ -4132,6 +4223,11 @@ EOF
         echo "ERROR: encrypt: '$target' does not exist" >&2
         return 1
     fi
+
+    _init_crypt_backup "${target}.crypt" || {
+        echo "ERROR: encrypt: backup of existing '${target}.crypt' failed -- nothing changed" >&2
+        return 1
+    }
 
     tar -C "$target_dir" -cf "${target}.tar" "$target_base"
     if [[ "$?" -ne 0 ]]; then
