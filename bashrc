@@ -2993,6 +2993,67 @@ function claude()
     _init_files_run_session_agent claude _init_files_claude_run "$@"
 }
 
+# Claude Code against the default (BHE Anthropic tenant) login: drop any gateway,
+# API-key and model overrides inherited from the environment. All arguments are forwarded.
+function _init_files_claude_clear_env()
+{
+    unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY \
+        ANTHROPIC_MODEL ANTHROPIC_SMALL_FAST_MODEL \
+        ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL \
+        ANTHROPIC_DEFAULT_HAIKU_MODEL
+}
+
+function _init_files_claude_bhe_run()
+{
+    (
+        _init_files_claude_clear_env
+        command claude "$@"
+    )
+}
+
+function claude-bhe()
+{
+    _init_files_run_session_agent claude _init_files_claude_bhe_run "$@"
+}
+
+# Claude Code through the BRK Commons LiteLLM gateway. URL, key and models come
+# from a local, user-only env file (never tracked); the env is set in a subshell
+# so nothing leaks into the interactive shell. All arguments are forwarded.
+function _init_files_claude_brk_commons_run()
+{
+    local env_file="${BRK_COMMONS_LLM_GATEWAY_ENV:-${HOME}/.config/brk-commons/llm-gateway.env}"
+    if [[ ! -r "$env_file" ]]; then
+        echo "claude-brk-commons: cannot read ${env_file}" >&2
+        return 1
+    fi
+    # The file is sourced, so it must be ours and not writable by group/other.
+    if [[ -z "$(find "$env_file" -maxdepth 0 -user "$(id -un)" ! -perm -g=w ! -perm -o=w 2> /dev/null)" ]]; then
+        echo "claude-brk-commons: ${env_file} must be owned by you and not group/other-writable" >&2
+        return 1
+    fi
+    if grep -q $'\r' "$env_file"; then
+        echo "claude-brk-commons: ${env_file} has CRLF line endings" >&2
+        return 1
+    fi
+    (
+        _init_files_claude_clear_env
+        set -a
+        # shellcheck disable=SC1090
+        . "$env_file" || exit 1
+        set +a
+        if [[ -z "${ANTHROPIC_BASE_URL:-}" || -z "${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
+            echo "claude-brk-commons: ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN missing in ${env_file}" >&2
+            exit 1
+        fi
+        command claude "$@"
+    )
+}
+
+function claude-brk-commons()
+{
+    _init_files_run_session_agent claude _init_files_claude_brk_commons_run "$@"
+}
+
 # Unique SSH destinations: Host aliases from ~/.ssh/config (+ config.d) and
 # cleartext names from ~/.ssh/known_hosts[2]. Hashed known_hosts lines are skipped.
 function _init_ssh_hosts()
