@@ -3026,6 +3026,11 @@ function _init_files_claude_brk_commons_run()
         echo "claude-brk-commons: cannot read ${env_file}" >&2
         return 1
     fi
+    # The file is sourced, so it must be ours and not writable by group/other.
+    if [[ -z "$(find "$env_file" -maxdepth 0 -user "$(id -un)" ! -perm -g=w ! -perm -o=w 2> /dev/null)" ]]; then
+        echo "claude-brk-commons: ${env_file} must be owned by you and not group/other-writable" >&2
+        return 1
+    fi
     if grep -q $'\r' "$env_file"; then
         echo "claude-brk-commons: ${env_file} has CRLF line endings" >&2
         return 1
