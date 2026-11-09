@@ -2993,12 +2993,22 @@ function claude()
     _init_files_run_session_agent claude _init_files_claude_run "$@"
 }
 
-# Claude Code against the default (BHE Anthropic tenant) login: drop any gateway
-# overrides inherited from the environment. All arguments are forwarded.
+# Claude Code against the default (BHE Anthropic tenant) login: drop any gateway,
+# API-key and model overrides inherited from the environment. All arguments are forwarded.
+function _init_files_claude_clear_env()
+{
+    unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY \
+        ANTHROPIC_MODEL ANTHROPIC_SMALL_FAST_MODEL \
+        ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL \
+        ANTHROPIC_DEFAULT_HAIKU_MODEL
+}
+
 function _init_files_claude_bhe_run()
 {
-    env -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_MODEL \
-        -u ANTHROPIC_SMALL_FAST_MODEL claude "$@"
+    (
+        _init_files_claude_clear_env
+        command claude "$@"
+    )
 }
 
 function claude-bhe()
@@ -3021,6 +3031,7 @@ function _init_files_claude_brk_commons_run()
         return 1
     fi
     (
+        _init_files_claude_clear_env
         set -a
         # shellcheck disable=SC1090
         . "$env_file" || exit 1
