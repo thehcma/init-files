@@ -146,6 +146,38 @@ init_files_cache_ssh_for_host target-alias
 got="$(<"$cache_calls")"
 assert_eq 'SSH_CACHE_KEY keeps global override' '-c' "$got"
 unset SSH_CACHE_KEY
+
+: >"$cache_calls"
+cache_ssh()
+{
+    printf '%s\n' "$*" >>"$cache_calls"
+    [[ "${1-}" == -c && "${2-}" == "$fallback_key" ]]
+}
+init_files_cache_ssh_for_host target-alias
+got="$(<"$cache_calls")"
+assert_eq 'any already-loaded candidate key avoids a prompt' \
+    "-c $host_key"$'\n'"-c $fallback_key" "$got"
+# Unrelated default key loaded must not satisfy a host with an explicit key.
+default_key="${tmpdir}/.ssh/id_ed25519"
+printf 'd\n' >"$default_key"
+chmod 600 "$default_key"
+fake_ssh2="${tmpdir}/fake-ssh2"
+cat >"$fake_ssh2" <<'EOF2'
+#!/usr/bin/env bash
+printf '%s\n' 'identityfile ~/.ssh/id_host' 'identityfile ~/.ssh/id_ed25519'
+EOF2
+chmod 755 "$fake_ssh2"
+init_tool_ssh="$fake_ssh2"
+: >"$cache_calls"
+cache_ssh()
+{
+    printf '%s\n' "$*" >>"$cache_calls"
+    [[ "${1-}" == -c && "${2-}" == "$default_key" ]]
+}
+init_files_cache_ssh_for_host any-host || true
+got="$(<"$cache_calls")"
+assert_eq 'explicit key prompted despite loaded default key' \
+    "-c $host_key"$'\n'"$host_key" "$got"
 HOME="$old_home"
 export HOME
 
