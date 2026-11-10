@@ -75,12 +75,13 @@ init_files_ssh_key_usable()
     return 0
 }
 
-# Print the first existing IdentityFile from OpenSSH's effective config for $2.
-# Usage: init_files_ssh_key_for_host ssh_binary user@host
-init_files_ssh_key_for_host()
+# Print every existing IdentityFile from OpenSSH's effective config for $2,
+# in config order (deduplicated).
+# Usage: init_files_ssh_keys_for_host ssh_binary user@host
+init_files_ssh_keys_for_host()
 {
     local ssh_cmd="${1-}" host="${2-}"
-    local option key
+    local option key seen="" found=1
 
     init_files_bt_program_ok "$ssh_cmd" || return 1
     [[ -n "$host" ]] || return 1
@@ -90,28 +91,65 @@ init_files_ssh_key_for_host()
         key="${key/#\~/$HOME}"
         key="${key//\%d/$HOME}"
         [[ -f "$key" ]] || continue
+        case "$seen" in *"|${key}|"*) continue ;; esac
+        seen+="|${key}|"
         printf '%s\n' "$key"
-        return 0
+        found=0
     done < <("$ssh_cmd" -G -- "$host" 2>/dev/null)
-    return 1
+    return "$found"
 }
 
-# Ensure the key selected by this host's SSH config is loaded in ssh-agent.
+# Print the first existing IdentityFile from OpenSSH's effective config for $2.
+# Usage: init_files_ssh_key_for_host ssh_binary user@host
+init_files_ssh_key_for_host()
+{
+    local first=""
+    IFS= read -r first < <(init_files_ssh_keys_for_host "$@" 2>/dev/null) || true
+    [[ -n "$first" ]] || return 1
+    printf '%s\n' "$first"
+}
+
+# Ensure a key usable for this host is loaded in ssh-agent. The cache is keyed
+# by credential (key fingerprint), not host: if ANY of the host's candidate
+# IdentityFiles is already loaded, hosts sharing that key never re-prompt.
+# Only when none is loaded do we prompt, for the first candidate.
 # SSH_CACHE_KEY remains an explicit global override.
 init_files_cache_ssh_for_host()
 {
-    local host="${1-}" ssh_cmd key=""
+    local host="${1-}" ssh_cmd k
+    local -a keys=()
 
     if [[ -z "${SSH_CACHE_KEY:-}" && -n "$host" ]]; then
         ssh_cmd="${init_tool_ssh:-}"
         if ! init_files_bt_program_ok "$ssh_cmd"; then
             ssh_cmd="$(command -v ssh 2>/dev/null || true)"
         fi
-        key="$(init_files_ssh_key_for_host "$ssh_cmd" "$host" 2>/dev/null || true)"
+        while IFS= read -r k; do
+            [[ -n "$k" ]] && keys+=("$k")
+        done < <(init_files_ssh_keys_for_host "$ssh_cmd" "$host" 2>/dev/null || true)
     fi
 
-    if [[ -n "$key" ]]; then
-        cache_ssh -c "$key" 2>/dev/null || cache_ssh "$key"
+    # ssh -G appends OpenSSH's default identities after configured ones. When
+    # the host names explicit keys, only those count: an unrelated default key
+    # already in the agent must not satisfy the check. Limitation: ssh -G does
+    # not mark which entries were configured, so a host that pins a default-
+    # named key (id_ed25519, ...) is treated like the defaults (any loaded wins).
+    local -a explicit=()
+    for k in "${keys[@]+"${keys[@]}"}"; do
+        case "${k##*/}" in
+            id_rsa|id_dsa|id_ecdsa|id_ecdsa_sk|id_ed25519|id_ed25519_sk|id_xmss) ;;
+            *) explicit+=("$k") ;;
+        esac
+    done
+    if ((${#explicit[@]} > 0)); then
+        keys=("${explicit[@]}")
+    fi
+
+    if ((${#keys[@]} > 0)); then
+        for k in "${keys[@]}"; do
+            cache_ssh -c "$k" 2>/dev/null && return 0
+        done
+        cache_ssh "${keys[0]}"
         return $?
     fi
     cache_ssh -c 2>/dev/null || cache_ssh

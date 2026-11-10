@@ -12545,6 +12545,8 @@ if [[ -n "$init_tool_rsync" ]]; then
     alias scpresume="$init_tool_rsync --partial --progress --rsh=$init_tool_ssh"
 fi
 [[ -n "$init_tool_less" ]] && alias less="$init_tool_less"
+# rl: full resolved path of a file.
+alias rl="readlink -f"
 # Listing aliases: prefer lsd when recorded/on PATH; else install-recorded ls; else PATH ls.
 # Bare `ls` stays the real binary. lld/llm are functions (color-safe; see above).
 _init_alias_lsd="${init_tool_lsd:-}"
