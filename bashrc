@@ -4028,7 +4028,15 @@ function _init_brew_admin_or_handoff()
                 # chown/sudo -u would change nothing.
                 printf 'WARNING: Homebrew directory %s is owned by you but not writable (mode).\n' \
                     "$blocked" >&2
-                printf 'Restore write access: chmod -R u+w %q\n' "$blocked" >&2
+                if _init_brew_prefix_is_shared "$prefix"; then
+                    # Shared prefix: recurse only into Homebrew-managed dirs.
+                    printf 'Restore write access: chmod u+w %q\n' "$blocked" >&2
+                    for d in Cellar Caskroom Homebrew opt var/homebrew; do
+                        [[ -d "$prefix/$d" ]] && printf 'Restore write access: chmod -R u+w %q\n' "$prefix/$d" >&2
+                    done
+                else
+                    printf 'Restore write access: chmod -R u+w %q\n' "$blocked" >&2
+                fi
             else
                 # A shared /usr/local holds non-Homebrew software; scope the
                 # takeover to Homebrew-managed dirs there. A dedicated prefix
@@ -4046,10 +4054,15 @@ function _init_brew_admin_or_handoff()
                 printf 'WARNING: Homebrew directory %s is not writable by %s (owned by %s).\n' \
                     "$blocked" "$me" "${owner:-another account}" >&2
                 printf 'brew cannot install/upgrade %s from this account. Either:\n' "$formula" >&2
-                # %q so a prefix containing spaces stays one shell argument.
-                printf '  1. Run as the Homebrew owner: sudo -u %s %q %s %s\n' \
-                    "${owner:-<owner>}" "$prefix/bin/brew" "$verb" "$formula" >&2
-                printf '  2. Or take ownership of brew'"'"'s directories (affects other users of this brew):\n' >&2
+                # brew refuses to run as root, so only offer the owner option for a real user.
+                if [[ -n "$owner" && "$owner" != root ]]; then
+                    # %q so a prefix containing spaces stays one shell argument.
+                    printf '  1. Run as the Homebrew owner: sudo -u %s %q %s %s\n' \
+                        "$owner" "$prefix/bin/brew" "$verb" "$formula" >&2
+                    printf '  2. Or take ownership of brew'"'"'s directories (affects other users of this brew):\n' >&2
+                else
+                    printf '  Take ownership of brew'"'"'s directories (affects other users of this brew):\n' >&2
+                fi
                 if ((${#missing[@]})); then
                     # Cannot chown what does not exist yet; create the missing managed dirs first.
                     printf '     sudo mkdir -p' >&2
