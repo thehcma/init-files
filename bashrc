@@ -3975,6 +3975,13 @@ function tool_admin_install_steps()
     printf '\n    (or run %s/provision_init_files for a forwardable handoff block)' "$clone_dir"
 }
 
+# True when the Homebrew prefix is a shared system dir (holds non-Homebrew
+# software), so ownership repairs must be scoped to brew's own directories.
+function _init_brew_prefix_is_shared()
+{
+    [[ "${1:-}" == /usr/local ]]
+}
+
 # If this modern-macOS account cannot brew-install, print a one-formula handoff and fail.
 # Returns 0 when brew may proceed (admin, or not modern macOS).
 function _init_brew_admin_or_handoff()
@@ -3983,7 +3990,84 @@ function _init_brew_admin_or_handoff()
     local clone_dir
 
     type _init_is_modern_macos > /dev/null 2>&1 && _init_is_modern_macos || return 0
-    _init_is_macos_admin && return 0
+    if _init_is_macos_admin; then
+        # Admin group membership is not enough: brew refuses to run when the
+        # prefix is owned by another account (e.g. a shared "blue" user), and
+        # its failure was previously buried in a wall of download output.
+        local prefix owner blocked="" d me parent verb
+        local -a scope=() missing=()
+        prefix="$(_init_homebrew_prefix 2> /dev/null || true)"
+        if [[ -n "$prefix" && -d "$prefix" ]]; then
+            # brew needs Cellar and var/homebrew usable, not the prefix itself
+            # (a root-owned /usr/local with writable managed dirs works). An
+            # existing dir must be writable; a missing one needs a writable
+            # parent so brew can create it.
+            # Scan both (no early exit) so the repair lists every missing dir;
+            # the first problem found is the one the warning names.
+            for d in "$prefix/Cellar" "$prefix/var/homebrew"; do
+                if [[ -d "$d" ]]; then
+                    if [[ ! -w "$d" && -z "$blocked" ]]; then
+                        blocked="$d"
+                    fi
+                else
+                    missing+=("$d")
+                    parent="${d%/*}"
+                    [[ -d "$parent" ]] || parent="$prefix"
+                    if [[ ! -w "$parent" && -z "$blocked" ]]; then
+                        blocked="$parent"
+                    fi
+                fi
+            done
+        fi
+        if [[ -n "$blocked" ]]; then
+            # ls -ld, not stat: BSD stat -f differs from GNU stat -f, and PATH may put GNU first.
+            owner="$(/bin/ls -ld "$blocked" 2> /dev/null | awk 'NR == 1 { print $3 }' || true)"
+            me="$(id -un)"
+            if [[ "$owner" == "$me" ]]; then
+                # Ownership is fine; only the mode dropped owner-write, so
+                # chown/sudo -u would change nothing.
+                printf 'WARNING: Homebrew directory %s is owned by you but not writable (mode).\n' \
+                    "$blocked" >&2
+                printf 'Restore write access: chmod -R u+w %q\n' "$blocked" >&2
+            else
+                # A shared /usr/local holds non-Homebrew software; scope the
+                # takeover to Homebrew-managed dirs there. A dedicated prefix
+                # (e.g. /opt/homebrew) is brew's alone, so the whole prefix is fine.
+                if _init_brew_prefix_is_shared "$prefix"; then
+                    for d in Cellar Caskroom Homebrew opt var/homebrew; do
+                        [[ -d "$prefix/$d" ]] && scope+=("$prefix/$d")
+                    done
+                else
+                    scope=("$prefix")
+                    missing=()
+                fi
+                # brew upgrade fails on an absent formula (update_bash may be a first install).
+                if _init_brew_formula_present "$formula"; then verb=upgrade; else verb=install; fi
+                printf 'WARNING: Homebrew directory %s is not writable by %s (owned by %s).\n' \
+                    "$blocked" "$me" "${owner:-another account}" >&2
+                printf 'brew cannot install/upgrade %s from this account. Either:\n' "$formula" >&2
+                # %q so a prefix containing spaces stays one shell argument.
+                printf '  1. Run as the Homebrew owner: sudo -u %s %q %s %s\n' \
+                    "${owner:-<owner>}" "$prefix/bin/brew" "$verb" "$formula" >&2
+                printf '  2. Or take ownership of brew'"'"'s directories (affects other users of this brew):\n' >&2
+                if ((${#missing[@]})); then
+                    # Cannot chown what does not exist yet; create the missing managed dirs first.
+                    printf '     sudo mkdir -p' >&2
+                    printf ' %q' "${missing[@]}" >&2
+                    printf '\n' >&2
+                    scope+=("${missing[@]}")
+                fi
+                printf '     sudo chown -R %s' "$me" >&2
+                printf ' %q' "${scope[@]}" >&2
+                printf '\n' >&2
+            fi
+            # The caller already invalidated the tool-version cache, which
+            # removed pending-updates, so update_tools would find nothing.
+            printf 'Then re-run: update_%s\n' "$formula" >&2
+            return 1
+        fi
+        return 0
+    fi
 
     clone_dir="${init_files_dir:-${XDG_DATA_HOME:-$HOME/.local/share}/init-files}"
     printf 'This account is not a macOS admin (MDM). Forward to IT:\n' >&2
