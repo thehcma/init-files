@@ -3998,13 +3998,13 @@ function _init_brew_admin_or_handoff()
         local -a scope=() missing=()
         prefix="$(_init_homebrew_prefix 2> /dev/null || true)"
         if [[ -n "$prefix" && -d "$prefix" ]]; then
-            # brew needs Cellar and var/homebrew usable, not the prefix itself
+            # brew needs Cellar, var/homebrew and its link dirs (bin, opt) usable, not the prefix itself
             # (a root-owned /usr/local with writable managed dirs works). An
             # existing dir must be writable; a missing one needs a writable
             # parent so brew can create it.
             # Scan both (no early exit) so the repair lists every missing dir;
             # the first problem found is the one the warning names.
-            for d in "$prefix/Cellar" "$prefix/var/homebrew"; do
+            for d in "$prefix/Cellar" "$prefix/var/homebrew" "$prefix/bin" "$prefix/opt"; do
                 if [[ -d "$d" ]]; then
                     if [[ ! -w "$d" && -z "$blocked" ]]; then
                         blocked="$d"
@@ -4073,6 +4073,10 @@ function _init_brew_admin_or_handoff()
                 printf '     sudo chown -R %s' "$me" >&2
                 printf ' %q' "${scope[@]}" >&2
                 printf '\n' >&2
+                if _init_brew_prefix_is_shared "$prefix" && [[ -d "$prefix/bin" ]]; then
+                    # bin holds non-Homebrew software too: brew only needs to add links, so no -R.
+                    printf '     sudo chown %s %q\n' "$me" "$prefix/bin" >&2
+                fi
             fi
             # The caller already invalidated the tool-version cache, which
             # removed pending-updates, so update_tools would find nothing.
