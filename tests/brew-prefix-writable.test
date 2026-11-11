@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# Tests for the Homebrew-prefix writability guard in _init_brew_admin_or_handoff.
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+bashrc="${root}/bashrc"
+
+# shellcheck disable=SC1090
+for fn in _init_brew_formula_present _init_brew_prefix_is_shared _init_brew_admin_or_handoff; do
+    # shellcheck disable=SC1090
+    eval "$(
+        awk -v fn="$fn" '
+            $0 ~ "^function " fn "\\(\\)" { on = 1 }
+            on { print }
+            on && /^}/ { exit }
+        ' "$bashrc"
+    )"
+done
+
+# shellcheck disable=SC2329 # test stubs, invoked by the eval'd code under test
+_init_is_modern_macos() { return 0; }
+# shellcheck disable=SC2329
+_init_is_macos_admin() { return 0; }
+
+tmp="$(mktemp -d)"
+trap 'chmod u+w "$tmp"; rm -rf "$tmp"' EXIT
+# shellcheck disable=SC2329
+_init_homebrew_prefix() { printf '%s\n' "$tmp"; }
+
+printf '\n=== admin + writable prefix: proceeds ===\n'
+rc=0
+out="$(_init_brew_admin_or_handoff git 2>&1)" || rc=$?
+assert_exit_0 'writable prefix returns 0' "$rc"
+
+printf '\n=== owned by me but mode lacks owner-write: chmod hint, no chown ===\n'
+chmod a-w "$tmp"
+if [[ -w "$tmp" ]]; then
+    printf '[SKIP] running as a user that bypasses permissions (root)\n'
+else
+    rc=0
+    out="$(_init_brew_admin_or_handoff git 2>&1)" || rc=$?
+    assert_exit_nonzero 'unwritable prefix returns nonzero' "$rc"
+    assert_contains 'explains mode problem' "$out" 'owned by you but not writable'
+    assert_contains 'offers scoped chmod' "$out" 'chmod -R u+w'
+    assert_not_contains 'no chown for a mode problem' "$out" 'chown'
+    assert_not_contains 'no run-as-owner for a mode problem' "$out" 'sudo -u'
+    # invalidate_tool_version_cache already cleared pending-updates, so the
+    # retry hint must be the direct updater, not update_tools.
+    assert_contains 'retry hint is the direct updater' "$out" 'Then re-run: update_git'
+
+    printf '\n=== owned by someone else: run-as-owner + chown of prefix ===\n'
+    # Pretend to be a different account so the owner differs from "me".
+    # shellcheck disable=SC2317,SC2329
+    id() { printf 'someoneelse\n'; }
+    rc=0
+    out="$(_init_brew_admin_or_handoff git 2>&1)" || rc=$?
+    assert_exit_nonzero 'ownership mismatch returns nonzero' "$rc"
+    assert_contains 'warns about directory' "$out" 'is not writable by someoneelse'
+    assert_contains 'absent formula uses install, not upgrade' "$out" 'brew install git'
+    assert_not_contains 'no upgrade for an absent formula' "$out" 'brew upgrade git'
+    assert_contains 'offers chown of dedicated prefix' "$out" "sudo chown -R someoneelse $tmp"
+    unset -f id
+
+    printf '\n=== installed formula: hint says upgrade ===\n'
+    chmod u+w "$tmp"
+    mkdir -p "$tmp/opt/git"
+    chmod a-w "$tmp"
+    # shellcheck disable=SC2317,SC2329
+    id() { printf 'someoneelse\n'; }
+    rc=0
+    out="$(_init_brew_admin_or_handoff git 2>&1)" || rc=$?
+    assert_contains 'installed formula uses upgrade' "$out" 'brew upgrade git'
+    unset -f id
+    chmod u+w "$tmp"
+    rm -rf "${tmp:?}/opt"
+
+    printf '\n=== Cellar missing, var/homebrew present, prefix unwritable: blocked, mkdir offered ===\n'
+    mkdir -p "$tmp/var/homebrew"
+    chmod a-w "$tmp"
+    # shellcheck disable=SC2317,SC2329
+    id() { printf 'someoneelse\n'; }
+    rc=0
+    out="$(_init_brew_admin_or_handoff git 2>&1)" || rc=$?
+    assert_exit_nonzero 'missing Cellar under unwritable prefix is blocked' "$rc"
+    assert_contains 'names the unwritable parent' "$out" "directory $tmp is not writable"
+    unset -f id
+    chmod u+w "$tmp"
+    rm -rf "${tmp:?}/var"
+
+    printf '\n=== shared prefix, both managed dirs missing: mkdir lists every one ===\n'
+    chmod a-w "$tmp"
+    # shellcheck disable=SC2317,SC2329
+    id() { printf 'someoneelse\n'; }
+    # Treat the temp prefix like /usr/local so the scoped (mkdir + chown) repair is used.
+    # shellcheck disable=SC2317,SC2329
+    _init_brew_prefix_is_shared() { return 0; }
+    rc=0
+    out="$(_init_brew_admin_or_handoff git 2>&1)" || rc=$?
+    assert_contains 'mkdir includes Cellar' "$out" "sudo mkdir -p $tmp/Cellar"
+    assert_contains 'mkdir includes var/homebrew' "$out" "$tmp/var/homebrew"
+    assert_contains 'chown is scoped to managed dirs, not the whole prefix' "$out" "chown -R someoneelse $tmp/Cellar"
+    unset -f id _init_brew_prefix_is_shared
+    chmod u+w "$tmp"
+
+    printf '\n=== helper: only /usr/local counts as shared ===\n'
+    eval "$(awk '/^function _init_brew_prefix_is_shared\(\)/ { on = 1 } on { print } on && /^}/ { exit }' "$bashrc")"
+    rc=0; _init_brew_prefix_is_shared /usr/local || rc=$?
+    assert_exit_0 '/usr/local is shared' "$rc"
+    rc=0; _init_brew_prefix_is_shared /opt/homebrew || rc=$?
+    assert_exit_nonzero '/opt/homebrew is dedicated' "$rc"
+
+    printf '\n=== prefix with a space: commands stay single-argument ===\n'
+    spaced="$tmp/with space"
+    chmod u+w "$tmp"
+    mkdir -p "$spaced"
+    chmod a-w "$spaced"
+    chmod a-w "$tmp"
+    # shellcheck disable=SC2317,SC2329
+    id() { printf 'someoneelse\n'; }
+    # shellcheck disable=SC2317,SC2329
+    _init_homebrew_prefix() { printf '%s\n' "$spaced"; }
+    rc=0
+    out="$(_init_brew_admin_or_handoff git 2>&1)" || rc=$?
+    assert_contains 'run-as-owner escapes the brew path' "$out" 'with\ space/bin/brew install git'
+    assert_contains 'chown escapes the prefix path' "$out" 'with\ space'
+    assert_not_contains 'no unescaped split path' "$out" "chown -R someoneelse $spaced"
+    unset -f id
+    # shellcheck disable=SC2317,SC2329
+    _init_homebrew_prefix() { printf '%s\n' "$tmp"; }
+    chmod u+w "$spaced" "$tmp"
+
+    printf '\n=== root-owned prefix + writable Cellar/var: proceeds ===\n'
+    chmod u+w "$tmp"
+    mkdir -p "$tmp/Cellar" "$tmp/var/homebrew" "$tmp/bin" "$tmp/opt"
+    chmod a-w "$tmp"
+    rc=0
+    out="$(_init_brew_admin_or_handoff git 2>&1)" || rc=$?
+    assert_exit_0 'unwritable parent with writable managed dirs returns 0' "$rc"
+
+    printf '\n=== unwritable Cellar: blocked, names the directory ===\n'
+    chmod a-w "$tmp/Cellar"
+    rc=0
+    out="$(_init_brew_admin_or_handoff bash 2>&1)" || rc=$?
+    assert_exit_nonzero 'unwritable Cellar returns nonzero' "$rc"
+    assert_contains 'names the Cellar dir' "$out" "$tmp/Cellar"
+    assert_contains 'bash retry hint' "$out" 'Then re-run: update_bash'
+    chmod u+w "$tmp/Cellar"
+
+    printf '\n=== unwritable bin (link destination): blocked ===\n'
+    chmod a-w "$tmp/bin"
+    rc=0
+    out="$(_init_brew_admin_or_handoff git 2>&1)" || rc=$?
+    assert_exit_nonzero 'unwritable bin returns nonzero' "$rc"
+    assert_contains 'names the bin dir' "$out" "$tmp/bin"
+    chmod u+w "$tmp/bin"
+fi
+
+test_summary
