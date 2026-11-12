@@ -54,6 +54,47 @@ detect that drift the same way as any other symlink drift and offer to
 repair it via `refresh_claude_settings` — repairing restores this same
 `hooks` block from the tracked file, so nothing is lost.
 
+## Launchers: `claude`, `claude-bhe`, `claude-brk-commons`
+
+Three shell functions in `bashrc` start Claude Code against different backends.
+All three forward their arguments and run inside the iTerm2 session wrapper.
+
+| Function | Backend | Environment |
+| --- | --- | --- |
+| `claude` | Whatever the shell already has | Inherited unchanged. |
+| `claude-bhe` | The default (BHE Anthropic tenant) login | Gateway, API-key and model overrides are dropped for the call. |
+| `claude-brk-commons` | The BRK Commons LiteLLM gateway | Read from `~/.config/brk-commons/llm-gateway.env` (override the path with `BRK_COMMONS_LLM_GATEWAY_ENV`). |
+
+The gateway env file is local and never tracked. It must be owned by you, not
+group/other-writable and use LF line endings. It sets `ANTHROPIC_BASE_URL`,
+`ANTHROPIC_AUTH_TOKEN` and the models the gateway serves, for example
+`ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-5.5` and
+`ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-haiku-5.5`. The values are set in a
+subshell, so nothing leaks into the interactive shell.
+
+### Why the launcher defaults `ANTHROPIC_DEFAULT_OPUS_MODEL`
+
+The gateway serves dotted ids (`claude-opus-5.5`), while Claude Code's built-in
+`opus` alias resolves to `claude-opus-5-5`, which the gateway refuses with a
+`400 Invalid model name`. `claude-brk-commons` therefore exports
+`ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-5.5` when the env file does not set
+one (a value in the env file always wins). Without it, anything that asks for
+`--model opus` through the gateway fails, including
+`repository-helpers/scripts/dev/model-review`, which needs a reviewer other
+than the Sonnet author.
+
+### `availableModels` and silent model fallback
+
+`claude/settings.json` restricts `availableModels` to `sonnet` and `haiku`
+(enforced). `claude --model opus` is then outside the policy and Claude Code
+silently answers from its default model instead of failing: on a native login
+the "opus" call really runs on Sonnet, and behind the gateway the built-in
+default id is refused. A caller that needs a different model must pin it for
+that one call, for example
+`claude -p --model opus --settings '{"availableModels":["opus"]}'`, which is
+what `model-review` does by default. The restriction in `settings.json` stays as
+it is for interactive sessions.
+
 ## Editing
 
 Edit `claude/settings.json` / `claude/CLAUDE.md` in the clone (not the
