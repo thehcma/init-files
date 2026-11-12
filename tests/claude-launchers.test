@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# claude-bhe and claude-brk-commons launch Claude Code with the right model environment, in a throwaway
+# HOME with a fake `claude` that prints what it sees (never the real CLI, never the real gateway file).
+set -euo pipefail
+
+script_dir="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+# Pull just the launcher functions out of bashrc so the test never sources the whole file.
+for fn in _init_files_claude_clear_env _init_files_claude_bhe_run _init_files_claude_brk_commons_run; do
+    eval "$(sed -n "/^function ${fn}()/,/^}/p" "${root}/bashrc")"
+done
+
+mkdir -p "${tmp}/bin"
+cat > "${tmp}/bin/claude" << 'FAKE'
+#!/usr/bin/env bash
+printf 'args=%s\n' "$*"
+printf 'base_url=%s\n' "${ANTHROPIC_BASE_URL:-<unset>}"
+printf 'opus=%s\n' "${ANTHROPIC_DEFAULT_OPUS_MODEL:-<unset>}"
+printf 'sonnet=%s\n' "${ANTHROPIC_DEFAULT_SONNET_MODEL:-<unset>}"
+FAKE
+chmod +x "${tmp}/bin/claude"
+PATH="${tmp}/bin:${PATH}"
+export PATH
+
+write_env()
+{
+    # $1 = file, rest = lines. User-owned, mode 600, no CRLF: what the launcher insists on.
+    local file="$1"
+    shift
+    printf '%s\n' "$@" > "$file"
+    chmod 600 "$file"
+}
+
+printf '\n=== claude-brk-commons maps the opus alias to the gateway id ===\n'
+write_env "${tmp}/gateway.env" \
+    'ANTHROPIC_BASE_URL=https://gateway.example.test' \
+    'ANTHROPIC_AUTH_TOKEN=test-token' \
+    'ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-5.5'
+out="$(BRK_COMMONS_LLM_GATEWAY_ENV="${tmp}/gateway.env" _init_files_claude_brk_commons_run -p --model opus 2>&1)"
+assert_contains 'the arguments are forwarded' "$out" 'args=-p --model opus'
+assert_contains 'the gateway URL comes from the env file' "$out" 'base_url=https://gateway.example.test'
+assert_contains 'an env file without an opus model gets the gateway opus id' "$out" 'opus=claude-opus-5.5'
+assert_contains 'the sonnet mapping from the env file is kept' "$out" 'sonnet=claude-sonnet-5.5'
+
+printf '\n=== an opus model in the env file wins over the default ===\n'
+write_env "${tmp}/gateway-opus.env" \
+    'ANTHROPIC_BASE_URL=https://gateway.example.test' \
+    'ANTHROPIC_AUTH_TOKEN=test-token' \
+    'ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-9.9'
+out="$(BRK_COMMONS_LLM_GATEWAY_ENV="${tmp}/gateway-opus.env" _init_files_claude_brk_commons_run 2>&1)"
+assert_contains 'the env file opus model is used' "$out" 'opus=claude-opus-9.9'
+
+printf '\n=== a stale opus model inherited from the shell is not kept ===\n'
+# Run in a subshell function so the exports never reach the test shell.
+stale_opus_run()
+{
+    export ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-stale
+    BRK_COMMONS_LLM_GATEWAY_ENV="${tmp}/gateway.env" _init_files_claude_brk_commons_run 2>&1
+}
+out="$(stale_opus_run)"
+assert_contains 'the inherited value is cleared, then the gateway default applies' "$out" 'opus=claude-opus-5.5'
+
+printf '\n=== the launcher does not leak into the interactive shell ===\n'
+unset ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_BASE_URL
+BRK_COMMONS_LLM_GATEWAY_ENV="${tmp}/gateway.env" _init_files_claude_brk_commons_run > /dev/null 2>&1
+assert_contains 'the opus mapping is not set in the calling shell' "opus=${ANTHROPIC_DEFAULT_OPUS_MODEL:-<unset>}" 'opus=<unset>'
+assert_contains 'the gateway URL is not set in the calling shell' "base_url=${ANTHROPIC_BASE_URL:-<unset>}" 'base_url=<unset>'
+
+printf '\n=== a missing token is refused before claude runs ===\n'
+write_env "${tmp}/gateway-bad.env" 'ANTHROPIC_BASE_URL=https://gateway.example.test'
+bad_rc=0
+bad_out="$(BRK_COMMONS_LLM_GATEWAY_ENV="${tmp}/gateway-bad.env" _init_files_claude_brk_commons_run 2>&1)" || bad_rc=$?
+assert_contains 'the launcher exits non-zero' "rc=${bad_rc}" 'rc=1'
+assert_contains 'the refusal names the missing variables' "$bad_out" 'ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN missing'
+assert_not_contains 'claude never ran' "$bad_out" 'args='
+
+printf '\n=== claude-bhe drops every gateway and model override ===\n'
+# Exported in a subshell: unsetting a variable that a function-call prefix assignment set would expose
+# the outer value (bash scopes prefix assignments to the call), which is not how the real shell behaves.
+bhe_run()
+{
+    export ANTHROPIC_BASE_URL=https://gateway.example.test
+    export ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-5.5
+    export ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-5.5
+    _init_files_claude_bhe_run -p 2>&1
+}
+out="$(bhe_run)"
+assert_contains 'the arguments are forwarded' "$out" 'args=-p'
+assert_contains 'the gateway URL is dropped' "$out" 'base_url=<unset>'
+assert_contains 'the opus mapping is dropped' "$out" 'opus=<unset>'
+assert_contains 'the sonnet mapping is dropped' "$out" 'sonnet=<unset>'
+
+test_summary

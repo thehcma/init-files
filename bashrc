@@ -3045,6 +3045,11 @@ function _init_files_claude_brk_commons_run()
             echo "claude-brk-commons: ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN missing in ${env_file}" >&2
             exit 1
         fi
+        # The gateway serves its own ids (claude-opus-5.5, dotted), not Claude Code's built-in
+        # claude-opus-5-5. Without this mapping the `opus` alias (--model opus, and anything that
+        # spawns `claude -p --model opus`, such as repository-helpers' model-review) is refused with a
+        # 400 behind the gateway. A value from the env file always wins.
+        export ANTHROPIC_DEFAULT_OPUS_MODEL="${ANTHROPIC_DEFAULT_OPUS_MODEL:-claude-opus-5.5}"
         command claude "$@"
     )
 }
