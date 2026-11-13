@@ -2452,9 +2452,14 @@ function check_tool_versions()
     if [[ -z "$checked_at" ]] || ! [[ "$checked_at" =~ ^[0-9]+$ ]] \
         || (( current_time - checked_at >= tool_version_max_age_seconds )) \
         || ! tool_version_cache_is_complete "$cache_file"; then
-        (
-            refresh_tool_version_cache
-        ) >/dev/null 2>&1 &
+        # Redirect on the group, not the subshell: bash's "child setpgid ...
+        # Operation not permitted" race is printed by the forked child before
+        # its own redirections apply.
+        {
+            (
+                refresh_tool_version_cache
+            ) >/dev/null 2>&1 &
+        } 2>/dev/null
         disown $! 2>/dev/null || true
     fi
 
@@ -5941,9 +5946,11 @@ function _init_maybe_schedule_history_rotate()
         return 0
     fi
 
-    (
-        rotate_bash_history -q >>"$log_file" 2>&1
-    ) &
+    {
+        (
+            rotate_bash_history -q >>"$log_file" 2>&1
+        ) &
+    } 2>/dev/null
     disown 2>/dev/null || true
 }
 
@@ -6651,9 +6658,11 @@ function live_fetch_if_ahead()
         && version_lt "$cached_latest" "$current_version"; then
         live="$(fetch_latest_tool_version "$tool_name" 2>/dev/null || true)"
         if [[ -n "$live" ]]; then
-            (
-                refresh_tool_version_cache
-            ) >/dev/null 2>&1 &
+            {
+                (
+                    refresh_tool_version_cache
+                ) >/dev/null 2>&1 &
+            } 2>/dev/null
             disown $! 2>/dev/null || true
             printf '%s' "$live"
             return
