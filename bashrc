@@ -5946,11 +5946,13 @@ function _init_maybe_schedule_history_rotate()
         return 0
     fi
 
+    # fd 3 keeps the real stderr so an unwritable rotate.log is still reported
+    # (the group's 2>/dev/null would otherwise hide the open error).
     {
         (
-            rotate_bash_history -q >>"$log_file" 2>&1
+            { rotate_bash_history -q >>"$log_file" 2>&1; } 2>&3
         ) &
-    } 2>/dev/null
+    } 3>&2 2>/dev/null
     disown 2>/dev/null || true
 }
 
