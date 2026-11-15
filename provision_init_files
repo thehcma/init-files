@@ -1826,7 +1826,7 @@ fi
 maybe_offer_local_release_installs
 # Interactive runs only: print (never apply) the CodeRabbit agent-skills install plan.
 if [[ $quiet -eq 0 && $force -eq 0 && -t 0 && -t 2 ]]; then
-    init_files_coderabbit_skills_preview
+    init_files_coderabbit_skills_preview ""
 fi
 maybe_offer_brew_for_missing
 maybe_offer_apt_for_missing
