@@ -42,14 +42,22 @@ preview() {
   local rc=0 out
   : >"$args_log"
   # shellcheck disable=SC2016  # the bash -c script must expand $1 in the child shell, not here
-  out="$(env -i HOME="$home" PATH="${work}/pathbin:/usr/bin:/bin" "$@" \
-    bash -c 'source "$1"; init_files_coderabbit_skills_preview' bash "$lib" 2>&1)" || rc=$?
+  # PATH holds only the stubs, so whether a timeout utility exists is decided by the test, not by the host.
+  out="$(env -i HOME="$home" PATH="${work}/pathbin" "$@" \
+    "$BASH" -c 'source "$1"; init_files_coderabbit_skills_preview' bash "$lib" 2>&1)" || rc=$?
   printf '%s\nrc=%s\n' "$out" "$rc"
+}
+
+# A stand-in `timeout` that runs its command (the real one bounds it; this suite only needs it to exist).
+add_timeout() {
+  printf '#!/bin/sh\nshift\nexec "$@"\n' >"${work}/pathbin/timeout"
+  chmod +x "${work}/pathbin/timeout"
 }
 
 reset_home() {
   rm -rf "$home" "${work}/pathbin"
   mkdir -p "$home" "${work}/pathbin"
+  add_timeout
 }
 
 printf '\n=== no CLI: silent and nothing is run ===\n'
@@ -76,6 +84,24 @@ make_cli "${work}/pathbin/cr" 0
 out="$(preview)"
 assert_contains 'cr alone prints the plan' "$out" '+ autofix'
 assert_eq 'cr is run with: skills --agent' "$(<"$args_log")" 'skills --agent'
+
+printf '\n=== no timeout utility: skip the network preview and say how to run it ===\n'
+reset_home
+rm -f "${work}/pathbin/timeout"
+make_cli "${home}/.local/bin/coderabbit" 0
+out="$(preview)"
+assert_contains 'without timeout or gtimeout the preview is skipped with the manual command' "$out" \
+  'No timeout utility (timeout or gtimeout) is available to bound the network preview, so it was skipped; run: coderabbit skills --agent'
+assert_contains 'and never fails the caller' "$out" 'rc=0'
+assert_eq 'and the CLI is not run' "$(<"$args_log")" ''
+assert_not_contains 'and does not claim a plan was shown' "$out" 'nothing was installed'
+reset_home
+rm -f "${work}/pathbin/timeout"
+printf '#!/bin/sh\nshift\nexec "$@"\n' >"${work}/pathbin/gtimeout"
+chmod +x "${work}/pathbin/gtimeout"
+make_cli "${home}/.local/bin/coderabbit" 0
+out="$(preview)"
+assert_contains 'gtimeout alone is enough to run the preview' "$out" '+ autofix'
 
 printf '\n=== skills already installed: silent and nothing is run ===\n'
 reset_home

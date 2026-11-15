@@ -12,7 +12,8 @@
 # --confirm and never installs anything.
 #
 # Silent when the CLI is absent, when a CodeRabbit skill or plugin is already
-# present, or when INIT_FILES_CODERABBIT_SKILLS_PREVIEW=0. A failing or slow
+# present, or when INIT_FILES_CODERABBIT_SKILLS_PREVIEW=0. Skipped, with the manual command, when no timeout
+# utility exists to bound the network call (stock macOS). A failing or slow
 # preview is a warning, never a failure of the caller (refresh/provision).
 #
 # Portable to the bash 3.2 that ships on older macOS hosts: no case-modifying
@@ -95,6 +96,13 @@ init_files_coderabbit_skills_preview()
             break
         fi
     done
+
+    if (( ${#bounded[@]} == 0 )); then
+        # Stock macOS has neither utility; an unbounded network call could stall a refresh or a provision run, and
+        # a backgrounded watchdog would print job notices in an interactive shell, so skip and say how to run it.
+        printf '\nCodeRabbit CLI is installed but no CodeRabbit agent skill is. No timeout utility (timeout or gtimeout) is available to bound the network preview, so it was skipped; run: coderabbit skills --agent\n' >&2
+        return 0
+    fi
 
     printf '\nCodeRabbit CLI is installed but no CodeRabbit agent skill is. Install plan (preview only, nothing is changed):\n' >&2
     # shellcheck disable=SC2068  # an empty array must expand to nothing
