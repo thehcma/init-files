@@ -44,7 +44,7 @@ preview() {
   # shellcheck disable=SC2016  # the bash -c script must expand $1 in the child shell, not here
   # PATH holds only the stubs, so whether a timeout utility exists is decided by the test, not by the host.
   out="$(env -i HOME="$home" PATH="${work}/pathbin" "$@" \
-    "$BASH" -c 'source "$1"; init_files_coderabbit_skills_preview' bash "$lib" 2>&1)" || rc=$?
+    "$BASH" -c 'source "$1"; init_files_coderabbit_skills_preview ${2:+"$2"}' bash "$lib" "${preview_cli_arg:-}" 2>&1)" || rc=$?
   printf '%s\nrc=%s\n' "$out" "$rc"
 }
 
@@ -92,6 +92,22 @@ assert_eq 'and runs the fallback CLI' "$(<"$args_log")" 'skills --agent'
 reset_home
 out="$(preview init_tool_coderabbit="${work}/gone/coderabbit")"
 assert_eq 'a stale recorded path and no other CLI stays silent' "$out" $'\nrc=0'
+
+printf '\n=== an explicit CLI argument wins over a stale recorded path (update_coderabbit passes what it just installed) ===\n'
+reset_home
+make_cli "${work}/old/coderabbit" 3
+make_cli "${home}/.local/bin/coderabbit" 0
+preview_cli_arg="${home}/.local/bin/coderabbit"
+out="$(preview init_tool_coderabbit="${work}/old/coderabbit")"
+preview_cli_arg=''
+assert_contains 'the freshly installed CLI is previewed, not the stale recorded one' "$out" '+ autofix'
+assert_not_contains 'and nothing warns about a failed preview' "$out" 'WARNING'
+reset_home
+make_cli "${home}/.local/bin/coderabbit" 0
+preview_cli_arg="${work}/missing/coderabbit"
+out="$(preview)"
+preview_cli_arg=''
+assert_contains 'a non-executable explicit path falls back to discovery' "$out" '+ autofix'
 
 printf '\n=== the cr alias on PATH alone also previews ===\n'
 reset_home
@@ -189,7 +205,8 @@ provision_text="$(<"${root}/provision_init_files")"
 assert_not_contains 'the lib never runs the CLI with --confirm' "$lib_text" 'skills --confirm'
 # shellcheck disable=SC2016  # literal source text to match, not an expansion
 assert_contains 'bashrc sources the lib' "$bashrc_text" '"${_init_files_clone_dir}/lib/coderabbit_skills"'
-assert_contains 'update_coderabbit prints the preview' "$bashrc_text" 'init_files_coderabbit_skills_preview'
+# shellcheck disable=SC2016  # literal source text to match, not an expansion
+assert_contains 'update_coderabbit previews with the CLI it just installed' "$bashrc_text" 'init_files_coderabbit_skills_preview "$HOME/.local/bin/coderabbit"'
 # shellcheck disable=SC2016  # literal source text to match, not an expansion
 assert_contains 'provision sources the lib' "$provision_text" '. "${repo_dir}/lib/coderabbit_skills"'
 # shellcheck disable=SC2016  # literal source text to match, not an expansion

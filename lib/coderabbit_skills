@@ -87,13 +87,19 @@ init_files_coderabbit_skills_installed()
 # Prints the install plan of `coderabbit skills --agent` and the confirm command
 # it names, when the CLI is present and no CodeRabbit skill is. Applies nothing.
 # Always returns 0 so a caller under `set -e` is never broken by it.
+# An optional first argument names the CLI to preview with (update_coderabbit passes the binary it just installed,
+# so a stale recorded path cannot select an older CLI); without it the CLI is discovered.
 init_files_coderabbit_skills_preview()
 {
     local cli tool rc=0
     local -a bounded=()
 
     [[ "${INIT_FILES_CODERABBIT_SKILLS_PREVIEW:-1}" == 0 ]] && return 0
-    cli="$(init_files_coderabbit_cli)" || return 0
+    if [[ -n "${1:-}" && -x "$1" ]]; then
+        cli="$1"
+    else
+        cli="$(init_files_coderabbit_cli)" || return 0
+    fi
     init_files_coderabbit_skills_installed && return 0
 
     # The preview talks to the network (release manifest), so bound it.

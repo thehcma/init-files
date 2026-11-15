@@ -11151,7 +11151,7 @@ function update_coderabbit()
     hash -r
     "$HOME/.local/bin/coderabbit" --version
     if type init_files_coderabbit_skills_preview > /dev/null 2>&1; then
-        init_files_coderabbit_skills_preview
+        init_files_coderabbit_skills_preview "$HOME/.local/bin/coderabbit"
     fi
 }
 
