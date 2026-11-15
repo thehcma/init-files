@@ -21,12 +21,19 @@
 #
 # Sourced by bashrc and provision_init_files (not executed).
 
-# Prints the CodeRabbit CLI to use: the vendor install under ~/.local/bin, else
+# Prints the CodeRabbit CLI to use: the path provision recorded (init_tool_coderabbit), else the vendor install under
+# ~/.local/bin, else
 # `coderabbit` or its short alias `cr` on PATH. Exit 1 when none is installed.
 init_files_coderabbit_cli()
 {
     local candidate
 
+    # The path provision recorded for this host (it may be a Homebrew or /usr/local/bin install whose directory is
+    # not on PATH in the shell that sources this helper) comes first.
+    if [[ -n "${init_tool_coderabbit:-}" && -x "$init_tool_coderabbit" ]]; then
+        printf '%s\n' "$init_tool_coderabbit"
+        return 0
+    fi
     if [[ -x "${HOME}/.local/bin/coderabbit" ]]; then
         printf '%s\n' "${HOME}/.local/bin/coderabbit"
         return 0

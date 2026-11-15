@@ -78,6 +78,21 @@ assert_contains 'succeeds' "$out" 'rc=0'
 assert_eq 'the CLI is run with exactly: skills --agent' "$(<"$args_log")" 'skills --agent'
 assert_not_contains 'the helper never passes --confirm itself' "$(<"$args_log")" '--confirm'
 
+printf '\n=== the path provision recorded wins, and a stale recorded path falls back ===\n'
+reset_home
+make_cli "${work}/elsewhere/bin/coderabbit" 0
+out="$(preview init_tool_coderabbit="${work}/elsewhere/bin/coderabbit")"
+assert_contains 'a recorded CLI that is not on PATH still gets previewed' "$out" '+ autofix'
+assert_eq 'the recorded CLI is the one run' "$(<"$args_log")" 'skills --agent'
+reset_home
+make_cli "${home}/.local/bin/coderabbit" 0
+out="$(preview init_tool_coderabbit="${work}/gone/coderabbit")"
+assert_contains 'a recorded path that no longer exists falls back to ~/.local/bin' "$out" '+ autofix'
+assert_eq 'and runs the fallback CLI' "$(<"$args_log")" 'skills --agent'
+reset_home
+out="$(preview init_tool_coderabbit="${work}/gone/coderabbit")"
+assert_eq 'a stale recorded path and no other CLI stays silent' "$out" $'\nrc=0'
+
 printf '\n=== the cr alias on PATH alone also previews ===\n'
 reset_home
 make_cli "${work}/pathbin/cr" 0
