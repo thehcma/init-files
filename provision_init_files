@@ -396,6 +396,10 @@ is_modern_macos()
     || init_files_die "missing ${repo_dir}/lib/release_install (clone incomplete?)"
 # shellcheck disable=SC1091
 . "${repo_dir}/lib/release_install"
+[[ -f "${repo_dir}/lib/coderabbit_skills" ]] \
+    || init_files_die "missing ${repo_dir}/lib/coderabbit_skills (clone incomplete?)"
+# shellcheck disable=SC1091
+. "${repo_dir}/lib/coderabbit_skills"
 [[ -f "${repo_dir}/lib/tool_version_cache" ]] \
     || init_files_die "missing ${repo_dir}/lib/tool_version_cache (clone incomplete?)"
 # shellcheck disable=SC1091
@@ -1820,6 +1824,10 @@ if ((${#VERIFY_FAILED[@]} > 0)); then
 fi
 
 maybe_offer_local_release_installs
+# Interactive runs only: print (never apply) the CodeRabbit agent-skills install plan.
+if [[ $quiet -eq 0 && $force -eq 0 && -t 0 && -t 2 ]]; then
+    init_files_coderabbit_skills_preview
+fi
 maybe_offer_brew_for_missing
 maybe_offer_apt_for_missing
 maybe_offer_meslo_user_font

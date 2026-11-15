@@ -53,6 +53,7 @@ Tracked content is shared. Host-specific absolute tool paths are **generated on 
 | `lib/tool_path` | Sole `init_files_verify_tool_path` (provision + bashrc). Clean break — no legacy dual validators. |
 | `lib/host_paths` | Shared Homebrew prefix / brew-bin / MacVim discovery probes (provision + bashrc). No env overrides. |
 | `lib/release_install` | Shared "install a GitHub-release binary under `~/.local`" mechanism (provision + bashrc), plus the vendor-installer path for the CodeRabbit CLI (`init_files_coderabbit_install`, `init_files_local_install`) — see [.cursor/rules/local-install-preference.mdc](.cursor/rules/local-install-preference.mdc). |
+| `lib/coderabbit_skills` | Preview-only helper for the CodeRabbit CLI agent skills (provision + bashrc `update_coderabbit`): when the CLI is installed and no CodeRabbit skill or plugin is, prints the plan of `coderabbit skills --agent` and the confirm command it names, and applies nothing (installing is a per-machine decision the operator approves; `INIT_FILES_CODERABBIT_SKILLS_PREVIEW=0` silences it). Bash 3.2-portable; a failing preview only warns. |
 | `lib/shell_completions` | Link personal CLIs' own completion output into the bash-completion v2 user dir (provision + bashrc `link_shell_completions`). Registry: builtin list + `~/.config/init-files/shell-completions`. Nothing vendored. |
 | `lib/error` | Script-only `init_files_die` / `warn` / `log`. Not sourced from bashrc. |
 | `lib/interactive_input` | `bt` / `cache_ssh` path and timeout checks (sourced by bashrc). |

@@ -1,0 +1,109 @@
+# shellcheck shell=bash
+# coderabbit_skills — preview-only helper for the CodeRabbit CLI agent skills
+# (repository-helpers#860).
+#
+# `coderabbit skills` installs user-level agent skills (autofix, code-review,
+# coderabbit-config) for every agent it detects on the host. The install is a
+# per-machine, per-operator decision: the CLI previews exact destination paths
+# and applies a plan only through `--confirm <plan-hash>`, a hash tied to that
+# plan. This helper therefore only PREVIEWS: it runs `coderabbit skills --agent`
+# (which changes nothing) and prints the plan and the confirm command it gives,
+# so the operator reads the host's own paths before approving. It never passes
+# --confirm and never installs anything.
+#
+# Silent when the CLI is absent, when a CodeRabbit skill or plugin is already
+# present, or when INIT_FILES_CODERABBIT_SKILLS_PREVIEW=0. A failing or slow
+# preview is a warning, never a failure of the caller (refresh/provision).
+#
+# Portable to the bash 3.2 that ships on older macOS hosts: no case-modifying
+# expansions and no associative arrays.
+#
+# Sourced by bashrc and provision_init_files (not executed).
+
+# Prints the CodeRabbit CLI to use: the vendor install under ~/.local/bin, else
+# `coderabbit` or its short alias `cr` on PATH. Exit 1 when none is installed.
+init_files_coderabbit_cli()
+{
+    local candidate
+
+    if [[ -x "${HOME}/.local/bin/coderabbit" ]]; then
+        printf '%s\n' "${HOME}/.local/bin/coderabbit"
+        return 0
+    fi
+    for candidate in coderabbit cr; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            command -v "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Exit 0 when a CodeRabbit skill is already installed under $HOME. `autofix`
+# and `code-review` are generic names, so such a directory counts only when its
+# SKILL.md names CodeRabbit (a user's own `code-review` skill must not hide the
+# preview); `coderabbit-config` counts by name. A CodeRabbit plugin directory
+# (up to three levels under ~/.claude/plugins or ~/.codex/plugins, marketplace
+# listings excluded) counts too: the official plugins bring their own skills,
+# which `coderabbit skills` never replaces.
+init_files_coderabbit_skills_installed()
+{
+    local root name dir skill_text
+
+    for root in .claude/skills .codex/skills .cursor/skills .gemini/skills .copilot/skills .agents/skills; do
+        for name in autofix code-review coderabbit-config; do
+            dir="${HOME}/${root}/${name}"
+            [[ -d "$dir" ]] || continue
+            if [[ "$name" == coderabbit-config ]]; then
+                return 0
+            fi
+            if [[ -f "${dir}/SKILL.md" ]]; then
+                skill_text="$(<"${dir}/SKILL.md")"
+                if [[ "$skill_text" == *[Cc]ode[Rr]abbit* ]]; then
+                    return 0
+                fi
+            fi
+        done
+    done
+    for root in .claude/plugins .codex/plugins; do
+        for dir in "${HOME}/${root}"/*[Cc]ode[Rr]abbit* "${HOME}/${root}"/*/*[Cc]ode[Rr]abbit* \
+            "${HOME}/${root}"/*/*/*[Cc]ode[Rr]abbit*; do
+            if [[ -d "$dir" && "$dir" != */marketplaces/* ]]; then
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+
+# Prints the install plan of `coderabbit skills --agent` and the confirm command
+# it names, when the CLI is present and no CodeRabbit skill is. Applies nothing.
+# Always returns 0 so a caller under `set -e` is never broken by it.
+init_files_coderabbit_skills_preview()
+{
+    local cli tool rc=0
+    local -a bounded=()
+
+    [[ "${INIT_FILES_CODERABBIT_SKILLS_PREVIEW:-1}" == 0 ]] && return 0
+    cli="$(init_files_coderabbit_cli)" || return 0
+    init_files_coderabbit_skills_installed && return 0
+
+    # The preview talks to the network (release manifest), so bound it.
+    for tool in timeout gtimeout; do
+        if command -v "$tool" >/dev/null 2>&1; then
+            bounded=("$tool" 60)
+            break
+        fi
+    done
+
+    printf '\nCodeRabbit CLI is installed but no CodeRabbit agent skill is. Install plan (preview only, nothing is changed):\n' >&2
+    # shellcheck disable=SC2068  # an empty array must expand to nothing
+    ${bounded[@]+"${bounded[@]}"} "$cli" skills --agent </dev/null || rc=$?
+    if (( rc != 0 )); then
+        printf 'WARNING: could not preview the CodeRabbit skills plan (exit %s); run: coderabbit skills --agent\n' "$rc" >&2
+        return 0
+    fi
+    printf 'To install on this host, review the plan above and run the confirm command it printed; nothing was installed.\n' >&2
+    printf 'Silence this with INIT_FILES_CODERABBIT_SKILLS_PREVIEW=0.\n' >&2
+    return 0
+}

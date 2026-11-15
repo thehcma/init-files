@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# Tests for lib/coderabbit_skills: the preview-only helper for the CodeRabbit CLI agent skills.
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+lib="${root}/lib/coderabbit_skills"
+readonly lib
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+home="${work}/home"
+readonly home
+args_log="${work}/args.log"
+readonly args_log
+
+# make_cli <path> <exit-code>: a stub CLI that records its arguments and prints a plan plus the JSON status line.
+make_cli() {
+  local path="$1" code="$2"
+  mkdir -p "$(dirname "$path")"
+  {
+    printf '#!/bin/sh\n'
+    printf 'echo "$*" >> "%s"\n' "$args_log"
+    printf 'echo "Install"\n'
+    printf 'echo "  Claude Code"\n'
+    printf 'echo "    + autofix            %s/.claude/skills/autofix"\n' "$home"
+    printf 'echo "{\\"type\\":\\"action_required\\",\\"command\\":\\"coderabbit skills --confirm abc123\\"}"\n'
+    printf 'exit %s\n' "$code"
+  } >"$path"
+  chmod +x "$path"
+}
+
+# preview [env...]: run the preview with an isolated HOME and a minimal PATH; prints stdout and stderr, then rc=<n>.
+preview() {
+  local rc=0 out
+  : >"$args_log"
+  # shellcheck disable=SC2016  # the bash -c script must expand $1 in the child shell, not here
+  out="$(env -i HOME="$home" PATH="${work}/pathbin:/usr/bin:/bin" "$@" \
+    bash -c 'source "$1"; init_files_coderabbit_skills_preview' bash "$lib" 2>&1)" || rc=$?
+  printf '%s\nrc=%s\n' "$out" "$rc"
+}
+
+reset_home() {
+  rm -rf "$home" "${work}/pathbin"
+  mkdir -p "$home" "${work}/pathbin"
+}
+
+printf '\n=== no CLI: silent and nothing is run ===\n'
+reset_home
+out="$(preview)"
+assert_eq 'no CLI prints only the exit status' "$out" $'\nrc=0'
+assert_eq 'no CLI runs nothing' "$(<"$args_log")" ''
+
+printf '\n=== CLI present, no skills: preview the plan, apply nothing ===\n'
+reset_home
+make_cli "${home}/.local/bin/coderabbit" 0
+out="$(preview)"
+assert_contains 'says no CodeRabbit skill is installed and this is a preview' "$out" 'Install plan (preview only, nothing is changed)'
+assert_contains "prints the CLI's own plan" "$out" '+ autofix'
+assert_contains "prints the CLI's confirm command line" "$out" 'coderabbit skills --confirm abc123'
+assert_contains 'says nothing was installed' "$out" 'nothing was installed'
+assert_contains 'succeeds' "$out" 'rc=0'
+assert_eq 'the CLI is run with exactly: skills --agent' "$(<"$args_log")" 'skills --agent'
+assert_not_contains 'the helper never passes --confirm itself' "$(<"$args_log")" '--confirm'
+
+printf '\n=== the cr alias on PATH alone also previews ===\n'
+reset_home
+make_cli "${work}/pathbin/cr" 0
+out="$(preview)"
+assert_contains 'cr alone prints the plan' "$out" '+ autofix'
+assert_eq 'cr is run with: skills --agent' "$(<"$args_log")" 'skills --agent'
+
+printf '\n=== skills already installed: silent and nothing is run ===\n'
+reset_home
+make_cli "${home}/.local/bin/coderabbit" 0
+mkdir -p "${home}/.claude/skills/code-review"
+printf '%s\n' '---' 'name: code-review' 'description: Run CodeRabbit CLI reviews' '---' >"${home}/.claude/skills/code-review/SKILL.md"
+out="$(preview)"
+assert_eq 'a CodeRabbit code-review skill silences the preview' "$out" $'\nrc=0'
+assert_eq 'and nothing is run' "$(<"$args_log")" ''
+
+reset_home
+make_cli "${home}/.local/bin/coderabbit" 0
+mkdir -p "${home}/.gemini/skills/coderabbit-config"
+out="$(preview)"
+assert_eq 'a coderabbit-config directory counts by name' "$out" $'\nrc=0'
+
+printf '\n=== a user-owned generic skill does not hide the preview ===\n'
+for generic in code-review autofix; do
+  reset_home
+  make_cli "${home}/.local/bin/coderabbit" 0
+  mkdir -p "${home}/.claude/skills/${generic}"
+  printf '%s\n' '---' "name: ${generic}" 'description: my own skill' '---' >"${home}/.claude/skills/${generic}/SKILL.md"
+  out="$(preview)"
+  assert_contains "a non-CodeRabbit ${generic} skill still previews" "$out" 'Install plan (preview only'
+done
+reset_home
+make_cli "${home}/.local/bin/coderabbit" 0
+mkdir -p "${home}/.claude/skills/code-review"
+out="$(preview)"
+assert_contains 'a generic-name directory with no SKILL.md still previews' "$out" 'Install plan (preview only'
+
+printf '\n=== plugin installs count; marketplace listings and stray files do not ===\n'
+for plugin_dir in .claude/plugins/coderabbit .claude/plugins/cache/some-market/coderabbit .codex/plugins/cache/m/coderabbit-plugin/1.0; do
+  reset_home
+  make_cli "${home}/.local/bin/coderabbit" 0
+  mkdir -p "${home}/${plugin_dir}"
+  out="$(preview)"
+  assert_eq "a plugin at ~/${plugin_dir} silences the preview" "$out" $'\nrc=0'
+done
+reset_home
+make_cli "${home}/.local/bin/coderabbit" 0
+mkdir -p "${home}/.claude/plugins/marketplaces/coderabbit-marketplace"
+out="$(preview)"
+assert_contains 'a marketplace listing that was added but not installed still previews' "$out" 'Install plan (preview only'
+reset_home
+make_cli "${home}/.local/bin/coderabbit" 0
+mkdir -p "${home}/.claude/plugins"
+: >"${home}/.claude/plugins/coderabbit.log"
+out="$(preview)"
+assert_contains 'a stray file named after CodeRabbit still previews' "$out" 'Install plan (preview only'
+
+printf '\n=== switches and failures ===\n'
+reset_home
+make_cli "${home}/.local/bin/coderabbit" 0
+out="$(preview INIT_FILES_CODERABBIT_SKILLS_PREVIEW=0)"
+assert_eq 'INIT_FILES_CODERABBIT_SKILLS_PREVIEW=0 silences the preview' "$out" $'\nrc=0'
+assert_eq 'and nothing is run' "$(<"$args_log")" ''
+
+reset_home
+make_cli "${home}/.local/bin/coderabbit" 3
+out="$(preview)"
+assert_contains 'a failing CLI warns with the manual command' "$out" 'WARNING: could not preview the CodeRabbit skills plan (exit 3); run: coderabbit skills --agent'
+assert_contains 'and never fails the caller' "$out" 'rc=0'
+assert_not_contains 'and does not claim the plan was shown' "$out" 'nothing was installed'
+
+printf '\n=== static: the helper is wired in and never applies ===\n'
+lib_text="$(<"$lib")"
+bashrc_text="$(<"${root}/bashrc")"
+provision_text="$(<"${root}/provision_init_files")"
+assert_not_contains 'the lib never runs the CLI with --confirm' "$lib_text" 'skills --confirm'
+# shellcheck disable=SC2016  # literal source text to match, not an expansion
+assert_contains 'bashrc sources the lib' "$bashrc_text" '"${_init_files_clone_dir}/lib/coderabbit_skills"'
+assert_contains 'update_coderabbit prints the preview' "$bashrc_text" 'init_files_coderabbit_skills_preview'
+# shellcheck disable=SC2016  # literal source text to match, not an expansion
+assert_contains 'provision sources the lib' "$provision_text" '. "${repo_dir}/lib/coderabbit_skills"'
+# shellcheck disable=SC2016  # literal source text to match, not an expansion
+assert_contains 'provision previews only on interactive runs' "$provision_text" \
+  '[[ $quiet -eq 0 && $force -eq 0 && -t 0 && -t 2 ]]'
+
+test_summary
