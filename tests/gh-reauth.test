@@ -53,6 +53,7 @@ assert_eq 'ssh-style URL owner is parsed' \
 assert_eq 'no recorded handle or URL yields nothing' \
     "$(_init_files_expected_gh_handle 'unseen' '')" ''
 
+# shellcheck disable=SC2218  # defined by the eval of the bashrc helpers above; the stub below only redefines it
 if _init_files_offer_gh_reauth 'thehcma' 'init-files' < /dev/null 2>/dev/null; then
     fail_case 'non-TTY never starts a browser reauth'
 else

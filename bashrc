@@ -112,6 +112,10 @@ if [[ -f "${_init_files_clone_dir}/lib/release_install" ]]; then
     # shellcheck disable=SC1091
     . "${_init_files_clone_dir}/lib/release_install"
 fi
+if [[ -f "${_init_files_clone_dir}/lib/coderabbit_skills" ]]; then
+    # shellcheck disable=SC1091
+    . "${_init_files_clone_dir}/lib/coderabbit_skills"
+fi
 if [[ -f "${_init_files_clone_dir}/lib/shell_completions" ]]; then
     # shellcheck disable=SC1091
     . "${_init_files_clone_dir}/lib/shell_completions"
@@ -11132,6 +11136,8 @@ function update_rg()
 # update_coderabbit: vendor installer via lib/release_install (not a release
 # binary). Also the first install; the CLI auto-updates itself afterwards, so it
 # is not tracked by check_tool_versions. Signing in (cr auth login) is manual.
+# When no CodeRabbit agent skill is installed it also prints the install plan
+# (preview only, lib/coderabbit_skills); applying it stays the operator's call.
 function update_coderabbit()
 {
     invalidate_tool_version_cache
@@ -11144,6 +11150,9 @@ function update_coderabbit()
 
     hash -r
     "$HOME/.local/bin/coderabbit" --version
+    if type init_files_coderabbit_skills_preview > /dev/null 2>&1; then
+        init_files_coderabbit_skills_preview "$HOME/.local/bin/coderabbit"
+    fi
 }
 
 function update_fzf()
