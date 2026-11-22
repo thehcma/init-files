@@ -41,7 +41,7 @@ _init_local_network_connect() { printf 'failed: No route to host\n'; return 1; }
 rc=0; out="$(TERM_PROGRAM=iTerm.app init_files_local_network_check cmsh 2>&1)" || rc=$?
 assert_eq 'check never fails' "$rc" 0
 assert_contains 'warns with label' "$out" 'WARN: cmsh:'
-assert_contains 'names terminal' "$out" 'iTerm.app'
+assert_contains 'names terminal' "$out" 'iTerm'
 assert_contains 'names settings pane' "$out" 'Local Network'
 
 _init_local_network_connect() { printf 'refused\n'; return 1; }
@@ -80,7 +80,19 @@ _init_local_network_dns_servers() { printf '192.168.1.30\n'; }
 rc=0; init_files_local_network_probe || rc=$?
 assert_eq 'gateway not a DNS server -> probed' "$rc" 0
 
+_init_local_network_dns_servers() { printf '192.168.1.30\n'; }
+_init_local_network_proxy_hosts() { printf '192.168.1.1\n'; }
+rc=0; init_files_local_network_probe || rc=$?
+assert_eq 'gateway that is a proxy -> inconclusive' "$rc" 2
+_init_local_network_proxy_hosts() { printf '10.0.0.9\n'; }
+rc=0; init_files_local_network_probe || rc=$?
+assert_eq 'gateway not a proxy -> probed' "$rc" 0
+
 printf '\n=== responsible app candidates ===\n'
+assert_eq 'tmux over iTerm2 names the inherited app' \
+    "$(TERM_PROGRAM=tmux LC_TERMINAL=iTerm2 ITERM_SESSION_ID='' init_files_local_network_app_label)" 'iTerm2'
+assert_eq 'bare tmux falls back to generic wording' \
+    "$(TERM_PROGRAM=tmux LC_TERMINAL='' ITERM_SESSION_ID='' init_files_local_network_app_label)" 'your terminal app'
 apps="$(TERM_PROGRAM=tmux LC_TERMINAL=iTerm2 ITERM_SESSION_ID=w0t0p0 _init_local_network_candidate_apps | sort -u | tr '\n' ' ')"
 assert_contains 'tmux keeps tmux' "$apps" 'tmux'
 assert_contains 'tmux inherits LC_TERMINAL app' "$apps" 'iTerm2'

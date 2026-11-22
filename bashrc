@@ -6306,8 +6306,8 @@ function init_files_doctor()
         local ln_rc=0 ln_log
         init_files_local_network_probe || ln_rc=$?
         case "$ln_rc" in
-            0) _doc_ok "Local Network: LAN reachable from ${TERM_PROGRAM:-this terminal}" ;;
-            1) _doc_warn "Local Network: LAN unreachable (No route to host); enable ${TERM_PROGRAM:-your terminal} in System Settings > Privacy & Security > Local Network" ;;
+            0) _doc_ok "Local Network: LAN reachable from $(init_files_local_network_app_label)" ;;
+            1) _doc_warn "Local Network: LAN unreachable (No route to host); enable $(init_files_local_network_app_label) in System Settings > Privacy & Security > Local Network" ;;
             *) _doc_ok "Local Network: probe inconclusive (no private gateway / timeout)" ;;
         esac
         if ln_log="$(init_files_local_network_stale_log)"; then

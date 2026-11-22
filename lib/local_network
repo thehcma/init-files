@@ -22,6 +22,13 @@ _init_local_network_dns_servers()
     /usr/sbin/scutil --dns 2>/dev/null | awk '/nameserver\[/ {print $3}' | sort -u
 }
 
+# Configured proxy hosts, one per line; overridable seam for tests. Apple
+# exempts a local-network proxy from the grant just like a DNS server.
+_init_local_network_proxy_hosts()
+{
+    /usr/sbin/scutil --proxy 2>/dev/null | awk '/^ +[A-Za-z]+Proxy : / {print $3}' | sort -u
+}
+
 # Print the default gateway when it is a private/link-local IPv4 address on a
 # physical LAN interface. Tunnels (utun, ipsec, ppp, ...) are not local networks
 # and are exempt from Local Network checks, so they say nothing about the grant.
@@ -52,15 +59,15 @@ _init_local_network_connect()
 # Probe the Local Network grant.
 # Exit 0: LAN reachable (grant OK). 1: denied (grant missing/stale).
 # 2: inconclusive / not applicable (non-macOS, no physical-LAN private gateway,
-# gateway is also a DNS server, timeout).
+# gateway is also a DNS server or proxy, timeout).
 init_files_local_network_probe()
 {
     local gw out rc=0
     _init_is_darwin || return 2
     gw="$(init_files_local_network_gateway)" || return 2
-    # Apple exempts a DNS server on the local network from the grant, so a
-    # reachable gateway that is also a DNS server proves nothing.
-    if _init_local_network_dns_servers | grep -qxF -- "$gw"; then
+    # Apple exempts a DNS server or proxy on the local network from the grant, so
+    # a reachable gateway that is also one of them proves nothing.
+    if { _init_local_network_dns_servers; _init_local_network_proxy_hosts; } | grep -qxF -- "$gw"; then
         return 2
     fi
     out="$(_init_local_network_connect "$gw")" || rc=$?
@@ -84,7 +91,7 @@ init_files_local_network_check()
     if [[ "$rc" -eq 1 ]]; then
         {
             printf 'WARN: %s: LAN unreachable (No route to host) - macOS Local Network access looks missing for %s.\n' \
-                "$label" "${TERM_PROGRAM:-your terminal app}"
+                "$label" "$(init_files_local_network_app_label)"
             printf '      Enable it in System Settings > Privacy & Security > Local Network, then restart the app.\n'
             printf '      If it is already on, toggle it off and on (a stale grant behaves like a missing one).\n'
         } >&2
@@ -107,6 +114,15 @@ _init_local_network_candidate_apps()
         printf 'iTerm\n'
     fi
     return 0
+}
+
+# App to name in the remedy: the inherited terminal when TERM_PROGRAM is a
+# multiplexer, else TERM_PROGRAM; generic wording when attribution is uncertain.
+init_files_local_network_app_label()
+{
+    local app
+    app="$(_init_local_network_candidate_apps | grep -vxE 'tmux|screen' | head -1)"
+    printf '%s\n' "${app:-your terminal app}"
 }
 
 # Slow (seconds): recent unified-log evidence of a stale grant for THIS
