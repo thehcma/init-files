@@ -29,6 +29,36 @@ _init_local_network_proxy_hosts()
     /usr/sbin/scutil --proxy 2>/dev/null | awk '/^ +[A-Za-z]+Proxy : / {print $3}' | sort -u
 }
 
+# IPv4 addresses for a host name, one per line; overridable seam for tests.
+# Resolving a non-.local name needs no Local Network access (Apple TN3179).
+_init_local_network_resolve()
+{
+    /usr/bin/dscacheutil -q host -a name "$1" 2>/dev/null | awk '/^ip_address:/ {print $2}'
+}
+
+# Exempt hosts (DNS servers + proxies) as IPv4 addresses, one per line. A proxy
+# configured by name is resolved so it compares equal to the numeric gateway.
+# Returns 1 when a name cannot be resolved: the exemption is then unknowable.
+_init_local_network_exempt_addrs()
+{
+    local host addrs rc=0
+    _init_local_network_dns_servers
+    while IFS= read -r host; do
+        [[ -n "$host" ]] || continue
+        if [[ "$host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            printf '%s\n' "$host"
+            continue
+        fi
+        addrs="$(_init_local_network_resolve "$host")"
+        if [[ -n "$addrs" ]]; then
+            printf '%s\n' "$addrs"
+        else
+            rc=1
+        fi
+    done < <(_init_local_network_proxy_hosts)
+    return "$rc"
+}
+
 # Print the default gateway when it is a private/link-local IPv4 address on a
 # physical LAN interface. Tunnels (utun, ipsec, ppp, ...) are not local networks
 # and are exempt from Local Network checks, so they say nothing about the grant.
@@ -69,7 +99,7 @@ init_files_local_network_probe()
     # a reachable gateway that is also one of them proves nothing.
     # Collect first, then match: grep -q on a live pipe can SIGPIPE the writer,
     # which fails the pipeline under pipefail and skips the exemption.
-    exempt="$(_init_local_network_dns_servers; _init_local_network_proxy_hosts)"
+    exempt="$(_init_local_network_exempt_addrs)" || return 2
     if grep -qxF -- "$gw" <<<"$exempt"; then
         return 2
     fi

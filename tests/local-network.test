@@ -18,6 +18,10 @@ source "${root}/lib/local_network"
 # Seams: force the Darwin gate and gateway; stub the connect.
 _init_is_darwin() { return 0; }
 init_files_local_network_gateway() { printf '192.168.1.1\n'; }
+# Isolate from this machine's real DNS/proxy config (a proxy on the gateway
+# would make every probe below inconclusive).
+_init_local_network_dns_servers() { printf '192.168.1.30\n'; }
+_init_local_network_proxy_hosts() { printf '10.0.0.9\n'; }
 
 printf '\n=== probe ===\n'
 _init_local_network_connect() { printf 'Connection to %s port 80 succeeded!\n' "$1"; return 0; }
@@ -87,6 +91,17 @@ assert_eq 'gateway that is a proxy -> inconclusive' "$rc" 2
 _init_local_network_proxy_hosts() { printf '10.0.0.9\n'; }
 rc=0; init_files_local_network_probe || rc=$?
 assert_eq 'gateway not a proxy -> probed' "$rc" 0
+
+_init_local_network_proxy_hosts() { printf 'proxy.example.com\n'; }
+_init_local_network_resolve() { printf '192.168.1.1\n'; }
+rc=0; init_files_local_network_probe || rc=$?
+assert_eq 'gateway behind a named proxy -> inconclusive' "$rc" 2
+_init_local_network_resolve() { printf '203.0.113.5\n'; }
+rc=0; init_files_local_network_probe || rc=$?
+assert_eq 'named proxy elsewhere -> probed' "$rc" 0
+_init_local_network_resolve() { :; }
+rc=0; init_files_local_network_probe || rc=$?
+assert_eq 'unresolvable proxy name -> inconclusive' "$rc" 2
 
 printf '\n=== responsible app candidates ===\n'
 assert_eq 'tmux over iTerm2 names the inherited app' \
