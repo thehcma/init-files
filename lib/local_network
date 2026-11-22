@@ -62,12 +62,15 @@ _init_local_network_connect()
 # gateway is also a DNS server or proxy, timeout).
 init_files_local_network_probe()
 {
-    local gw out rc=0
+    local gw out exempt rc=0
     _init_is_darwin || return 2
     gw="$(init_files_local_network_gateway)" || return 2
     # Apple exempts a DNS server or proxy on the local network from the grant, so
     # a reachable gateway that is also one of them proves nothing.
-    if { _init_local_network_dns_servers; _init_local_network_proxy_hosts; } | grep -qxF -- "$gw"; then
+    # Collect first, then match: grep -q on a live pipe can SIGPIPE the writer,
+    # which fails the pipeline under pipefail and skips the exemption.
+    exempt="$(_init_local_network_dns_servers; _init_local_network_proxy_hosts)"
+    if grep -qxF -- "$gw" <<<"$exempt"; then
         return 2
     fi
     out="$(_init_local_network_connect "$gw")" || rc=$?
@@ -121,7 +124,8 @@ _init_local_network_candidate_apps()
 init_files_local_network_app_label()
 {
     local app
-    app="$(_init_local_network_candidate_apps | grep -vxE 'tmux|screen' | head -1)"
+    app="$(_init_local_network_candidate_apps | grep -vxE 'tmux|screen' || true)"
+    app="${app%%$'\n'*}"
     printf '%s\n' "${app:-your terminal app}"
 }
 
