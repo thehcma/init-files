@@ -57,6 +57,37 @@ source "${root}/lib/local_network"
 assert_contains 'nc probe uses -v' "$(declare -f _init_local_network_connect)" 'nc -zv'
 : "$nc_src"
 
+printf '\n=== gateway selection ===\n'
+unset -f init_files_local_network_gateway
+# shellcheck disable=SC1091
+source "${root}/lib/local_network"
+_init_local_network_route_info() { printf '192.168.1.1 en0\n'; }
+assert_eq 'physical LAN gateway accepted' "$(init_files_local_network_gateway)" '192.168.1.1'
+_init_local_network_route_info() { printf '10.8.0.1 utun4\n'; }
+rc=0; init_files_local_network_gateway >/dev/null || rc=$?
+assert_exit_nonzero 'VPN tunnel gateway rejected' "$rc"
+_init_local_network_route_info() { printf '8.8.8.8 en0\n'; }
+rc=0; init_files_local_network_gateway >/dev/null || rc=$?
+assert_exit_nonzero 'public gateway rejected' "$rc"
+
+printf '\n=== DNS-exempt gateway ===\n'
+init_files_local_network_gateway() { printf '192.168.1.1\n'; }
+_init_local_network_connect() { printf 'refused\n'; return 1; }
+_init_local_network_dns_servers() { printf '192.168.1.1\n8.8.8.8\n'; }
+rc=0; init_files_local_network_probe || rc=$?
+assert_eq 'gateway that is a DNS server -> inconclusive' "$rc" 2
+_init_local_network_dns_servers() { printf '192.168.1.30\n'; }
+rc=0; init_files_local_network_probe || rc=$?
+assert_eq 'gateway not a DNS server -> probed' "$rc" 0
+
+printf '\n=== responsible app candidates ===\n'
+apps="$(TERM_PROGRAM=tmux LC_TERMINAL=iTerm2 ITERM_SESSION_ID=w0t0p0 _init_local_network_candidate_apps | sort -u | tr '\n' ' ')"
+assert_contains 'tmux keeps tmux' "$apps" 'tmux'
+assert_contains 'tmux inherits LC_TERMINAL app' "$apps" 'iTerm2'
+assert_contains 'iTerm session id maps to iTerm' "$apps" 'iTerm '
+apps="$(TERM_PROGRAM=iTerm.app LC_TERMINAL='' ITERM_SESSION_ID='' _init_local_network_candidate_apps)"
+assert_eq '.app suffix stripped' "$apps" 'iTerm'
+
 printf '\n=== not darwin ===\n'
 _init_is_darwin() { return 1; }
 rc=0; init_files_local_network_probe || rc=$?
