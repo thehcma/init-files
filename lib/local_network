@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# macOS Local Network privacy check (sourced by bashrc; Bash 3.2-portable).
+#
+# et / mosh (cesh / cmsh) open direct LAN connections. When the terminal app
+# lacks the Local Network grant, macOS fails them with EHOSTUNREACH ("No route
+# to host") even though the network is up. The grant is not in TCC.db and has
+# no query API, so probe it: a TCP connect to the default gateway is refused
+# (grant OK) or "No route to host" (grant missing/stale).
+#
+# Predicates return non-zero and never exit (sourced; see error-handling.mdc).
+
+# "<gateway> <interface>" of the default route; overridable seam for tests.
+_init_local_network_route_info()
+{
+    /sbin/route -n get default 2>/dev/null \
+        | awk '/gateway:/ {g=$2} /interface:/ {i=$2} END {print g, i}'
+}
+
+# Configured DNS servers, one per line; overridable seam for tests.
+_init_local_network_dns_servers()
+{
+    /usr/sbin/scutil --dns 2>/dev/null | awk '/nameserver\[/ {print $3}' | sort -u
+}
+
+# Configured proxy hosts, one per line; overridable seam for tests. Apple
+# exempts a local-network proxy from the grant just like a DNS server.
+_init_local_network_proxy_hosts()
+{
+    /usr/sbin/scutil --proxy 2>/dev/null | awk '/^ +[A-Za-z]+Proxy : / {print $3}' | sort -u
+}
+
+# IPv4 addresses for a host name, one per line; overridable seam for tests.
+# Resolving a non-.local name needs no Local Network access (Apple TN3179).
+_init_local_network_resolve()
+{
+    /usr/bin/dscacheutil -q host -a name "$1" 2>/dev/null | awk '/^ip_address:/ {print $2}'
+}
+
+# Exempt hosts (DNS servers + proxies) as IPv4 addresses, one per line. A proxy
+# configured by name is resolved so it compares equal to the numeric gateway.
+# Returns 1 when a name cannot be resolved: the exemption is then unknowable.
+_init_local_network_exempt_addrs()
+{
+    local host addrs rc=0
+    _init_local_network_dns_servers
+    while IFS= read -r host; do
+        [[ -n "$host" ]] || continue
+        if [[ "$host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            printf '%s\n' "$host"
+            continue
+        fi
+        addrs="$(_init_local_network_resolve "$host")"
+        if [[ -n "$addrs" ]]; then
+            printf '%s\n' "$addrs"
+        else
+            rc=1
+        fi
+    done < <(_init_local_network_proxy_hosts)
+    return "$rc"
+}
+
+# Print the default gateway when it is a private/link-local IPv4 address on a
+# physical LAN interface. Tunnels (utun, ipsec, ppp, ...) are not local networks
+# and are exempt from Local Network checks, so they say nothing about the grant.
+init_files_local_network_gateway()
+{
+    local gw iface
+    _init_is_darwin || return 1
+    read -r gw iface < <(_init_local_network_route_info)
+    case "${iface:-}" in
+        en[0-9]*) ;;
+        *) return 1 ;;
+    esac
+    case "${gw:-}" in
+        10.*|192.168.*|169.254.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*)
+            printf '%s\n' "$gw"
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+# Connect probe; overridable seam for tests. Prints nc's combined output.
+_init_local_network_connect()
+{
+    # -v is required: macOS nc prints no failure text without it.
+    /usr/bin/nc -zv -w 2 "$1" 80 2>&1
+}
+
+# Probe the Local Network grant.
+# Exit 0: LAN reachable (grant OK). 1: denied (grant missing/stale).
+# 2: inconclusive / not applicable (non-macOS, no physical-LAN private gateway,
+# gateway is also a DNS server or proxy, timeout).
+init_files_local_network_probe()
+{
+    local gw out exempt rc=0
+    _init_is_darwin || return 2
+    gw="$(init_files_local_network_gateway)" || return 2
+    # Apple exempts a DNS server or proxy on the local network from the grant, so
+    # a reachable gateway that is also one of them proves nothing.
+    # Collect first, then match: grep -q on a live pipe can SIGPIPE the writer,
+    # which fails the pipeline under pipefail and skips the exemption.
+    exempt="$(_init_local_network_exempt_addrs)" || return 2
+    if grep -qxF -- "$gw" <<<"$exempt"; then
+        return 2
+    fi
+    out="$(_init_local_network_connect "$gw")" || rc=$?
+    if [[ "$rc" -eq 0 ]]; then
+        return 0
+    fi
+    case "$out" in
+        *"No route to host"*) return 1 ;;
+        *refused*) return 0 ;;
+        *) return 2 ;;
+    esac
+}
+
+# Warn (stderr) with the remedy when the grant looks missing. Always returns 0
+# so a false positive (VPN, odd gateway) never blocks a connection.
+# Usage: init_files_local_network_check [label]
+init_files_local_network_check()
+{
+    local label="${1:-connect}" rc=0
+    init_files_local_network_probe || rc=$?
+    if [[ "$rc" -eq 1 ]]; then
+        {
+            printf 'WARN: %s: LAN unreachable (No route to host) - macOS Local Network access looks missing for %s.\n' \
+                "$label" "$(init_files_local_network_app_label)"
+            printf '      Enable it in System Settings > Privacy & Security > Local Network, then restart the app.\n'
+            printf '      If it is already on, toggle it off and on (a stale grant behaves like a missing one).\n'
+        } >&2
+    fi
+    return 0
+}
+
+# Names of apps macOS may record as responsible for this shell's network use,
+# one per line. TERM_PROGRAM can be a multiplexer (tmux) that inherited its
+# responsible app from the terminal it was started in, so LC_TERMINAL and
+# iTerm's session id are consulted too.
+_init_local_network_candidate_apps()
+{
+    local app
+    for app in "${TERM_PROGRAM:-}" "${LC_TERMINAL:-}"; do
+        app="${app%.app}"
+        [[ -n "$app" ]] && printf '%s\n' "$app"
+    done
+    if [[ -n "${ITERM_SESSION_ID:-}" ]]; then
+        printf 'iTerm\n'
+    fi
+    return 0
+}
+
+# App to name in the remedy: the inherited terminal when TERM_PROGRAM is a
+# multiplexer, else TERM_PROGRAM; generic wording when attribution is uncertain.
+init_files_local_network_app_label()
+{
+    local app
+    app="$(_init_local_network_candidate_apps | grep -vxE 'tmux|screen' || true)"
+    app="${app%%$'\n'*}"
+    printf '%s\n' "${app:-your terminal app}"
+}
+
+# Slow (seconds): recent unified-log evidence of a stale grant for THIS
+# terminal's responsible app (see _init_local_network_candidate_apps). Events for
+# other apps are ignored so doctor never advises toggling the wrong grant. Prints
+# the matching line(s); exit 0 when found, 1 when none or no candidate app.
+init_files_local_network_stale_log()
+{
+    local out apps
+    _init_is_darwin || return 1
+    apps="$(_init_local_network_candidate_apps | sort -u | sed 's/.*/for & /')"
+    [[ -n "$apps" ]] || return 1
+    out="$(/usr/bin/log show --last 1d --style compact \
+        --predicate 'eventMessage CONTAINS "Local network allowed by preference"' 2>/dev/null \
+        | grep 'but received prompt' | grep -F -f <(printf '%s\n' "$apps") | tail -3)" || true
+    [[ -n "$out" ]] || return 1
+    printf '%s\n' "$out"
+}
