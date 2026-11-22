@@ -26,7 +26,8 @@ init_files_local_network_gateway()
 # Connect probe; overridable seam for tests. Prints nc's combined output.
 _init_local_network_connect()
 {
-    /usr/bin/nc -z -w 2 "$1" 80 2>&1
+    # -v is required: macOS nc prints no failure text without it.
+    /usr/bin/nc -zv -w 2 "$1" 80 2>&1
 }
 
 # Probe the Local Network grant.
@@ -66,15 +67,19 @@ init_files_local_network_check()
     return 0
 }
 
-# Slow (seconds): recent unified-log evidence of a stale grant for the terminal.
-# Prints the matching line(s); exit 0 when found.
+# Slow (seconds): recent unified-log evidence of a stale grant for THIS terminal
+# app (TERM_PROGRAM, e.g. iTerm.app -> "for iTerm"). Events for other apps are
+# ignored so doctor never advises toggling the wrong grant. Prints the matching
+# line(s); exit 0 when found, 1 when none or the app is unknown.
 init_files_local_network_stale_log()
 {
-    local out
+    local app="${TERM_PROGRAM:-}" out
     _init_is_darwin || return 1
+    app="${app%.app}"
+    [[ -n "$app" ]] || return 1
     out="$(/usr/bin/log show --last 1d --style compact \
         --predicate 'eventMessage CONTAINS "Local network allowed by preference"' 2>/dev/null \
-        | grep 'but received prompt' | tail -3)" || true
+        | grep 'but received prompt' | grep -F "for ${app} " | tail -3)" || true
     [[ -n "$out" ]] || return 1
     printf '%s\n' "$out"
 }

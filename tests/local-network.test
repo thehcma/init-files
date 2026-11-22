@@ -48,6 +48,15 @@ _init_local_network_connect() { printf 'refused\n'; return 1; }
 out="$(init_files_local_network_check cmsh 2>&1)"
 assert_eq 'silent when granted' "$out" ''
 
+printf '\n=== nc invocation ===\n'
+# Real command line: must pass -v or macOS nc emits no failure text.
+nc_src="$(declare -f _init_local_network_connect)"
+unset -f _init_local_network_connect
+# shellcheck disable=SC1091
+source "${root}/lib/local_network"
+assert_contains 'nc probe uses -v' "$(declare -f _init_local_network_connect)" 'nc -zv'
+: "$nc_src"
+
 printf '\n=== not darwin ===\n'
 _init_is_darwin() { return 1; }
 rc=0; init_files_local_network_probe || rc=$?
