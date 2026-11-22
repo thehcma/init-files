@@ -57,6 +57,7 @@ Tracked content is shared. Host-specific absolute tool paths are **generated on 
 | `lib/shell_completions` | Link personal CLIs' own completion output into the bash-completion v2 user dir (provision + bashrc `link_shell_completions`). Registry: builtin list + `~/.config/init-files/shell-completions`. Nothing vendored. |
 | `lib/error` | Script-only `init_files_die` / `warn` / `log`. Not sourced from bashrc. |
 | `lib/interactive_input` | `bt` / `cache_ssh` path and timeout checks (sourced by bashrc). |
+| `lib/local_network` | macOS Local Network grant probe (TCP connect to the private default gateway: refused = granted, "No route to host" = missing/stale). `cesh` / `cmsh` warn (never block) before launching et/mosh; `init_files_doctor` reports it plus stale-grant log events. Grants have no query API and are not in TCC.db. |
 | `lib/iterm_host_label` | Local vs ssh/et/mosh label for the iTerm pane status bar (`user.hostlabel`). |
 | `lib/orphan_cleanup` | MAC-gated leftover prefs / pipx detection for `init_files_cleanup_orphans`. |
 | `lib/history_rotate` | Soft/hard history archive bounds + session prune (issue #9); corruption filter + `init_files_history_merge_sources` behind `rebuild_bash_history`. |

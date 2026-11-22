@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Tests for lib/local_network (macOS Local Network grant probe).
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+
+# shellcheck disable=SC1091
+source "${root}/lib/local_network"
+
+# Seams: force the Darwin gate and gateway; stub the connect.
+_init_is_darwin() { return 0; }
+init_files_local_network_gateway() { printf '192.168.1.1\n'; }
+
+printf '\n=== probe ===\n'
+_init_local_network_connect() { printf 'Connection to %s port 80 succeeded!\n' "$1"; return 0; }
+rc=0; init_files_local_network_probe || rc=$?
+assert_eq 'succeeded -> reachable' "$rc" 0
+
+_init_local_network_connect() { printf 'nc: connectx to %s port 80 (tcp) failed: Connection refused\n' "$1"; return 1; }
+rc=0; init_files_local_network_probe || rc=$?
+assert_eq 'refused -> reachable (grant OK)' "$rc" 0
+
+_init_local_network_connect() { printf 'nc: connectx to %s port 80 (tcp) failed: No route to host\n' "$1"; return 1; }
+rc=0; init_files_local_network_probe || rc=$?
+assert_eq 'No route to host -> denied' "$rc" 1
+
+_init_local_network_connect() { printf 'nc: connectx to %s port 80 (tcp) failed: Operation timed out\n' "$1"; return 1; }
+rc=0; init_files_local_network_probe || rc=$?
+assert_eq 'timeout -> inconclusive' "$rc" 2
+
+printf '\n=== check ===\n'
+_init_local_network_connect() { printf 'failed: No route to host\n'; return 1; }
+rc=0; out="$(TERM_PROGRAM=iTerm.app init_files_local_network_check cmsh 2>&1)" || rc=$?
+assert_eq 'check never fails' "$rc" 0
+assert_contains 'warns with label' "$out" 'WARN: cmsh:'
+assert_contains 'names terminal' "$out" 'iTerm.app'
+assert_contains 'names settings pane' "$out" 'Local Network'
+
+_init_local_network_connect() { printf 'refused\n'; return 1; }
+out="$(init_files_local_network_check cmsh 2>&1)"
+assert_eq 'silent when granted' "$out" ''
+
+printf '\n=== not darwin ===\n'
+_init_is_darwin() { return 1; }
+rc=0; init_files_local_network_probe || rc=$?
+assert_eq 'non-darwin -> inapplicable' "$rc" 2
+
+test_summary

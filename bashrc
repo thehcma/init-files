@@ -96,6 +96,10 @@ if [[ -f "${_init_files_clone_dir}/lib/interactive_input" ]]; then
     # shellcheck disable=SC1091
     . "${_init_files_clone_dir}/lib/interactive_input"
 fi
+if [[ -f "${_init_files_clone_dir}/lib/local_network" ]]; then
+    # shellcheck disable=SC1091
+    . "${_init_files_clone_dir}/lib/local_network"
+fi
 if [[ -f "${_init_files_clone_dir}/lib/history_rotate" ]]; then
     # shellcheck disable=SC1091
     . "${_init_files_clone_dir}/lib/history_rotate"
@@ -3237,6 +3241,7 @@ EOF
     fi
     host="$(init_files_iterm_dest_from_args "${args[@]}" 2>/dev/null || true)"
     init_files_cache_ssh_for_host "$host" || return $?
+    declare -F init_files_local_network_check >/dev/null 2>&1 && init_files_local_network_check cesh
 
     et_bin="${init_tool_et:-}"
     if [[ -z "$et_bin" || ! -x "$et_bin" ]]; then
@@ -3309,6 +3314,7 @@ EOF
     fi
     host="$(init_files_iterm_dest_from_args "${args[@]}" 2>/dev/null || true)"
     init_files_cache_ssh_for_host "$host" || return $?
+    declare -F init_files_local_network_check >/dev/null 2>&1 && init_files_local_network_check cmsh
 
     mosh_bin="${init_tool_mosh:-}"
     if [[ -z "$mosh_bin" || ! -x "$mosh_bin" ]]; then
@@ -6292,6 +6298,20 @@ function init_files_doctor()
             _doc_ok "GitHub transport: insteadOf SSH (no per-host flag)"
         else
             _doc_warn "GitHub transport: no insteadOf and no github-https flag"
+        fi
+    fi
+
+    # 5b) macOS Local Network grant (cesh / cmsh depend on it)
+    if declare -F init_files_local_network_probe > /dev/null 2>&1 && _init_is_darwin; then
+        local ln_rc=0 ln_log
+        init_files_local_network_probe || ln_rc=$?
+        case "$ln_rc" in
+            0) _doc_ok "Local Network: LAN reachable from ${TERM_PROGRAM:-this terminal}" ;;
+            1) _doc_warn "Local Network: LAN unreachable (No route to host); enable ${TERM_PROGRAM:-your terminal} in System Settings > Privacy & Security > Local Network" ;;
+            *) _doc_ok "Local Network: probe inconclusive (no private gateway / timeout)" ;;
+        esac
+        if ln_log="$(init_files_local_network_stale_log)"; then
+            _doc_warn "Local Network: stale-grant event in last day (toggle the grant off/on): ${ln_log##*$'\n'}"
         fi
     fi
 

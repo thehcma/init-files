@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# macOS Local Network privacy check (sourced by bashrc; Bash 3.2-portable).
+#
+# et / mosh (cesh / cmsh) open direct LAN connections. When the terminal app
+# lacks the Local Network grant, macOS fails them with EHOSTUNREACH ("No route
+# to host") even though the network is up. The grant is not in TCC.db and has
+# no query API, so probe it: a TCP connect to the default gateway is refused
+# (grant OK) or "No route to host" (grant missing/stale).
+#
+# Predicates return non-zero and never exit (sourced; see error-handling.mdc).
+
+# Print the default gateway when it is a private/link-local IPv4 address.
+init_files_local_network_gateway()
+{
+    local gw
+    _init_is_darwin || return 1
+    gw="$(/sbin/route -n get default 2>/dev/null | awk '/gateway:/ {print $2; exit}')"
+    case "$gw" in
+        10.*|192.168.*|169.254.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*)
+            printf '%s\n' "$gw"
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+# Connect probe; overridable seam for tests. Prints nc's combined output.
+_init_local_network_connect()
+{
+    /usr/bin/nc -z -w 2 "$1" 80 2>&1
+}
+
+# Probe the Local Network grant.
+# Exit 0: LAN reachable (grant OK). 1: denied (grant missing/stale).
+# 2: inconclusive / not applicable (non-macOS, no private gateway, timeout).
+init_files_local_network_probe()
+{
+    local gw out rc=0
+    _init_is_darwin || return 2
+    gw="$(init_files_local_network_gateway)" || return 2
+    out="$(_init_local_network_connect "$gw")" || rc=$?
+    if [[ "$rc" -eq 0 ]]; then
+        return 0
+    fi
+    case "$out" in
+        *"No route to host"*) return 1 ;;
+        *refused*) return 0 ;;
+        *) return 2 ;;
+    esac
+}
+
+# Warn (stderr) with the remedy when the grant looks missing. Always returns 0
+# so a false positive (VPN, odd gateway) never blocks a connection.
+# Usage: init_files_local_network_check [label]
+init_files_local_network_check()
+{
+    local label="${1:-connect}" rc=0
+    init_files_local_network_probe || rc=$?
+    if [[ "$rc" -eq 1 ]]; then
+        {
+            printf 'WARN: %s: LAN unreachable (No route to host) - macOS Local Network access looks missing for %s.\n' \
+                "$label" "${TERM_PROGRAM:-your terminal app}"
+            printf '      Enable it in System Settings > Privacy & Security > Local Network, then restart the app.\n'
+            printf '      If it is already on, toggle it off and on (a stale grant behaves like a missing one).\n'
+        } >&2
+    fi
+    return 0
+}
+
+# Slow (seconds): recent unified-log evidence of a stale grant for the terminal.
+# Prints the matching line(s); exit 0 when found.
+init_files_local_network_stale_log()
+{
+    local out
+    _init_is_darwin || return 1
+    out="$(/usr/bin/log show --last 1d --style compact \
+        --predicate 'eventMessage CONTAINS "Local network allowed by preference"' 2>/dev/null \
+        | grep 'but received prompt' | tail -3)" || true
+    [[ -n "$out" ]] || return 1
+    printf '%s\n' "$out"
+}
