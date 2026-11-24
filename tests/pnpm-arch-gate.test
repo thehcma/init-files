@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# gt is gone from tool tracking; pnpm is gated off on 32-bit ARM Linux, where
+# upstream ships no binary (issue: applepie armhf reported "installed (unknown)").
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+bashrc="${root}/bashrc"
+
+printf '\n=== gt removed ===\n'
+text="$(<"$bashrc")"
+assert_not_contains 'no update_gt' "$text" 'update_gt'
+assert_not_contains 'no graphite-cli' "$text" 'graphite-cli'
+assert_not_contains 'no gt_latest cache key' "$text" 'gt_latest'
+
+printf '\n=== pnpm arch gate ===\n'
+fn="$(sed -n '/^function _init_pnpm_binary_supported()/,/^}/p' "$bashrc")"
+assert_contains 'gate function exists' "$fn" '_init_pnpm_binary_supported'
+eval "$fn"
+
+# Runs the gate with stubbed OSTYPE / uname -m / getconf LONG_BIT.
+gate() {
+    local ostype=$1 machine=$2 bits=$3
+    (
+        OSTYPE=$ostype
+        # Stubs are called by the eval'd gate function, which shellcheck can't see.
+        # shellcheck disable=SC2317,SC2329
+        uname() { printf '%s\n' "$machine"; }
+        # shellcheck disable=SC2317,SC2329
+        getconf() { printf '%s\n' "$bits"; }
+        _init_pnpm_binary_supported
+    )
+}
+
+if gate linux-gnueabihf armv7l 32; then fail_case 'armv7l 32-bit unsupported'; else pass_case 'armv7l 32-bit unsupported'; fi
+if gate linux-gnu aarch64 32; then fail_case 'aarch64 kernel + 32-bit userland unsupported'; else pass_case 'aarch64 kernel + 32-bit userland unsupported'; fi
+if gate linux-gnu aarch64 64; then pass_case 'aarch64 64-bit supported'; else fail_case 'aarch64 64-bit supported'; fi
+if gate linux-gnu x86_64 64; then pass_case 'x86_64 supported'; else fail_case 'x86_64 supported'; fi
+if gate darwin25 arm64 64; then pass_case 'macOS supported'; else fail_case 'macOS supported'; fi
+
+test_summary

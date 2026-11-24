@@ -1153,7 +1153,7 @@ function _init_user_npm_command()
     fi
     # Fallback: any nvm Node npm even if PATH still prefers brew.
     # Prefer higher version dirs last so glob order does not matter much;
-    # first writable match is enough for update_npm / update_gt.
+    # first writable match is enough for update_npm.
     for candidate in "${NVM_DIR:-$HOME/.nvm}"/versions/node/*/bin/npm; do
         [[ -x "$candidate" ]] || continue
         if _init_npm_global_prefix_writable "$candidate"; then
@@ -1736,14 +1736,6 @@ tool_live_installed_version()
         gh-stack)
             gh_stack_current_version 2>/dev/null || true
             ;;
-        gt)
-            if [[ -n "$tool_path" && -x "$tool_path" ]]; then
-                "$tool_path" --version 2>/dev/null | grep -Eo '[0-9]+(\.[0-9]+)+' | head -n 1
-            else
-                command -v gt >/dev/null 2>&1 || return 0
-                gt --version 2>/dev/null | grep -Eo '[0-9]+(\.[0-9]+)+' | head -n 1
-            fi
-            ;;
         npm|npx)
             if [[ -n "$tool_path" && -x "$tool_path" ]]; then
                 "$tool_path" --version 2>/dev/null
@@ -2244,8 +2236,8 @@ function check_pipx_tool()
 
 function check_tool_versions()
 {
-    local cache_file checked_at current_time gh_current git_current gt_current lock_dir
-    local gh_path git_path gt_path gh_stack_current gh_stack_path
+    local cache_file checked_at current_time gh_current git_current lock_dir
+    local gh_path git_path gh_stack_current gh_stack_path
     local bash_current bash_path bash_shell_notice bash_reset bash_shell_hint
     local pipx_current pipx_path pnpm_current pnpm_path uv_current uv_path
     local rg_current rg_path fzf_current fzf_path bat_current bat_path
@@ -2258,7 +2250,7 @@ function check_tool_versions()
     local _footer waited_for_rebuild reuse_report
     local tool_line
     local tool_line_bash tool_line_bash_completion tool_line_bat tool_line_fzf
-    local tool_line_gh tool_line_gh_stack tool_line_git tool_line_gt tool_line_lsd
+    local tool_line_gh tool_line_gh_stack tool_line_git tool_line_lsd
     local tool_line_npm tool_line_pipx tool_line_pnpm tool_line_rg
     local tool_line_starship tool_line_uv
 
@@ -2286,7 +2278,6 @@ function check_tool_versions()
     gh_latest=
     gh_stack_latest=
     git_latest=
-    gt_latest=
     npm_latest=
     pipx_latest=
     pnpm_latest=
@@ -2312,7 +2303,6 @@ function check_tool_versions()
     tool_line_gh=
     tool_line_gh_stack=
     tool_line_git=
-    tool_line_gt=
     tool_line_lsd=
     tool_line_npm=
     tool_line_pipx=
@@ -2571,23 +2561,14 @@ function check_tool_versions()
         fi
     fi
 
-    if command -v gt > /dev/null 2>&1; then
-        gt_path=$(command -v gt)
-        gt_current=$(gt --version 2> /dev/null | grep -Eo '[0-9]+(\.[0-9]+)+' | head -n 1 || true)
-        add_tool_update_notice gt "$gt_path" "$gt_current" "$gt_latest"
-        tool_line_gt="$(tool_status_line gt "$gt_path" "$gt_current" "$gt_latest")"
-        if [[ -n "$gt_current" && -z "$gt_latest" ]]; then
-            pending_tool_count=$((pending_tool_count + 1))
-        fi
-    else
-        tool_line_gt="$(tool_status_line gt "" "" "$gt_latest")"
-    fi
-
     check_npm_tools npm_latest || pending_tool_count=$((pending_tool_count + 1))
 
     check_pipx_tool
 
-    if command -v pnpm > /dev/null 2>&1; then
+    if ! _init_pnpm_binary_supported; then
+        # No upstream binary for this arch: neither list nor nag about pnpm.
+        tool_line_pnpm=
+    elif command -v pnpm > /dev/null 2>&1; then
         pnpm_path=$(command -v pnpm)
         pnpm_current=$(pnpm --version 2> /dev/null || true)
         add_tool_update_notice pnpm "$pnpm_path" "$pnpm_current" "$pnpm_latest"
@@ -2670,7 +2651,7 @@ function check_tool_versions()
     for tool_line in \
         "$tool_line_bash" "$tool_line_bash_completion" "$tool_line_bat" \
         "$tool_line_fzf" "$tool_line_gh" "$tool_line_gh_stack" "$tool_line_git" \
-        "$tool_line_gt" "$tool_line_lsd" "$tool_line_npm" "$tool_line_pipx" \
+        "$tool_line_lsd" "$tool_line_npm" "$tool_line_pipx" \
         "$tool_line_pnpm" "$tool_line_rg" "$tool_line_starship" "$tool_line_uv"
     do
         [[ -n "$tool_line" ]] && tool_status_messages+="${tool_line}"$'\n'
@@ -3967,7 +3948,7 @@ function tool_admin_install_steps()
     _init_is_macos_admin && return 1
 
     case "$tool_name" in
-        npm|npx|gt|pnpm)
+        npm|npx|pnpm)
             return 1
             ;;
         bash)
@@ -4659,10 +4640,6 @@ function fetch_latest_tool_version()
         starship)
             "$curl_cmd" --silent --show-error --fail --location --max-time 5 https://api.github.com/repos/starship/starship/releases/latest 2> /dev/null \
                 | "$init_tool_python3" -c 'import json, sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))' 2> /dev/null
-            ;;
-        gt)
-            "$curl_cmd" --silent --show-error --fail --location --max-time 5 https://registry.npmjs.org/@withgraphite/graphite-cli/latest 2> /dev/null \
-                | "$init_tool_python3" -c 'import json, sys; print(json.load(sys.stdin)["version"])' 2> /dev/null
             ;;
         npm|npx)
             "$curl_cmd" --silent --show-error --fail --location --max-time 5 https://registry.npmjs.org/npm/latest 2> /dev/null \
@@ -6741,7 +6718,7 @@ Need nvm + Node LTS under ~/.nvm, then retry:
   hash -r
   update_npm
 
-Optional next: update_pnpm / update_gt
+Optional next: update_pnpm
 EOF
         return 0
     fi
@@ -6763,7 +6740,7 @@ EOF
   hash -r
   update_npm
 
-Optional next: update_pnpm / update_gt
+Optional next: update_pnpm
 EOF
 }
 
@@ -10513,7 +10490,6 @@ function tool_version_cache_is_complete()
         gh_latest \
         gh_stack_latest \
         git_latest \
-        gt_latest \
         npm_latest \
         pipx_latest \
         pnpm_latest \
@@ -10540,7 +10516,7 @@ function tool_version_cache_is_complete()
 # docs/shell-ux.md (check_tool_versions).
 function refresh_tool_version_cache()
 {
-    local cache_dir cache_file bash_latest gh_latest gh_stack_latest git_latest gt_latest npm_latest pipx_latest pnpm_latest uv_latest
+    local cache_dir cache_file bash_latest gh_latest gh_stack_latest git_latest npm_latest pipx_latest pnpm_latest uv_latest
     local rg_latest fzf_latest bat_latest lsd_latest starship_latest
     local curl_cmd body lock_dir
 
@@ -10575,10 +10551,6 @@ function refresh_tool_version_cache()
     if [[ -z "$git_latest" ]]; then
         git_latest=$(fetch_git_latest_distro 2> /dev/null || true)
     fi
-    gt_latest=$(
-        "$curl_cmd" --silent --show-error --fail --location --max-time 5 https://registry.npmjs.org/@withgraphite/graphite-cli/latest 2> /dev/null \
-            | "$init_tool_python3" -c 'import json, sys; print(json.load(sys.stdin)["version"])' 2> /dev/null
-    ) || gt_latest=
 
     npm_latest=$(
         "$curl_cmd" --silent --show-error --fail --location --max-time 5 https://registry.npmjs.org/npm/latest 2> /dev/null \
@@ -10611,7 +10583,6 @@ function refresh_tool_version_cache()
         printf 'gh_latest=%s\n' "$gh_latest"
         printf 'gh_stack_latest=%s\n' "$gh_stack_latest"
         printf 'git_latest=%s\n' "$git_latest"
-        printf 'gt_latest=%s\n' "$gt_latest"
         printf 'npm_latest=%s\n' "$npm_latest"
         printf 'pipx_latest=%s\n' "$pipx_latest"
         printf 'pnpm_latest=%s\n' "$pnpm_latest"
@@ -10734,13 +10705,6 @@ function tool_install_command()
                 printf 'update_gh && update_gh_stack'
             fi
             ;;
-        gt)
-            if command -v npm > /dev/null 2>&1 || [[ -n "${init_tool_npm:-}" && -x "${init_tool_npm:-}" ]]; then
-                printf 'update_gt'
-            else
-                printf 'update_npm && update_gt'
-            fi
-            ;;
         npm|npx)
             helper="$(_init_node_toolchain_helper 2>/dev/null || true)"
             if [[ -n "$helper" ]]; then
@@ -10813,7 +10777,7 @@ function tool_status_line()
         else
             printf '%s  %s: installed -, latest -, status: not found on PATH%s' "$red" "$tool_name" "$reset"
         fi
-        # npm/gt/pnpm: nvm-first (user-local); no Homebrew admin cut-paste.
+        # npm/pnpm: nvm-first (user-local); no Homebrew admin cut-paste.
         admin_steps="$(tool_admin_install_steps "$tool_name" 2>/dev/null || true)"
         if [[ -n "$admin_steps" ]]; then
             printf '\n%s    %s%s' "$red" "$admin_steps" "$reset"
@@ -10889,9 +10853,6 @@ function tool_update_command()
             ;;
         starship)
             printf 'update_starship'
-            ;;
-        gt)
-            printf 'update_gt'
             ;;
         npm|npx)
             printf 'update_npm'
@@ -10974,7 +10935,6 @@ EOF
             bat) update_bat || tool_rc=1 ;;
             lsd) update_lsd || tool_rc=1 ;;
             starship) update_starship || tool_rc=1 ;;
-            gt) update_gt || tool_rc=1 ;;
             npm|npx) update_npm || tool_rc=1 ;;
             pipx) update_pipx || tool_rc=1 ;;
             pnpm) update_pnpm || tool_rc=1 ;;
@@ -11354,18 +11314,6 @@ function update_git_upstream()
     return 1
 }
 
-function update_gt()
-{
-    local npm_cmd
-
-    invalidate_tool_version_cache
-
-    npm_cmd="$(_init_ensure_user_node_toolchain)" || return 1
-    _init_npm_exec "$npm_cmd" install --global @withgraphite/graphite-cli@latest || return
-    hash -r
-    command -v gt > /dev/null 2>&1 && gt --version
-}
-
 function update_npm()
 {
     local npm_cmd
@@ -11414,11 +11362,31 @@ function update_corepack()
     command -v corepack
 }
 
+# Upstream pnpm ships no linux-arm binary, so on a 32-bit ARM userland (armv7l,
+# or a 32-bit userland under an aarch64 kernel) a corepack shim for the latest pnpm can
+# never run and every version check reports "installed (unknown)". Linux-only
+# gate; macOS and 64-bit hosts are unaffected.
+function _init_pnpm_binary_supported()
+{
+    [[ "$OSTYPE" == linux* ]] || return 0
+    case "$(uname -m 2> /dev/null)" in
+        arm* | aarch64) [[ "$(getconf LONG_BIT 2> /dev/null)" == 32 ]] && return 1 ;;
+    esac
+    return 0
+}
+
 function update_pnpm()
 {
     local update_command npm_cmd
 
     invalidate_tool_version_cache
+
+    if ! _init_pnpm_binary_supported; then
+        # Refuse only; never touch existing shims. A corepack pnpm pinned by a
+        # project's packageManager may still be a working older JS build.
+        printf 'pnpm: upstream publishes no 32-bit ARM binary; not installing on this host.\n' >&2
+        return 1
+    fi
 
     npm_cmd="$(_init_ensure_user_node_toolchain)" || return 1
     # Ensure corepack shims are enabled under the user-local Node.

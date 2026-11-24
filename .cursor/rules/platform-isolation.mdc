@@ -15,7 +15,7 @@ For long-term management (layout, provision vs refresh, validation matrix, anti-
 - **Older macOS** (Darwin 21.6+ up to pre-25): system/Xcode paths only — **no Homebrew** assumptions.
   - Even when `brew` is on PATH, do **not** suggest `brew install` / `brew upgrade`. On these OS versions many formulae are unsupported or force huge from-source builds that can take forever.
   - Prefer system/Xcode tools, GitHub release binaries under `~/.local`, or other non-brew installs.
-- **Node/npm/pnpm/gt**: prefer **nvm/fnm** (user-local under `$HOME`, no sudo) on all macOS tiers, including modern. If nvm or fnm is present, load it and prefer it over any Homebrew `node`/`npm` on PATH. Bootstrap via `install_node_toolchain` / nvm — do **not** suggest `brew install node` and do **not** run `npm -g` / corepack against Homebrew prefixes (EACCES when brew is owned by another account).
+- **Node/npm/pnpm**: prefer **nvm/fnm** (user-local under `$HOME`, no sudo) on all macOS tiers, including modern. If nvm or fnm is present, load it and prefer it over any Homebrew `node`/`npm` on PATH. Bootstrap via `install_node_toolchain` / nvm — do **not** suggest `brew install node` and do **not** run `npm -g` / corepack against Homebrew prefixes (EACCES when brew is owned by another account).
 
 ## Linux distros
 

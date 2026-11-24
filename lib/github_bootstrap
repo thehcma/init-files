@@ -265,7 +265,7 @@ bootstrap_offer_node_toolchain()
     local node_script clone_dir="${1:-}"
 
     [[ ${quiet:-0} -eq 1 ]] || [[ ! -t 0 || ! -t 2 ]] && return 0
-    if ! prompt_yn "Install user-local Node (nvm + LTS) for npm/gt/gh extensions? [Y/n]"; then
+    if ! prompt_yn "Install user-local Node (nvm + LTS) for npm/gh extensions? [Y/n]"; then
         return 0
     fi
     if [[ -n "$clone_dir" && -x "${clone_dir}/install_node_toolchain" ]]; then
@@ -296,7 +296,7 @@ bootstrap_guided_github_https()
 GitHub HTTPS setup (recommended)
   • Installs GitHub CLI (gh) when missing
   • Runs gh auth login (HTTPS git credentials)
-  • Optionally installs user-local Node (nvm) for npm/gt
+  • Optionally installs user-local Node (nvm) for npm
 
 EOF
 

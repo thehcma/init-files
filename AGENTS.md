@@ -235,7 +235,7 @@ Treat macOS and Linux as separate runtimes. Never let one platform’s install p
 
 | Tier | Gate | Policy |
 | --- | --- | --- |
-| Modern | `_init_is_modern_macos` (Darwin **≥ 25**) | Homebrew supported for most tools. Prefer brew absolute paths from `provision_init_files`. **Node/npm/pnpm/gt** via nvm/fnm (user-local), not brew. |
+| Modern | `_init_is_modern_macos` (Darwin **≥ 25**) | Homebrew supported for most tools. Prefer brew absolute paths from `provision_init_files`. **Node/npm/pnpm** via nvm/fnm (user-local), not brew. |
 | Older | Darwin 21.6+ and **&lt; 25** | System/Xcode (and non-brew `/usr/local` like MacGPG2) only. **Never** suggest `brew install` / `brew upgrade` even if `brew` is on PATH. Many formulae are unsupported or force multi-hour from-source builds. Prefer Xcode CLT, app bundles, MacGPG2, or GitHub releases under `~/.local`. Node via nvm/fnm. |
 
 - **nvm/fnm first** for Node: if `~/.nvm` or fnm is present, load it and prefer it over any Homebrew `node`/`npm` on PATH (all macOS tiers). Bootstrap missing Node with [`install_node_toolchain`](install_node_toolchain) / nvm — never `brew install node` and never `npm -g` into Homebrew (EACCES when brew is owned by another account). Brew node is fallback only when nvm/fnm are absent and read-only.
@@ -288,7 +288,7 @@ Conventions:
 - Quiet-prompt usernames: allowlist via `INIT_FILES_DEFAULT_USERS` from private config `init-files/default-users.env` (or env); legacy `INIT_FILES_DEFAULT_USER` merges in. Empty allowlist → no alt-user badge. Non-members get `INIT_FILES_ALT_USER` + yellow-on-red badge. Details: [docs/shell-ux.md](docs/shell-ux.md).
 - Personal aliases belong in private overlay `init-files/bashrc.local` (sourced after the public alias block), not in this repo’s `bashrc`.
 - New `update_*` / `detect_*_strategy` brew branches must be gated with `_init_is_modern_macos`.
-- Node/npm/pnpm/gt: nvm/fnm first on all tiers — never add a modern-macOS `brew install node` branch.
+- Node/npm/pnpm: nvm/fnm first on all tiers — never add a modern-macOS `brew install node` branch.
 - Older macOS `update_gh` (and similar) should use GitHub release → `~/.local`, not brew.
 - Do not strip Homebrew from the user’s PATH on older macOS; just do not **record** or **recommend** it.
 
@@ -406,7 +406,7 @@ Copying transcript UUID dirs is optional secondary context, not a substitute for
 - Copying `bashrc` into `~/.bashrc` instead of symlinking (old model — migrate away).
 - Suggesting `brew install` / `brew upgrade` on older macOS because brew exists on PATH.
 - Recording `/usr/local/bin/git` (Cellar shim) into `tools` on older macOS.
-- Suggesting `brew install node` for npm/gt/pnpm (use nvm/fnm instead).
+- Suggesting `brew install node` for npm/pnpm (use nvm/fnm instead).
 - Skipping nvm/fnm load just because a Homebrew `npm` is already on PATH.
 - Suggesting `update_git` when the package manager cannot actually upgrade (Linux distro-capped).
 - Changing Linux and macOS behavior with a single ungated PATH heuristic.

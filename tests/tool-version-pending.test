@@ -248,7 +248,6 @@ update_bash()
 }
 update_gh() { printf 'gh\n' >>"$update_log"; return 0; }
 update_gh_stack() { printf 'gh-stack\n' >>"$update_log"; return 0; }
-update_gt() { printf 'gt\n' >>"$update_log"; return 0; }
 update_npm() { printf 'npm\n' >>"$update_log"; return 0; }
 update_pipx() { printf 'pipx\n' >>"$update_log"; return 0; }
 update_pnpm() { printf 'pnpm\n' >>"$update_log"; return 0; }
