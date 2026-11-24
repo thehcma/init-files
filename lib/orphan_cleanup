@@ -98,6 +98,9 @@ init_files_register_host_mac()
 {
     local cfg_dir="${1-}" current="${2-}" mac dir file prev retired tmp
     [[ -n "$cfg_dir" && -n "$current" ]] || return 0
+    # An arm64 chroot (arm64_chroot) shares the host's MAC; the MAC belongs to the real host,
+    # so the chroot's own hostname must never replace that claim or retire the host's name.
+    [[ -z "${INIT_FILES_CHROOT:-}" ]] || return 0
     mac="$(init_files_primary_mac 2>/dev/null || true)"
     [[ -n "$mac" ]] || return 0
 
@@ -146,30 +149,39 @@ init_files_orphan_retired_hosts()
     done < "$retired"
 }
 
-# Print keep-set host keys (current + MAC registry + nfs-hosts + extras), one per line.
+# Print keep-set host keys (current + MAC registry + nfs-hosts + chroot-hosts + extras), one per line.
 # Usage: init_files_orphan_keep_hosts CFG_DIR CURRENT_HOST [EXTRA_HOST...]
 init_files_orphan_keep_hosts()
 {
-    local cfg_dir="${1-}" current="${2-}" host nfs_hosts_file
+    local cfg_dir="${1-}" current="${2-}" host list_file
     local -a extras=()
 
     shift 2 2>/dev/null || true
     extras=("$@")
 
     [[ -n "$current" ]] && printf '%s\n' "$current"
+    # A host and its arm64 chroot (<host>-arm64) share ~/.config, ~/.local and the MAC, so each
+    # side keeps the other's per-host state (tools.*, no-dev.*, pipx trees, ...).
+    if [[ -n "${INIT_FILES_CHROOT:-}" ]]; then
+        [[ -z "${ARM64_CHROOT_HOST:-}" ]] || printf '%s\n' "$ARM64_CHROOT_HOST"
+    elif [[ -n "$current" && -d "${ARM64_CHROOT_DIR:-/opt/arm64}" ]]; then
+        printf '%s\n' "${current}-arm64"
+    fi
     for host in "${extras[@]}"; do
         [[ -n "$host" ]] && printf '%s\n' "$host"
     done
 
     init_files_orphan_registered_hosts "$cfg_dir"
 
-    nfs_hosts_file="${cfg_dir}/nfs-hosts"
-    if [[ -n "$cfg_dir" && -r "$nfs_hosts_file" ]]; then
+    # nfs-hosts: peers sharing this config over NFS. chroot-hosts: written by arm64_chroot, one
+    # line per chroot hostname it has used (covers --hostname / --root, retired or unregistered).
+    for list_file in "${cfg_dir}/nfs-hosts" "${cfg_dir}/chroot-hosts"; do
+        [[ -n "$cfg_dir" && -r "$list_file" ]] || continue
         while IFS= read -r host || [[ -n "$host" ]]; do
             [[ -n "$host" && "$host" != \#* ]] || continue
             printf '%s\n' "$host"
-        done < "$nfs_hosts_file"
-    fi
+        done < "$list_file"
+    done
 }
 
 # True when CANDIDATE is in the keep list (newline-separated KEEP_TEXT).

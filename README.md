@@ -457,6 +457,41 @@ Agents: follow the fuller checklist in [AGENTS.md](AGENTS.md) (“Migrate an exi
 
 ---
 
+## 64-bit chroot on a 32-bit host (`arm64_chroot`)
+
+Some Raspberry Pi hosts run a **64-bit kernel with a 32-bit (armhf) userland** and keep a
+debootstrap'd arm64 root (default `/opt/arm64`, with the account's home bind-mounted into it
+via `/etc/fstab`). `arm64_chroot` enters it as the calling user — it needs `sudo` (you are
+prompted) and is Linux-only.
+
+| Command | What it does |
+| --- | --- |
+| `arm64_shell` | Interactive **login** shell in the chroot, so `~/.profile` → `~/.bashrc` → init-files load. |
+| `arm64_claude [args]` | 64-bit Claude Code, with the 32-bit root visible **read-only** at `/host` and a system prompt that explains the layout so it can diagnose the 32-bit side. |
+| `arm64_chroot [--no-host-view] [--hostname NAME] [--root DIR] run CMD…` | One-off command, no shell startup files. `-n/--print` shows the sudo command line without running it. |
+
+How it works: a private mount + UTS namespace (`unshare`) mounts `/proc`, `/sys`, `/dev`
+(with devpts), the host DNS config and `/host` (the host root plus its `/var`, `/boot`, `/etc` and `/usr`
+mounts of any filesystem type, e.g. a tmpfs `/var/log`, all read-only), then `chroot`s and drops to your uid/gid.
+Everything unmounts when the last process exits and `/etc/fstab` is untouched. The chroot gets
+its own hostname (`<host>-arm64`), so init-files' per-host state (`tools.<host>`,
+`no-dev.<host>`, …) stays separate from the 32-bit side and the prompt shows the mode.
+`INIT_FILES_CHROOT=arm64` is set inside; the commands refuse to nest. Only non-secret
+environment (locale, terminal, ssh-session hints, an agent socket under `$HOME`) is forwarded.
+
+First use: run `arm64_shell`, then `./provision_init_files --github-https --no-dev` **inside** it
+once, so the arm64 side gets its own tool file. Install missing tools from inside the chroot
+(`sudo apt install …`). Claude Code must be installed in the chroot (`~/.local/bin/claude`).
+
+Shared state: the chroot shares `$HOME` with the host, so `~/.local/{bin,opt}` and `~/.config/init-files`
+are the same on both sides. `uname -m` is `aarch64` on both, so local release installs (`rg`, `fzf`, `bat`,
+`lsd`, `coderabbit`) fetch the same arm64 binaries either way; dynamically linked ones (Claude Code,
+`coderabbit`) only run from inside the chroot. The chroot never claims the host's MAC in the
+`host-mac` registry, and each side keeps the other's per-host state (`<host>` and `<host>-arm64`) out of
+orphan cleanup. `arm64_chroot` records every chroot hostname it uses (including `--hostname`
+overrides) in `~/.config/init-files/chroot-hosts`; both sides' orphan cleanup treat those names as live,
+whether they are registered, retired or never registered.
+
 ## Platform notes
 
 - **Rocky Linux 8.1**: skips development tool version checks and omits the git commit id from the prompt.

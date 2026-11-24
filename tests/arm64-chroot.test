@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# arm64_chroot builds the right sudo/unshare/chroot plan. Only --print is exercised, so no
+# sudo, mount or real chroot is needed: a throwaway directory stands in for the arm64 root.
+set -euo pipefail
+
+script_dir="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+tool="${root}/arm64_chroot"
+
+# Run a command; leave its combined output in run_out and its exit status in last_status
+# (globals, not a subshell, so the status survives) without tripping set -e.
+last_status=0
+run_out=""
+run_tool()
+{
+    set +e
+    run_out="$("$@" 2>&1)"
+    last_status=$?
+    set -e
+}
+
+run_tool "$tool" --help; out="$run_out"
+assert_exit_0 '--help exits 0' "$last_status"
+assert_contains '--help documents the claude subcommand' "$out" 'claude'
+
+run_tool "$tool" --bogus; out="$run_out"
+assert_exit_nonzero 'an unknown option is rejected' "$last_status"
+assert_contains 'the unknown option is named' "$out" '--bogus'
+
+# arm64_shell / arm64_claude from bashrc must find the script after bashrc has unset its
+# load-time _init_files_clone_dir (they are called from an interactive prompt, long after).
+wtmp="$(mktemp -d)"
+trap 'rm -rf "$wtmp"' EXIT
+mkdir -p "${wtmp}/init-files"
+printf '#!/usr/bin/env bash\nprintf "args=%%s\\n" "$*"\n' > "${wtmp}/init-files/arm64_chroot"
+chmod +x "${wtmp}/init-files/arm64_chroot"
+for fn in arm64_shell arm64_claude; do
+    eval "$(sed -n "/^function ${fn}()/,/^}/p" "${root}/bashrc")"
+done
+unset _init_files_clone_dir
+# shellcheck disable=SC2034  # read by the arm64_* functions eval-ed from bashrc above
+init_files_dir="${wtmp}/init-files"
+assert_eq 'arm64_shell resolves the persistent clone dir' "$(arm64_shell --no-host-view)" 'args=--no-host-view shell'
+assert_eq 'arm64_claude resolves the persistent clone dir' "$(arm64_claude -p hi)" 'args=claude -p hi'
+unset init_files_dir
+XDG_DATA_HOME="$wtmp" assert_eq 'wrappers fall back to XDG_DATA_HOME' "$(XDG_DATA_HOME="$wtmp" arm64_claude)" 'args=claude'
+
+# --- host mount selection: by location, not filesystem type -----------------------------------
+# shellcheck disable=SC1090
+source "$tool"
+sel() { printf '%s\n' "$@" | arm64_chroot_select_host_mounts /opt/arm64; }
+got="$(sel 'ext4 /' 'vfat /boot/firmware' 'tmpfs /var/log' 'nfs4 /var/lib/shared' 'ext4 /var' 'ext4 /usr/local' \
+    'ext4 /var/lib/my dir' 'tmpfs /run' 'proc /proc' 'sysfs /sys' 'cgroup2 /sys/fs/cgroup' 'tmpfs /tmp' \
+    'autofs /net' 'nfs4 /mnt/data' 'ext4 /home' 'ext4 /opt/arm64' 'ext4 /opt/arm64/home/sysadmin' \
+    'devpts /dev/pts' 'autofs /var/autofs' 'ext4 /etc' 'ext4 /etc/hosts')"
+want="$(printf '%s\n' /boot/firmware /var/log /var/lib/shared /var /usr/local '/var/lib/my dir' /etc /etc/hosts)"
+assert_eq 'host mounts: by location (tmpfs /var/log, NFS /var and a single-file /etc/hosts kept; /run, /tmp, /mnt, autofs, pseudo and the chroot dropped)' "$got" "$want"
+assert_eq 'host mounts: nothing selected from an empty list' "$(sel 2>/dev/null || true)" ''
+
+# --- recording the chroot hostname for orphan cleanup ------------------------------------------
+rtmp="$(mktemp -d)"
+trap 'rm -rf "$rtmp"' EXIT
+XDG_CONFIG_HOME="$rtmp" arm64_chroot_record_hostname lab-64
+XDG_CONFIG_HOME="$rtmp" arm64_chroot_record_hostname lab-64
+XDG_CONFIG_HOME="$rtmp" arm64_chroot_record_hostname other-arm64
+assert_eq 'chroot hostnames are recorded once each' "$(cat "$rtmp/init-files/chroot-hosts")" "$(printf '%s\n' lab-64 other-arm64)"
+# A dotted name is recorded short (what `hostname -s` / init-files key on) and full, once each.
+XDG_CONFIG_HOME="$rtmp" arm64_chroot_record_hostname lab.example
+XDG_CONFIG_HOME="$rtmp" arm64_chroot_record_hostname lab.example
+assert_eq 'a dotted hostname is recorded short and full, once each' \
+    "$(grep -c '^lab$' "$rtmp/init-files/chroot-hosts")$(grep -c '^lab\.example$' "$rtmp/init-files/chroot-hosts")" '11'
+# A failed write is reported, not swallowed (parent is a file, so mkdir fails even as root).
+: > "$rtmp/afile"
+if XDG_CONFIG_HOME="$rtmp/afile/sub" arm64_chroot_record_hostname lab-64; then
+    fail_case 'a failed hostname write returns non-zero'
+else
+    pass_case 'a failed hostname write returns non-zero'
+fi
+
+if [[ "$(uname -s)" != Linux ]]; then
+    run_tool "$tool" --print
+    out="$run_out"
+    assert_exit_nonzero 'refuses to run off Linux' "$last_status"
+    assert_contains 'says it is Linux-only' "$out" 'Linux-only'
+    printf '[SKIP] plan cases need Linux\n'
+    test_summary
+    exit 0
+fi
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+# A minimal fake arm64 root: just what the pre-flight checks look for.
+fake="${tmp}/arm64"
+mkdir -p "${fake}/usr/bin" "${fake}/bin" "${fake}${HOME}"
+touch "${fake}/usr/bin/setpriv" "${fake}/usr/bin/env" "${fake}/usr/bin/bash"
+chmod +x "${fake}/usr/bin/setpriv" "${fake}/usr/bin/env" "${fake}/usr/bin/bash"
+ln -s ../usr/bin/bash "${fake}/bin/bash"
+
+host="$(hostname -s 2>/dev/null || hostname)"
+
+# The Nth line after line $1 in the printed plan (one argument per line).
+nth_after()
+{
+    awk -v want="$1" -v n="$2" '$0 == want { at = NR } at && NR == at + n { print; exit }' <<< "$3"
+}
+
+run_tool "$tool" --root "$fake" --print; out="$run_out"
+assert_exit_0 'default plan builds' "$last_status"
+assert_contains 'goes through sudo' "$out" 'sudo'
+assert_contains 'uses a private mount namespace' "$out" '--mount'
+assert_contains 'uses a private UTS namespace' "$out" '--uts'
+assert_contains 'the shell is a login shell (init-files loads)' "$out" '-il'
+assert_not_contains 'the shell does not skip rc files' "$out" '--norc'
+assert_contains 'marks the environment as the chroot' "$out" 'INIT_FILES_CHROOT=arm64'
+assert_contains 'remembers the real host name' "$out" "ARM64_CHROOT_HOST=${host}"
+assert_eq 'the chroot hostname defaults to <host>-arm64' "$(nth_after "$fake" 2 "$out")" "${host}-arm64"
+assert_eq 'the host view is on by default' "$(nth_after "$fake" 1 "$out")" '1'
+assert_not_contains 'the inner script body is not dumped' "$out" 'mount --rbind'
+
+run_tool "$tool" --root "$fake" --no-host-view --print; out="$run_out"
+assert_eq '--no-host-view turns the host view off' "$(nth_after "$fake" 1 "$out")" '0'
+assert_eq '--no-host-view passes no host mounts' "$(nth_after "$fake" 7 "$out")" '0'
+run_tool "$tool" --root "$fake" --print; out="$run_out"
+assert_eq 'the host mount count is numeric' "$(nth_after "$fake" 7 "$out" | grep -cE '^[0-9]+$')" '1'
+
+run_tool "$tool" --root "$fake" --hostname lab-64 --print; out="$run_out"
+assert_contains '--hostname overrides the default' "$out" 'lab-64'
+
+run_tool "$tool" --root "$fake" --print claude --version -p hi; out="$run_out"
+assert_exit_0 'claude plan builds' "$last_status"
+assert_contains 'launches claude' "$out" 'claude'
+assert_contains 'explains the layout to Claude' "$out" '--append-system-prompt'
+assert_contains 'tells Claude where the 32-bit root is' "$out" '/host'
+assert_contains 'forwards claude args' "$out" '--version'
+assert_contains 'forwards every claude arg' "$out" '-p'
+
+# The Claude prompt must match the host view: /host only when it is actually mounted.
+prompt_arg() { awk '$0 == "--append-system-prompt" { getline; print; exit }' <<< "$1"; }
+run_tool "$tool" --root "$fake" --print claude; out="$run_out"
+assert_contains 'prompt points at /host when the host view is on' "$(prompt_arg "$out")" 'mounted READ-ONLY at /host'
+run_tool "$tool" --root "$fake" --no-host-view --print claude; out="$run_out"
+assert_contains 'prompt says the host view is unavailable when off' "$(prompt_arg "$out")" 'host view was disabled'
+assert_not_contains 'prompt does not send Claude to /host when off' "$(prompt_arg "$out")" 'mounted READ-ONLY at /host'
+
+run_tool "$tool" --root "$fake" --print run uname -m; out="$run_out"
+assert_exit_0 'run plan builds' "$last_status"
+assert_contains 'run passes the command through' "$out" 'uname'
+assert_not_contains 'run does not start a shell' "$out" '-il'
+
+ANTHROPIC_API_KEY=sekret-value LC_ALL=C.UTF-8 run_tool "$tool" --root "$fake" --print; out="$run_out"
+assert_not_contains 'secrets are never forwarded' "$out" 'sekret-value'
+assert_contains 'locale settings are forwarded' "$out" 'LC_ALL=C.UTF-8'
+
+INIT_FILES_CHROOT=arm64 run_tool "$tool" --root "$fake" --print; out="$run_out"
+assert_exit_nonzero 'refuses to nest inside the chroot' "$last_status"
+assert_contains 'explains the nesting refusal' "$out" 'already inside'
+
+run_tool "$tool" --root "${tmp}/nope" --print; out="$run_out"
+assert_exit_nonzero 'a missing root is rejected' "$last_status"
+assert_contains 'names the missing root' "$out" 'chroot directory not found'
+
+run_tool "$tool" --root "$fake" --hostname 'bad host!' --print; out="$run_out"
+assert_exit_nonzero 'an invalid hostname is rejected' "$last_status"
+
+run_tool "$tool" --root "$fake" --print frobnicate; out="$run_out"
+assert_exit_nonzero 'an unknown subcommand is rejected' "$last_status"
+
+run_tool "$tool" --root "$fake" --print run; out="$run_out"
+assert_exit_nonzero 'run without a command is rejected' "$last_status"
+
+run_tool "$tool" --root "$fake" --print shell extra; out="$run_out"
+assert_exit_nonzero 'shell rejects stray arguments' "$last_status"
+
+test_summary
