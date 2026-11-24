@@ -143,4 +143,35 @@ assert_not_contains 'chroot cleanup keeps the host tools file' "$list_chroot" 't
 assert_not_contains 'chroot cleanup keeps the host no-dev flag' "$list_chroot" 'no-dev.applepie'
 assert_not_contains 'chroot cleanup keeps the host pipx tree' "$list_chroot" "$pipx3/applepie"
 
+
+
+printf '\n=== custom chroot hostname (--hostname / --root) is protected via chroot-hosts ===\n'
+export ARM64_CHROOT_DIR="$tmp/no-such-chroot"   # make the default <host>-arm64 rule inapplicable
+cfgU="$tmp/config-unreg"; pipxU="$tmp/pipx-unreg"
+mkdir -p "$cfgU" "$pipxU/lab-64"
+touch "$cfgU/tools.applepie" "$cfgU/tools.lab-64" "$cfgU/no-dev.lab-64"
+init_files_orphan_include_unregistered=1
+pre_u="$(init_files_orphan_list "$cfgU" "$pipxU" 'applepie')"
+assert_contains 'precondition: an unregistered chroot name is listed as an orphan' "$pre_u" 'tools.lab-64'
+printf 'lab-64\n' > "$cfgU/chroot-hosts"
+post_u="$(init_files_orphan_list "$cfgU" "$pipxU" 'applepie')"
+assert_not_contains 'unregistered chroot name: tools file kept' "$post_u" 'lab-64'
+init_files_orphan_include_unregistered=0
+
+cfgR="$tmp/config-retired"; pipxR="$tmp/pipx-retired"
+mkdir -p "$cfgR" "$pipxR/lab-64"
+touch "$cfgR/tools.applepie" "$cfgR/tools.lab-64" "$cfgR/github-https.lab-64"
+printf 'lab-64\n' > "$cfgR/host-mac-retired"
+pre_r="$(init_files_orphan_list "$cfgR" "$pipxR" 'applepie')"
+assert_contains 'precondition: a retired chroot name is listed as an orphan' "$pre_r" 'tools.lab-64'
+assert_contains 'precondition: its pipx tree is listed too' "$pre_r" "$pipxR/lab-64"
+printf 'lab-64\n' > "$cfgR/chroot-hosts"
+post_r="$(init_files_orphan_list "$cfgR" "$pipxR" 'applepie')"
+assert_not_contains 'retired chroot name: tools file kept' "$post_r" 'lab-64'
+assert_not_contains 'retired chroot name: pipx tree kept' "$post_r" "$pipxR/lab-64"
+# And the chroot side keeps the host's name regardless of what the files say.
+post_g="$(INIT_FILES_CHROOT=arm64 ARM64_CHROOT_HOST=applepie init_files_orphan_list "$cfgR" "$pipxR" 'lab-64')"
+assert_not_contains 'guest side keeps the host tools file' "$post_g" 'tools.applepie'
+unset ARM64_CHROOT_DIR
+
 test_summary

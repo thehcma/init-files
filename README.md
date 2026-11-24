@@ -471,7 +471,8 @@ prompted) and is Linux-only.
 | `arm64_chroot [--no-host-view] [--hostname NAME] [--root DIR] run CMD…` | One-off command, no shell startup files. `-n/--print` shows the sudo command line without running it. |
 
 How it works: a private mount + UTS namespace (`unshare`) mounts `/proc`, `/sys`, `/dev`
-(with devpts), the host DNS config and `/host`, then `chroot`s and drops to your uid/gid.
+(with devpts), the host DNS config and `/host` (the host root plus its `/var`, `/boot`, `/etc` and `/usr`
+mounts of any filesystem type, e.g. a tmpfs `/var/log`, all read-only), then `chroot`s and drops to your uid/gid.
 Everything unmounts when the last process exits and `/etc/fstab` is untouched. The chroot gets
 its own hostname (`<host>-arm64`), so init-files' per-host state (`tools.<host>`,
 `no-dev.<host>`, …) stays separate from the 32-bit side and the prompt shows the mode.
@@ -487,8 +488,9 @@ are the same on both sides. `uname -m` is `aarch64` on both, so local release in
 `lsd`, `coderabbit`) fetch the same arm64 binaries either way; dynamically linked ones (Claude Code,
 `coderabbit`) only run from inside the chroot. The chroot never claims the host's MAC in the
 `host-mac` registry, and each side keeps the other's per-host state (`<host>` and `<host>-arm64`) out of
-orphan cleanup. If you pass `--hostname` to use a different chroot name, list it in
-`~/.config/init-files/nfs-hosts` so the host's cleanup keeps it too.
+orphan cleanup. `arm64_chroot` records every chroot hostname it uses (including `--hostname`
+overrides) in `~/.config/init-files/chroot-hosts`; both sides' orphan cleanup treat those names as live,
+whether they are registered, retired or never registered.
 
 ## Platform notes
 

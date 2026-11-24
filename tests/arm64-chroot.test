@@ -52,6 +52,26 @@ assert_eq 'arm64_claude resolves the persistent clone dir' "$(arm64_claude -p hi
 unset init_files_dir
 XDG_DATA_HOME="$wtmp" assert_eq 'wrappers fall back to XDG_DATA_HOME' "$(XDG_DATA_HOME="$wtmp" arm64_claude)" 'args=claude'
 
+# --- host mount selection: by location, not filesystem type -----------------------------------
+# shellcheck disable=SC1090
+source "$tool"
+sel() { printf '%s\n' "$@" | arm64_chroot_select_host_mounts /opt/arm64; }
+got="$(sel 'ext4 /' 'vfat /boot/firmware' 'tmpfs /var/log' 'nfs4 /var/lib/shared' 'ext4 /var' 'ext4 /usr/local' \
+    'ext4 /var/lib/my dir' 'tmpfs /run' 'proc /proc' 'sysfs /sys' 'cgroup2 /sys/fs/cgroup' 'tmpfs /tmp' \
+    'autofs /net' 'nfs4 /mnt/data' 'ext4 /home' 'ext4 /opt/arm64' 'ext4 /opt/arm64/home/sysadmin' \
+    'devpts /dev/pts' 'autofs /var/autofs' 'ext4 /etc')"
+want="$(printf '%s\n' /boot/firmware /var/log /var/lib/shared /var /usr/local '/var/lib/my dir' /etc)"
+assert_eq 'host mounts: by location (tmpfs /var/log and NFS /var kept; /run, /tmp, /mnt, autofs, pseudo and the chroot dropped)' "$got" "$want"
+assert_eq 'host mounts: nothing selected from an empty list' "$(sel 2>/dev/null || true)" ''
+
+# --- recording the chroot hostname for orphan cleanup ------------------------------------------
+rtmp="$(mktemp -d)"
+trap 'rm -rf "$rtmp"' EXIT
+XDG_CONFIG_HOME="$rtmp" arm64_chroot_record_hostname lab-64
+XDG_CONFIG_HOME="$rtmp" arm64_chroot_record_hostname lab-64
+XDG_CONFIG_HOME="$rtmp" arm64_chroot_record_hostname other-arm64
+assert_eq 'chroot hostnames are recorded once each' "$(cat "$rtmp/init-files/chroot-hosts")" "$(printf '%s\n' lab-64 other-arm64)"
+
 if [[ "$(uname -s)" != Linux ]]; then
     run_tool "$tool" --print
     out="$run_out"
@@ -95,6 +115,9 @@ assert_not_contains 'the inner script body is not dumped' "$out" 'mount --rbind'
 
 run_tool "$tool" --root "$fake" --no-host-view --print; out="$run_out"
 assert_eq '--no-host-view turns the host view off' "$(nth_after "$fake" 1 "$out")" '0'
+assert_eq '--no-host-view passes no host mounts' "$(nth_after "$fake" 7 "$out")" '0'
+run_tool "$tool" --root "$fake" --print; out="$run_out"
+assert_eq 'the host mount count is numeric' "$(nth_after "$fake" 7 "$out" | grep -cE '^[0-9]+$')" '1'
 
 run_tool "$tool" --root "$fake" --hostname lab-64 --print; out="$run_out"
 assert_contains '--hostname overrides the default' "$out" 'lab-64'

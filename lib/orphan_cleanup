@@ -149,11 +149,11 @@ init_files_orphan_retired_hosts()
     done < "$retired"
 }
 
-# Print keep-set host keys (current + MAC registry + nfs-hosts + extras), one per line.
+# Print keep-set host keys (current + MAC registry + nfs-hosts + chroot-hosts + extras), one per line.
 # Usage: init_files_orphan_keep_hosts CFG_DIR CURRENT_HOST [EXTRA_HOST...]
 init_files_orphan_keep_hosts()
 {
-    local cfg_dir="${1-}" current="${2-}" host nfs_hosts_file
+    local cfg_dir="${1-}" current="${2-}" host list_file
     local -a extras=()
 
     shift 2 2>/dev/null || true
@@ -173,13 +173,15 @@ init_files_orphan_keep_hosts()
 
     init_files_orphan_registered_hosts "$cfg_dir"
 
-    nfs_hosts_file="${cfg_dir}/nfs-hosts"
-    if [[ -n "$cfg_dir" && -r "$nfs_hosts_file" ]]; then
+    # nfs-hosts: peers sharing this config over NFS. chroot-hosts: written by arm64_chroot, one
+    # line per chroot hostname it has used (covers --hostname / --root, retired or unregistered).
+    for list_file in "${cfg_dir}/nfs-hosts" "${cfg_dir}/chroot-hosts"; do
+        [[ -n "$cfg_dir" && -r "$list_file" ]] || continue
         while IFS= read -r host || [[ -n "$host" ]]; do
             [[ -n "$host" && "$host" != \#* ]] || continue
             printf '%s\n' "$host"
-        done < "$nfs_hosts_file"
-    fi
+        done < "$list_file"
+    done
 }
 
 # True when CANDIDATE is in the keep list (newline-separated KEEP_TEXT).
