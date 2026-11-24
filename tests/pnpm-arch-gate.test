@@ -31,9 +31,9 @@ gate() {
     (
         OSTYPE=$ostype
         # Stubs are called by the eval'd gate function, which shellcheck can't see.
-        # shellcheck disable=SC2329
+        # shellcheck disable=SC2317,SC2329
         uname() { printf '%s\n' "$machine"; }
-        # shellcheck disable=SC2329
+        # shellcheck disable=SC2317,SC2329
         getconf() { printf '%s\n' "$bits"; }
         _init_pnpm_binary_supported
     )
