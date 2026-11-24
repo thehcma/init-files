@@ -162,7 +162,8 @@ ssh mee<Tab>        # hostnames from known_hosts / config
 
 # cssh / cmsh / cesh with no args — fzf-pick from SSH config + known_hosts, then connect
 #   cssh   # ssh
-#   cmsh   # mosh (CSI-u / Shift+Enter do not reach the remote)
+#   cmsh   # mosh (CSI-u / Shift+Enter do not reach the remote); passes --no-init so the wheel
+#          scrolls scrollback, not bash history (inside vim/less it scrolls local scrollback)
 #   cesh   # Eternal Terminal (reconnectable; normal pty, CSI-u works)
 # Tab completion mirrors ssh (cssh/cesh) / mosh (cmsh) when those completers exist
 ```
