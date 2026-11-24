@@ -34,8 +34,12 @@ assert_eq 'not duplicated when already passed' "$(_init_mosh_no_init_opt "$new_m
 
 printf '\n=== cmsh wiring ===\n'
 text="$(<"$bashrc")"
+# Literal source text is matched on purpose; nothing should expand.
+# shellcheck disable=SC2016
 assert_contains 'cmsh builds mosh_opts' "$text" 'no_init_opt="$(_init_mosh_no_init_opt "$mosh_bin" "${args[@]}")"'
+# shellcheck disable=SC2016
 assert_contains 'ssh path passes mosh_opts' "$text" '"$mosh_bin" ${mosh_opts[@]+"${mosh_opts[@]}"} --ssh="$ssh_bin" "${args[@]}"'
+# shellcheck disable=SC2016
 assert_contains 'plain path passes mosh_opts' "$text" '"$mosh_bin" ${mosh_opts[@]+"${mosh_opts[@]}"} "${args[@]}"'
 
 test_summary
