@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# cmsh passes --no-init to mosh so iTerm's alternate-scroll does not turn the wheel
+# into arrow-up at a bare prompt. Helper is skipped when already given or unsupported.
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+bashrc="${root}/bashrc"
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+fn="$(sed -n '/^function _init_mosh_no_init_opt()/,/^}/p' "$bashrc")"
+assert_contains 'helper exists' "$fn" '_init_mosh_no_init_opt'
+eval "$fn"
+
+new_mosh="${tmp}/mosh-new"
+old_mosh="${tmp}/mosh-old"
+printf '#!/bin/sh\necho "Usage: mosh [options]"\necho "        --no-init            do not send terminal initialization string"\n' >"$new_mosh"
+printf '#!/bin/sh\necho "Usage: mosh [options]"\necho "        --ssh=COMMAND        ssh command"\n' >"$old_mosh"
+chmod +x "$new_mosh" "$old_mosh"
+
+printf '\n=== helper ===\n'
+assert_eq 'adds --no-init when supported' "$(_init_mosh_no_init_opt "$new_mosh" host)" '--no-init'
+assert_eq 'no output when unsupported' "$(_init_mosh_no_init_opt "$old_mosh" host)" ''
+assert_eq 'not duplicated when already passed' "$(_init_mosh_no_init_opt "$new_mosh" --no-init host)" ''
+assert_eq 'still added when --no-init only follows --' "$(_init_mosh_no_init_opt "$new_mosh" -- jump-host mosh --no-init target)" '--no-init'
+assert_eq 'not duplicated when passed before --' "$(_init_mosh_no_init_opt "$new_mosh" --no-init -- jump-host)" ''
+
+printf '\n=== cmsh wiring ===\n'
+text="$(<"$bashrc")"
+# Literal source text is matched on purpose; nothing should expand.
+# shellcheck disable=SC2016
+assert_contains 'cmsh builds mosh_opts' "$text" 'no_init_opt="$(_init_mosh_no_init_opt "$mosh_bin" "${args[@]}")"'
+# shellcheck disable=SC2016
+assert_contains 'ssh path passes mosh_opts' "$text" '"$mosh_bin" ${mosh_opts[@]+"${mosh_opts[@]}"} --ssh="$ssh_bin" "${args[@]}"'
+# shellcheck disable=SC2016
+assert_contains 'plain path passes mosh_opts' "$text" '"$mosh_bin" ${mosh_opts[@]+"${mosh_opts[@]}"} "${args[@]}"'
+
+test_summary

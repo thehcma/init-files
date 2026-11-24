@@ -3253,12 +3253,31 @@ EOF
     return "$rc"
 }
 
+# Prints "--no-init" when cmsh should add it: mosh then skips the alternate-screen
+# start/end strings, so iTerm's alternate-scroll no longer turns the wheel into
+# arrow-up at a bare prompt (bash history walk). Silent when the user already
+# passed it or when this mosh predates the option (an unknown flag would abort).
+# Usage: _init_mosh_no_init_opt MOSH_BIN [mosh-args...]
+function _init_mosh_no_init_opt()
+{
+    local mosh_bin=$1 arg
+    shift
+
+    for arg in "$@"; do
+        # Everything after "--" is the host and the remote command, not a mosh option.
+        [[ "$arg" == -- ]] && break
+        [[ "$arg" == --no-init ]] && return 0
+    done
+    "$mosh_bin" --help 2>&1 | grep -q -e '--no-init' || return 0
+    printf '%s\n' --no-init
+}
+
 # mosh with automatic destination-key re-cache when the agent lifetime has expired.
 # Does not shadow the mosh binary — use cmsh explicitly for interactive hops.
 function cmsh()
 {
-    local mosh_bin ssh_bin arg has_ssh_opt=0 host rc
-    local -a args=()
+    local mosh_bin ssh_bin arg has_ssh_opt=0 host rc no_init_opt
+    local -a args=() mosh_opts=()
 
     case "${1:-}" in
         -h|--help)
@@ -3274,6 +3293,11 @@ With no arguments on a TTY, fuzzy-picks a host from ~/.ssh/config
 
 Mosh still bootstraps over ssh, so the same preferred key / agent flow as cssh
 applies. Survives laptop sleep and IP changes better than plain ssh.
+
+Passes --no-init to mosh (when this mosh supports it) so the local terminal stays
+off the alternate screen: the mouse wheel then scrolls scrollback instead of
+sending arrow-up at a prompt. Trade-off: inside vim/less the wheel scrolls local
+scrollback, not the app, and mosh's last frame stays on screen after exit.
 Requires mosh-server on the remote host.
 
 Does not replace the mosh command — use cmsh for interactive hops.
@@ -3315,6 +3339,9 @@ EOF
         esac
     done
 
+    no_init_opt="$(_init_mosh_no_init_opt "$mosh_bin" "${args[@]}")"
+    [[ -z "$no_init_opt" ]] || mosh_opts+=("$no_init_opt")
+
     # Prefer provisioned ssh for the login handshake (mosh default is bare "ssh").
     _init_iterm_mark_hop "${args[@]}"
     if [[ "$has_ssh_opt" -eq 0 ]]; then
@@ -3323,14 +3350,14 @@ EOF
             ssh_bin="$(command -v ssh 2>/dev/null || true)"
         fi
         if [[ -n "$ssh_bin" && -x "$ssh_bin" ]]; then
-            "$mosh_bin" --ssh="$ssh_bin" "${args[@]}"
+            "$mosh_bin" ${mosh_opts[@]+"${mosh_opts[@]}"} --ssh="$ssh_bin" "${args[@]}"
             rc=$?
             _init_iterm_unmark_hop
             return "$rc"
         fi
     fi
 
-    "$mosh_bin" "${args[@]}"
+    "$mosh_bin" ${mosh_opts[@]+"${mosh_opts[@]}"} "${args[@]}"
     rc=$?
     _init_iterm_unmark_hop
     return "$rc"
