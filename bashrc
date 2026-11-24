@@ -3283,6 +3283,8 @@ function _init_mosh_no_init_opt()
     shift
 
     for arg in "$@"; do
+        # Everything after "--" is the host and the remote command, not a mosh option.
+        [[ "$arg" == -- ]] && break
         [[ "$arg" == --no-init ]] && return 0
     done
     "$mosh_bin" --help 2>&1 | grep -q -e '--no-init' || return 0

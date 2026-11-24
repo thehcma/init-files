@@ -31,6 +31,8 @@ printf '\n=== helper ===\n'
 assert_eq 'adds --no-init when supported' "$(_init_mosh_no_init_opt "$new_mosh" host)" '--no-init'
 assert_eq 'no output when unsupported' "$(_init_mosh_no_init_opt "$old_mosh" host)" ''
 assert_eq 'not duplicated when already passed' "$(_init_mosh_no_init_opt "$new_mosh" --no-init host)" ''
+assert_eq 'still added when --no-init only follows --' "$(_init_mosh_no_init_opt "$new_mosh" -- jump-host mosh --no-init target)" '--no-init'
+assert_eq 'not duplicated when passed before --' "$(_init_mosh_no_init_opt "$new_mosh" --no-init -- jump-host)" ''
 
 printf '\n=== cmsh wiring ===\n'
 text="$(<"$bashrc")"
