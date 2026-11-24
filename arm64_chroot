@@ -88,12 +88,18 @@ arm64_chroot_select_host_mounts()
 
 # Tell init-files' orphan cleanup (host and chroot side share this file) that HOSTNAME is a live
 # chroot identity, so neither side offers to delete the other's per-host state. Covers --hostname.
+# init-files keys per-host state on `hostname -s`, so the short name is recorded as well as the
+# full one. Returns non-zero when the list cannot be written (the caller warns loudly).
 arm64_chroot_record_hostname()
 {
-    local dir="${XDG_CONFIG_HOME:-$HOME/.config}/init-files" file
+    local dir="${XDG_CONFIG_HOME:-$HOME/.config}/init-files" file name
     file="${dir}/chroot-hosts"
-    mkdir -p "$dir" 2> /dev/null || return 0
-    grep -qxF -- "$1" "$file" 2> /dev/null || printf '%s\n' "$1" >> "$file" 2> /dev/null || true
+    mkdir -p "$dir" 2> /dev/null || return 1
+    for name in "${1%%.*}" "$1"; do
+        grep -qxF -- "$name" "$file" 2> /dev/null && continue
+        printf '%s\n' "$name" >> "$file" 2> /dev/null || return 1
+    done
+    return 0
 }
 
 # Runs as root inside the new mount+UTS namespaces (passed to `bash -c` below).
@@ -130,10 +136,23 @@ if [[ "$host_view" == 1 ]]; then
     mount -o remount,bind,ro "$root/host"
     # The root bind is non-recursive, so expose the other host mounts the caller selected
     # (/var, /boot/firmware, a tmpfs /var/log, ...) one by one, each read-only.
+    expose_ro()
+    {
+        if ! mount --bind "$1" "$2"; then
+            echo "arm64_chroot: cannot bind $1 under /host; skipped" >&2
+            return 0
+        fi
+        if ! mount -o remount,bind,ro "$2"; then
+            # Never leave a writable view of the host behind.
+            umount "$2" || { echo "arm64_chroot: cannot make $2 read-only or unmount it; aborting" >&2; exit 1; }
+            echo "arm64_chroot: cannot make $1 read-only under /host; skipped" >&2
+        fi
+    }
+    # Mount points may be directories or single files (a bind-mounted /etc/hosts); never symlinks,
+    # which would resolve against the host root here instead of the new one.
     for target in ${mounts[@]+"${mounts[@]}"}; do
-        [[ -d "$root/host$target" ]] || continue
-        mount --bind "$target" "$root/host$target"
-        mount -o remount,bind,ro "$root/host$target"
+        [[ -e "$root/host$target" && ! -L "$root/host$target" ]] || continue
+        expose_ro "$target" "$root/host$target"
     done
 fi
 
@@ -274,7 +293,8 @@ arm64_chroot_main()
         exit 0
     fi
 
-    arm64_chroot_record_hostname "$new_host"
+    arm64_chroot_record_hostname "$new_host" \
+        || init_files_warn "could not record '${new_host}' in ${XDG_CONFIG_HOME:-$HOME/.config}/init-files/chroot-hosts; the host's orphan cleanup may offer to delete this chroot's per-host state until you add that name to the file by hand"
     exec "${sudo_cmd[@]}"
 }
 

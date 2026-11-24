@@ -59,9 +59,9 @@ sel() { printf '%s\n' "$@" | arm64_chroot_select_host_mounts /opt/arm64; }
 got="$(sel 'ext4 /' 'vfat /boot/firmware' 'tmpfs /var/log' 'nfs4 /var/lib/shared' 'ext4 /var' 'ext4 /usr/local' \
     'ext4 /var/lib/my dir' 'tmpfs /run' 'proc /proc' 'sysfs /sys' 'cgroup2 /sys/fs/cgroup' 'tmpfs /tmp' \
     'autofs /net' 'nfs4 /mnt/data' 'ext4 /home' 'ext4 /opt/arm64' 'ext4 /opt/arm64/home/sysadmin' \
-    'devpts /dev/pts' 'autofs /var/autofs' 'ext4 /etc')"
-want="$(printf '%s\n' /boot/firmware /var/log /var/lib/shared /var /usr/local '/var/lib/my dir' /etc)"
-assert_eq 'host mounts: by location (tmpfs /var/log and NFS /var kept; /run, /tmp, /mnt, autofs, pseudo and the chroot dropped)' "$got" "$want"
+    'devpts /dev/pts' 'autofs /var/autofs' 'ext4 /etc' 'ext4 /etc/hosts')"
+want="$(printf '%s\n' /boot/firmware /var/log /var/lib/shared /var /usr/local '/var/lib/my dir' /etc /etc/hosts)"
+assert_eq 'host mounts: by location (tmpfs /var/log, NFS /var and a single-file /etc/hosts kept; /run, /tmp, /mnt, autofs, pseudo and the chroot dropped)' "$got" "$want"
 assert_eq 'host mounts: nothing selected from an empty list' "$(sel 2>/dev/null || true)" ''
 
 # --- recording the chroot hostname for orphan cleanup ------------------------------------------
@@ -71,6 +71,18 @@ XDG_CONFIG_HOME="$rtmp" arm64_chroot_record_hostname lab-64
 XDG_CONFIG_HOME="$rtmp" arm64_chroot_record_hostname lab-64
 XDG_CONFIG_HOME="$rtmp" arm64_chroot_record_hostname other-arm64
 assert_eq 'chroot hostnames are recorded once each' "$(cat "$rtmp/init-files/chroot-hosts")" "$(printf '%s\n' lab-64 other-arm64)"
+# A dotted name is recorded short (what `hostname -s` / init-files key on) and full, once each.
+XDG_CONFIG_HOME="$rtmp" arm64_chroot_record_hostname lab.example
+XDG_CONFIG_HOME="$rtmp" arm64_chroot_record_hostname lab.example
+assert_eq 'a dotted hostname is recorded short and full, once each' \
+    "$(grep -c '^lab$' "$rtmp/init-files/chroot-hosts")$(grep -c '^lab\.example$' "$rtmp/init-files/chroot-hosts")" '11'
+# A failed write is reported, not swallowed (parent is a file, so mkdir fails even as root).
+: > "$rtmp/afile"
+if XDG_CONFIG_HOME="$rtmp/afile/sub" arm64_chroot_record_hostname lab-64; then
+    fail_case 'a failed hostname write returns non-zero'
+else
+    pass_case 'a failed hostname write returns non-zero'
+fi
 
 if [[ "$(uname -s)" != Linux ]]; then
     run_tool "$tool" --print
