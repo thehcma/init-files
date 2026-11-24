@@ -482,6 +482,14 @@ First use: run `arm64_shell`, then `./provision_init_files --github-https --no-d
 once, so the arm64 side gets its own tool file. Install missing tools from inside the chroot
 (`sudo apt install …`). Claude Code must be installed in the chroot (`~/.local/bin/claude`).
 
+Shared state: the chroot shares `$HOME` with the host, so `~/.local/{bin,opt}` and `~/.config/init-files`
+are the same on both sides. `uname -m` is `aarch64` on both, so local release installs (`rg`, `fzf`, `bat`,
+`lsd`, `coderabbit`) fetch the same arm64 binaries either way; dynamically linked ones (Claude Code,
+`coderabbit`) only run from inside the chroot. The chroot never claims the host's MAC in the
+`host-mac` registry, and each side keeps the other's per-host state (`<host>` and `<host>-arm64`) out of
+orphan cleanup. If you pass `--hostname` to use a different chroot name, list it in
+`~/.config/init-files/nfs-hosts` so the host's cleanup keeps it too.
+
 ## Platform notes
 
 - **Rocky Linux 8.1**: skips development tool version checks and omits the git commit id from the prompt.

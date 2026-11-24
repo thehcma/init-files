@@ -9789,13 +9789,13 @@ EOF
 # shellcheck disable=SC2120  # arguments come from the interactive prompt
 function arm64_shell()
 {
-    "${_init_files_clone_dir}/arm64_chroot" "$@" shell
+    "${init_files_dir:-${XDG_DATA_HOME:-$HOME/.local/share}/init-files}/arm64_chroot" "$@" shell
 }
 
 # shellcheck disable=SC2120  # arguments come from the interactive prompt
 function arm64_claude()
 {
-    "${_init_files_clone_dir}/arm64_chroot" claude "$@"
+    "${init_files_dir:-${XDG_DATA_HOME:-$HOME/.local/share}/init-files}/arm64_chroot" claude "$@"
 }
 
 # Only bare calls appear in this repo; --help works when invoked manually.

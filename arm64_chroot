@@ -52,7 +52,13 @@ EOF
 # Prompt appended to Claude Code so it knows it is in a chroot next to a 32-bit system.
 arm64_chroot_claude_prompt()
 {
-    local host="$1" root="$2"
+    local host="$1" root="$2" host_view="$3"
+    if [[ "$host_view" != 1 ]]; then
+        cat <<EOF
+Environment: you are a 64-bit (arm64) process inside a chroot (${root} on the host) on '${host}'. The host's own userland is 32-bit (armhf); both share one kernel, the process table (/proc) and /home. Your / is the arm64 chroot's root, NOT the 32-bit host's, and the host's root filesystem is NOT available here (the host view was disabled), so you cannot inspect the 32-bit system's files, logs or package state. Do not report files in this chroot as if they describe the 32-bit host. Host processes still show up in /proc. When a 32-bit-side fact is needed, give the exact command and ask the user to run it on the host side.
+EOF
+        return 0
+    fi
     cat <<EOF
 Environment: you are a 64-bit (arm64) process inside a chroot (${root} on the host) on '${host}'. The host's own userland is 32-bit (armhf); both share one kernel, the process table (/proc) and /home. Your / is the arm64 chroot's root, NOT the 32-bit host's. The host's real root filesystem is mounted READ-ONLY at /host, so to diagnose the 32-bit system read from there: /host/etc, /host/var/log, /host/boot/firmware (config.txt, cmdline.txt), 'journalctl --root=/host', 'dpkg-query --admindir=/host/var/lib/dpkg -W', and the apt config under /host/etc/apt. Host processes show up in /proc but their binaries live under /host. Nothing under /host can be changed, and you cannot run the host's 32-bit tooling from here — when a live 32-bit command is needed, give the exact command and ask the user to run it on the host side. Do not report files outside /host as if they describe the 32-bit host.
 EOF
@@ -64,7 +70,7 @@ EOF
 # invoking account can rewrite.
 read -r -d '' arm64_chroot_inner <<'INNER' || true
 set -euo pipefail
-root=$1 host_view=$2 new_host=$3 uid=$4 gid=$5 cwd=$6 nenv=$7
+root=$1 host_view=$2 new_host=$3 uid=$4 gid=$5 cwd=$6 nenv=$7 target=
 shift 7
 envs=("${@:1:nenv}")
 shift "$nenv"
@@ -75,8 +81,11 @@ mount --make-rslave "$root/dev"
 mount -t proc proc "$root/proc"
 mount -t sysfs sysfs "$root/sys"
 
-# Follow the host's DNS config rather than a stale copy.
-if [[ -f /etc/resolv.conf && -f "$root/etc/resolv.conf" ]]; then
+# Follow the host's DNS config rather than a stale copy. Only onto a regular guest file: a
+# symlink there would resolve against the host root here (and the guest root after chroot).
+if [[ -L "$root/etc/resolv.conf" ]]; then
+    echo "arm64_chroot: $root/etc/resolv.conf is a symlink; leaving the guest DNS config as is" >&2
+elif [[ -f /etc/resolv.conf && -f "$root/etc/resolv.conf" ]]; then
     mount --bind /etc/resolv.conf "$root/etc/resolv.conf"
     mount -o remount,bind,ro "$root/etc/resolv.conf"
 fi
@@ -85,10 +94,14 @@ if [[ "$host_view" == 1 ]]; then
     mkdir -p "$root/host"
     mount --bind / "$root/host"
     mount -o remount,bind,ro "$root/host"
-    if mountpoint -q /boot/firmware && [[ -d "$root/host/boot/firmware" ]]; then
-        mount --bind /boot/firmware "$root/host/boot/firmware"
-        mount -o remount,bind,ro "$root/host/boot/firmware"
-    fi
+    # The root bind is non-recursive, so expose the other real host filesystems (/var,
+    # /boot/firmware, ...) one by one, each read-only, skipping the chroot subtree itself.
+    while IFS= read -r target; do
+        [[ "$target" != "/" && "$target" != "$root" && "$target" != "$root"/* ]] || continue
+        [[ -d "$root/host$target" ]] || continue
+        mount --bind "$target" "$root/host$target"
+        mount -o remount,bind,ro "$root/host$target"
+    done < <(findmnt -n -l -o TARGET -t ext2,ext3,ext4,xfs,btrfs,f2fs,vfat,exfat)
 fi
 
 hostname "$new_host"
@@ -196,7 +209,7 @@ arm64_chroot_main()
         claude)
             [[ -e "${home}/.local/bin/claude" ]] \
                 || init_files_warn "${home}/.local/bin/claude not found; install the 64-bit Claude Code from inside the chroot first"
-            command=(claude --append-system-prompt "$(arm64_chroot_claude_prompt "$host" "$root")")
+            command=(claude --append-system-prompt "$(arm64_chroot_claude_prompt "$host" "$root" "$host_view")")
             [[ $# -eq 0 ]] || command+=("$@")
             ;;
         run) command=("$@") ;;
