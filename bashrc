@@ -11363,7 +11363,7 @@ function update_corepack()
 }
 
 # Upstream pnpm ships no linux-arm binary, so on a 32-bit ARM userland (armv7l,
-# or a 32-bit userland under an aarch64 kernel) corepack leaves a shim that can
+# or a 32-bit userland under an aarch64 kernel) a corepack shim for the latest pnpm can
 # never run and every version check reports "installed (unknown)". Linux-only
 # gate; macOS and 64-bit hosts are unaffected.
 function _init_pnpm_binary_supported()
@@ -11382,12 +11382,9 @@ function update_pnpm()
     invalidate_tool_version_cache
 
     if ! _init_pnpm_binary_supported; then
+        # Refuse only; never touch existing shims. A corepack pnpm pinned by a
+        # project's packageManager may still be a working older JS build.
         printf 'pnpm: upstream publishes no 32-bit ARM binary; not installing on this host.\n' >&2
-        # Drop a corepack shim left by an earlier attempt so it stops reporting "unknown".
-        if command -v corepack > /dev/null 2>&1; then
-            corepack disable pnpm > /dev/null 2>&1 || true
-            hash -r
-        fi
         return 1
     fi
 
