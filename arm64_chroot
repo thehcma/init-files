@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+# arm64_chroot — run a 64-bit (arm64) login shell, command, or Claude Code inside an
+# arm64 chroot on a host whose userland is 32-bit (armhf) but whose kernel is 64-bit
+# (e.g. 32-bit Raspberry Pi OS on a Pi 4/5 with a debootstrap'd arm64 root).
+#
+# Unlike a bare `chroot ... bash --noprofile --norc`, this:
+#   - runs a real login shell, so ~/.profile -> ~/.bashrc -> init-files load;
+#   - gives the chroot its own hostname (<host>-arm64) in a private UTS namespace, so
+#     init-files' per-host state (tools.<host>, no-dev.<host>, ...) does not collide with
+#     the 32-bit side, and the prompt shows which mode you are in;
+#   - mounts /proc, /sys and /dev (with devpts) inside a private mount namespace, so
+#     nothing is left mounted when the last process exits and /etc/fstab is untouched;
+#   - optionally exposes the host's real (32-bit) root read-only at /host, so a 64-bit
+#     Claude Code can inspect the 32-bit system it is running next to.
+#
+# Needs sudo (chroot/mount are root-only) — you will be prompted. See README.md
+# ("64-bit chroot on a 32-bit host").
+set -euo pipefail
+
+arm64_chroot_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly arm64_chroot_script_dir
+# shellcheck disable=SC1091
+. "${arm64_chroot_script_dir}/lib/error"
+
+readonly arm64_chroot_default_root="/opt/arm64"
+
+arm64_chroot_usage()
+{
+    cat <<'EOF'
+Usage: arm64_chroot [options] [shell]
+       arm64_chroot [options] claude [claude args...]
+       arm64_chroot [options] run COMMAND [args...]
+
+Enter the arm64 chroot as the calling user (same uid/gid/home) via sudo.
+
+  shell        interactive login shell; init-files loads (default)
+  claude       Claude Code (64-bit) with the 32-bit host root visible read-only at /host
+               and a system prompt explaining that layout; extra args go to claude
+  run          run COMMAND directly (no shell startup files)
+
+Options (before the subcommand):
+  --root DIR        chroot directory (default: $ARM64_CHROOT_DIR or /opt/arm64)
+  --hostname NAME   hostname inside the chroot (default: <host>-arm64)
+  --no-host-view    do not mount the host root at /host
+  -n, --print       print the sudo command line instead of running it
+  -h, --help        this help
+
+Inside, INIT_FILES_CHROOT=arm64 is set and the host root (read-only) is at /host.
+EOF
+}
+
+# Prompt appended to Claude Code so it knows it is in a chroot next to a 32-bit system.
+arm64_chroot_claude_prompt()
+{
+    local host="$1" root="$2"
+    cat <<EOF
+Environment: you are a 64-bit (arm64) process inside a chroot (${root} on the host) on '${host}'. The host's own userland is 32-bit (armhf); both share one kernel, the process table (/proc) and /home. Your / is the arm64 chroot's root, NOT the 32-bit host's. The host's real root filesystem is mounted READ-ONLY at /host, so to diagnose the 32-bit system read from there: /host/etc, /host/var/log, /host/boot/firmware (config.txt, cmdline.txt), 'journalctl --root=/host', 'dpkg-query --admindir=/host/var/lib/dpkg -W', and the apt config under /host/etc/apt. Host processes show up in /proc but their binaries live under /host. Nothing under /host can be changed, and you cannot run the host's 32-bit tooling from here — when a live 32-bit command is needed, give the exact command and ask the user to run it on the host side. Do not report files outside /host as if they describe the 32-bit host.
+EOF
+}
+
+# Runs as root inside the new mount+UTS namespaces (passed to `bash -c` below).
+# Positional: root host_view new_hostname uid gid cwd nenv ENV... -- command...
+# A literal here rather than a user-writable file so sudo never executes a file the
+# invoking account can rewrite.
+read -r -d '' arm64_chroot_inner <<'INNER' || true
+set -euo pipefail
+root=$1 host_view=$2 new_host=$3 uid=$4 gid=$5 cwd=$6 nenv=$7
+shift 7
+envs=("${@:1:nenv}")
+shift "$nenv"
+
+mount --make-rprivate /
+mount --rbind /dev "$root/dev"
+mount --make-rslave "$root/dev"
+mount -t proc proc "$root/proc"
+mount -t sysfs sysfs "$root/sys"
+
+# Follow the host's DNS config rather than a stale copy.
+if [[ -f /etc/resolv.conf && -f "$root/etc/resolv.conf" ]]; then
+    mount --bind /etc/resolv.conf "$root/etc/resolv.conf"
+    mount -o remount,bind,ro "$root/etc/resolv.conf"
+fi
+
+if [[ "$host_view" == 1 ]]; then
+    mkdir -p "$root/host"
+    mount --bind / "$root/host"
+    mount -o remount,bind,ro "$root/host"
+    if mountpoint -q /boot/firmware && [[ -d "$root/host/boot/firmware" ]]; then
+        mount --bind /boot/firmware "$root/host/boot/firmware"
+        mount -o remount,bind,ro "$root/host/boot/firmware"
+    fi
+fi
+
+hostname "$new_host"
+
+exec chroot "$root" /usr/bin/setpriv --reuid="$uid" --regid="$gid" --init-groups \
+    /usr/bin/env -C "$cwd" -i "${envs[@]}" "$@"
+INNER
+readonly arm64_chroot_inner
+
+arm64_chroot_main()
+{
+    local root="${ARM64_CHROOT_DIR:-$arm64_chroot_default_root}"
+    local host host_view=1 print_only=0 new_host="" sub="shell"
+    local home user uid gid cwd path var
+    local -a envs=() command=() sudo_cmd=()
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h | --help)
+                arm64_chroot_usage
+                exit 0
+                ;;
+            -n | --print) print_only=1 ;;
+            --no-host-view) host_view=0 ;;
+            --root)
+                [[ $# -ge 2 ]] || init_files_die "--root requires a directory"
+                root="$2"
+                shift
+                ;;
+            --hostname)
+                [[ $# -ge 2 ]] || init_files_die "--hostname requires a name"
+                new_host="$2"
+                shift
+                ;;
+            -*) init_files_die "unknown option: $1 (see --help)" ;;
+            *) break ;;
+        esac
+        shift
+    done
+
+    if [[ $# -gt 0 ]]; then
+        sub="$1"
+        shift
+    fi
+    case "$sub" in
+        shell) [[ $# -eq 0 ]] || init_files_die "shell takes no arguments (options go before the subcommand)" ;;
+        claude) ;;
+        run) [[ $# -ge 1 ]] || init_files_die "run requires a command" ;;
+        *) init_files_die "unknown subcommand: $sub (use shell, claude or run)" ;;
+    esac
+
+    [[ "$(uname -s)" == Linux ]] || init_files_die "arm64_chroot is Linux-only"
+    if [[ -n "${INIT_FILES_CHROOT:-}" ]]; then
+        init_files_die "already inside the ${INIT_FILES_CHROOT} chroot — run this from the host side"
+    fi
+
+    root="${root%/}"
+    [[ -d "$root" ]] || init_files_die "chroot directory not found: $root (set --root or ARM64_CHROOT_DIR)"
+    [[ -x "$root/usr/bin/setpriv" && -x "$root/usr/bin/env" ]] \
+        || init_files_die "$root does not look like a usable root (missing usr/bin/setpriv or usr/bin/env)"
+    [[ -x "$root/bin/bash" ]] || init_files_die "$root has no /bin/bash"
+
+    home="$HOME"
+    user="$(id -un)"
+    uid="$(id -u)"
+    gid="$(id -g)"
+    [[ -d "${root}${home}" ]] \
+        || init_files_die "${root}${home} is missing — bind-mount ${home} into the chroot first (e.g. an /etc/fstab bind entry)"
+
+    host="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo host)"
+    [[ -n "$new_host" ]] || new_host="${host}-arm64"
+    [[ "$new_host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] \
+        || init_files_die "invalid hostname: $new_host"
+
+    # Keep the caller's directory when it exists inside the chroot (the shared home).
+    cwd="$home"
+    case "$PWD" in
+        "$home" | "$home"/*) cwd="$PWD" ;;
+    esac
+
+    path="${home}/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin"
+    envs=(
+        "HOME=${home}" "USER=${user}" "LOGNAME=${user}" "SHELL=/bin/bash" "PATH=${path}"
+        "TERM=${TERM:-xterm-256color}"
+        "INIT_FILES_CHROOT=arm64" "ARM64_CHROOT_HOST=${host}"
+    )
+    # Locale, terminal and ssh-session hints init-files uses; non-secret only.
+    for var in LANG LANGUAGE COLORTERM TERM_PROGRAM TERM_PROGRAM_VERSION SSH_CONNECTION SSH_CLIENT SSH_TTY; do
+        if [[ -n "${!var:-}" ]]; then
+            envs+=("${var}=${!var}")
+        fi
+    done
+    for var in $(compgen -v LC_ || true); do
+        envs+=("${var}=${!var}")
+    done
+    # The cache_ssh agent socket lives under the shared home, so its path still resolves.
+    case "${SSH_AUTH_SOCK:-}" in
+        "$home"/*) envs+=("SSH_AUTH_SOCK=${SSH_AUTH_SOCK}") ;;
+        "") ;;
+        *) init_files_warn "SSH_AUTH_SOCK (${SSH_AUTH_SOCK}) is outside ${home}; not forwarded into the chroot" ;;
+    esac
+
+    case "$sub" in
+        shell) command=(/bin/bash -il) ;;
+        claude)
+            [[ -e "${home}/.local/bin/claude" ]] \
+                || init_files_warn "${home}/.local/bin/claude not found; install the 64-bit Claude Code from inside the chroot first"
+            command=(claude --append-system-prompt "$(arm64_chroot_claude_prompt "$host" "$root")")
+            [[ $# -eq 0 ]] || command+=("$@")
+            ;;
+        run) command=("$@") ;;
+    esac
+
+    sudo_cmd=(
+        sudo --
+        unshare --mount --uts --propagation private --
+        /bin/bash -c "$arm64_chroot_inner" arm64_chroot
+        "$root" "$host_view" "$new_host" "$uid" "$gid" "$cwd" "${#envs[@]}"
+        "${envs[@]}" "${command[@]}"
+    )
+
+    if [[ "$print_only" -eq 1 ]]; then
+        local arg
+        for arg in "${sudo_cmd[@]}"; do
+            if [[ "$arg" == "$arm64_chroot_inner" ]]; then
+                printf '%s\n' '<inner-script>'
+            else
+                printf '%s\n' "$arg"
+            fi
+        done
+        exit 0
+    fi
+
+    exec "${sudo_cmd[@]}"
+}
+
+arm64_chroot_main "$@"

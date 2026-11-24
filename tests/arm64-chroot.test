@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# arm64_chroot builds the right sudo/unshare/chroot plan. Only --print is exercised, so no
+# sudo, mount or real chroot is needed: a throwaway directory stands in for the arm64 root.
+set -euo pipefail
+
+script_dir="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+tool="${root}/arm64_chroot"
+
+# Run a command; leave its combined output in run_out and its exit status in last_status
+# (globals, not a subshell, so the status survives) without tripping set -e.
+last_status=0
+run_out=""
+run_tool()
+{
+    set +e
+    run_out="$("$@" 2>&1)"
+    last_status=$?
+    set -e
+}
+
+run_tool "$tool" --help; out="$run_out"
+assert_exit_0 '--help exits 0' "$last_status"
+assert_contains '--help documents the claude subcommand' "$out" 'claude'
+
+run_tool "$tool" --bogus; out="$run_out"
+assert_exit_nonzero 'an unknown option is rejected' "$last_status"
+assert_contains 'the unknown option is named' "$out" '--bogus'
+
+if [[ "$(uname -s)" != Linux ]]; then
+    run_tool "$tool" --print
+    out="$run_out"
+    assert_exit_nonzero 'refuses to run off Linux' "$last_status"
+    assert_contains 'says it is Linux-only' "$out" 'Linux-only'
+    printf '[SKIP] plan cases need Linux\n'
+    test_summary
+    exit 0
+fi
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+# A minimal fake arm64 root: just what the pre-flight checks look for.
+fake="${tmp}/arm64"
+mkdir -p "${fake}/usr/bin" "${fake}/bin" "${fake}${HOME}"
+touch "${fake}/usr/bin/setpriv" "${fake}/usr/bin/env" "${fake}/usr/bin/bash"
+chmod +x "${fake}/usr/bin/setpriv" "${fake}/usr/bin/env" "${fake}/usr/bin/bash"
+ln -s ../usr/bin/bash "${fake}/bin/bash"
+
+host="$(hostname -s 2>/dev/null || hostname)"
+
+# The Nth line after line $1 in the printed plan (one argument per line).
+nth_after()
+{
+    awk -v want="$1" -v n="$2" '$0 == want { at = NR } at && NR == at + n { print; exit }' <<< "$3"
+}
+
+run_tool "$tool" --root "$fake" --print; out="$run_out"
+assert_exit_0 'default plan builds' "$last_status"
+assert_contains 'goes through sudo' "$out" 'sudo'
+assert_contains 'uses a private mount namespace' "$out" '--mount'
+assert_contains 'uses a private UTS namespace' "$out" '--uts'
+assert_contains 'the shell is a login shell (init-files loads)' "$out" '-il'
+assert_not_contains 'the shell does not skip rc files' "$out" '--norc'
+assert_contains 'marks the environment as the chroot' "$out" 'INIT_FILES_CHROOT=arm64'
+assert_contains 'remembers the real host name' "$out" "ARM64_CHROOT_HOST=${host}"
+assert_eq 'the chroot hostname defaults to <host>-arm64' "$(nth_after "$fake" 2 "$out")" "${host}-arm64"
+assert_eq 'the host view is on by default' "$(nth_after "$fake" 1 "$out")" '1'
+assert_not_contains 'the inner script body is not dumped' "$out" 'mount --rbind'
+
+run_tool "$tool" --root "$fake" --no-host-view --print; out="$run_out"
+assert_eq '--no-host-view turns the host view off' "$(nth_after "$fake" 1 "$out")" '0'
+
+run_tool "$tool" --root "$fake" --hostname lab-64 --print; out="$run_out"
+assert_contains '--hostname overrides the default' "$out" 'lab-64'
+
+run_tool "$tool" --root "$fake" --print claude --version -p hi; out="$run_out"
+assert_exit_0 'claude plan builds' "$last_status"
+assert_contains 'launches claude' "$out" 'claude'
+assert_contains 'explains the layout to Claude' "$out" '--append-system-prompt'
+assert_contains 'tells Claude where the 32-bit root is' "$out" '/host'
+assert_contains 'forwards claude args' "$out" '--version'
+assert_contains 'forwards every claude arg' "$out" '-p'
+
+run_tool "$tool" --root "$fake" --print run uname -m; out="$run_out"
+assert_exit_0 'run plan builds' "$last_status"
+assert_contains 'run passes the command through' "$out" 'uname'
+assert_not_contains 'run does not start a shell' "$out" '-il'
+
+ANTHROPIC_API_KEY=sekret-value LC_ALL=C.UTF-8 run_tool "$tool" --root "$fake" --print; out="$run_out"
+assert_not_contains 'secrets are never forwarded' "$out" 'sekret-value'
+assert_contains 'locale settings are forwarded' "$out" 'LC_ALL=C.UTF-8'
+
+INIT_FILES_CHROOT=arm64 run_tool "$tool" --root "$fake" --print; out="$run_out"
+assert_exit_nonzero 'refuses to nest inside the chroot' "$last_status"
+assert_contains 'explains the nesting refusal' "$out" 'already inside'
+
+run_tool "$tool" --root "${tmp}/nope" --print; out="$run_out"
+assert_exit_nonzero 'a missing root is rejected' "$last_status"
+assert_contains 'names the missing root' "$out" 'chroot directory not found'
+
+run_tool "$tool" --root "$fake" --hostname 'bad host!' --print; out="$run_out"
+assert_exit_nonzero 'an invalid hostname is rejected' "$last_status"
+
+run_tool "$tool" --root "$fake" --print frobnicate; out="$run_out"
+assert_exit_nonzero 'an unknown subcommand is rejected' "$last_status"
+
+run_tool "$tool" --root "$fake" --print run; out="$run_out"
+assert_exit_nonzero 'run without a command is rejected' "$last_status"
+
+run_tool "$tool" --root "$fake" --print shell extra; out="$run_out"
+assert_exit_nonzero 'shell rejects stray arguments' "$last_status"
+
+test_summary

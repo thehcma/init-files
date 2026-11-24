@@ -41,6 +41,7 @@ Tracked content is shared. Host-specific absolute tool paths are **generated on 
 | `provision_init_files` | Discovers tools for this host, writes `tools`, symlinks `~/.bashrc` / `~/.vimrc`, merges ssh. |
 | `bootstrap_host` | Standalone new-host helper (pre-clone SSH/HTTPS → clone → `provision_init_files`). scp-able alone. |
 | `install_node_toolchain` | User-local nvm + Node LTS + corepack (no sudo; preferred over Homebrew npm). |
+| `arm64_chroot` | Linux-only: login shell / `claude` / one-off command inside an arm64 chroot on a 64-bit-kernel, 32-bit-userland host (private mount+UTS namespaces, hostname `<host>-arm64`, read-only `/host` view); bashrc wrappers `arm64_shell` / `arm64_claude`; test `tests/arm64-chroot.test` runs `--print` only (no sudo). See README "64-bit chroot on a 32-bit host". |
 | `README.md` | Install / refresh process for humans. |
 | `docs/shell-ux.md` | Interactive shell UX: history, completion, shopt, fzf, bash version. |
 | `iterm2/` | Curated iTerm2 prefs (font/colors/keys/mouse); macOS-only export/install — see [iterm2/README.md](iterm2/README.md). Applied by default on Darwin provision / `refresh_init_files` (`--no-iterm` to skip). |

@@ -9784,6 +9784,20 @@ EOF
     printf 'refresh_vimrc: open a file in a git repo to confirm airline branch + gitgutter\n'
 }
 
+# 64-bit shell / Claude Code in the arm64 chroot on a 32-bit-userland host (see arm64_chroot).
+# Linux-only; fails closed elsewhere and when already inside the chroot.
+# shellcheck disable=SC2120  # arguments come from the interactive prompt
+function arm64_shell()
+{
+    "${_init_files_clone_dir}/arm64_chroot" "$@" shell
+}
+
+# shellcheck disable=SC2120  # arguments come from the interactive prompt
+function arm64_claude()
+{
+    "${_init_files_clone_dir}/arm64_chroot" claude "$@"
+}
+
 # Only bare calls appear in this repo; --help works when invoked manually.
 # shellcheck disable=SC2120
 function refresh_claude_settings()
