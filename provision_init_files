@@ -2093,8 +2093,11 @@ install_agent_ssh_snippet()
 
     ensure_ssh_config_include || return 1
     if [[ -f "$ssh_agent_snippet" ]]; then
-        rm -f "$ssh_agent_snippet" || true
-        log "Removed  legacy ${ssh_agent_snippet/#$HOME/~} (default now lives at end of ~/.ssh/config)"
+        if rm -f "$ssh_agent_snippet"; then
+            log "Removed  legacy ${ssh_agent_snippet/#$HOME/~} (default now lives at end of ~/.ssh/config)"
+        else
+            init_files_warn "could not remove legacy ${ssh_agent_snippet/#$HOME/~}; its AddKeysToAgent default may still override host settings"
+        fi
     fi
     # Resolve a symlinked config (portable; no readlink -f on older macOS) so the
     # staged file lands on the target's filesystem and the link is preserved.
@@ -2111,10 +2114,16 @@ install_agent_ssh_snippet()
         $0 == b { skip = 1; next }
         $0 == e { skip = 0; next }
         !skip { lines[++n] = $0 }
-        END { while (n > 0 && lines[n] == "") n--; for (i = 1; i <= n; i++) print lines[i] }
+        END {
+            # Unterminated block: refuse rather than drop every later Host block.
+            if (skip) exit 3
+            while (n > 0 && lines[n] == "") n--
+            for (i = 1; i <= n; i++) print lines[i]
+        }
     ' "$target" > "$tmp" \
         || ! printf '\n%s\nHost *\n    AddKeysToAgent yes\n%s\n' "$begin" "$end" >> "$tmp"; then
         rm -f "$tmp"
+        init_files_warn "left ~/.ssh/config unchanged (unterminated or unwritable init-files agent block; check '$begin' / '$end' markers)"
         return 1
     fi
     if cmp -s "$tmp" "$target"; then
