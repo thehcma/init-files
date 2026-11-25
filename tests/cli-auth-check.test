@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# Tests for lib/cli_auth_check: periodic gh / coderabbit re-login warning.
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# shellcheck disable=SC1091
+source "${script_dir}/lib/test-assert"
+test_init
+
+root="$(cd "${script_dir}/.." && pwd)"
+readonly root
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+mkdir -p "$work/bin" "$work/state"
+
+# make_stub <name> <exit-code>: stub CLI whose `auth status` exits with the code.
+make_stub() {
+  printf '#!/bin/sh\nexit %s\n' "$2" > "$work/bin/$1"
+  chmod +x "$work/bin/$1"
+}
+
+# Run in a clean subshell so PATH / init_tool_* / state never leak.
+run_problems() {
+  (
+    PATH="$work/bin:/usr/bin:/bin"
+    init_tool_gh="$work/bin/gh"
+    init_files_coderabbit_cli() { [[ -x "$work/bin/coderabbit" ]] && printf '%s\n' "$work/bin/coderabbit"; }
+    # shellcheck disable=SC1091
+    source "$root/lib/cli_auth_check"
+    init_files_cli_auth_problems
+  )
+}
+
+run_check() {
+  (
+    PATH="$work/bin:/usr/bin:/bin"
+    init_tool_gh="$work/bin/gh"
+    XDG_STATE_HOME="$work/state"
+    init_files_coderabbit_cli() { [[ -x "$work/bin/coderabbit" ]] && printf '%s\n' "$work/bin/coderabbit"; }
+    # shellcheck disable=SC1091
+    source "$root/lib/cli_auth_check"
+    init_files_cli_auth_check "$@" 2>&1
+  )
+}
+
+printf '\n=== problems ===\n'
+make_stub gh 0
+make_stub coderabbit 0
+assert_eq 'both logged in: no output' "$(run_problems)" ''
+
+make_stub gh 1
+assert_contains 'gh failing is reported with fix' "$(run_problems)" 'gh|auth check failed for github.com|gh auth login --hostname github.com'
+assert_not_contains 'coderabbit ok not reported' "$(run_problems)" 'coderabbit'
+
+make_stub gh 0
+make_stub coderabbit 1
+assert_contains 'coderabbit failing is reported with fix' "$(run_problems)" 'coderabbit|auth check failed|coderabbit auth login'
+
+rm -f "$work/bin/coderabbit"
+assert_eq 'missing coderabbit skipped silently' "$(run_problems)" ''
+
+printf '\n=== check (throttle) ===\n'
+make_stub gh 1
+out="$(run_check --force)"
+assert_contains 'force prints header' "$out" 'CLI login needs attention'
+assert_contains 'force prints command' "$out" 'gh auth login'
+[[ -f "$work/state/init-files/last-cli-auth-check" ]] && pass_case 'stamp written' || fail_case 'stamp written'
+
+# Non-interactive subshell without --force must stay silent.
+assert_eq 'non-interactive silent' "$(run_check)" ''
+
+make_stub gh 0
+assert_eq 'healthy forced check is silent' "$(run_check --force)" ''
+
+printf '\n=== offer login ===\n'
+make_login_stub() {
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/login.log"\nexit %s\n' "$work" "$2" > "$work/bin/$1"
+  chmod +x "$work/bin/$1"
+}
+run_offer() { # <tool> <fix> <stdin-line>
+  (
+    PATH="$work/bin:/usr/bin:/bin"
+    init_tool_gh="$work/bin/gh"
+    init_files_coderabbit_cli() { printf '%s\n' "$work/bin/coderabbit"; }
+    # shellcheck disable=SC1091
+    source "$root/lib/cli_auth_check"
+    printf '%s\n' "$3" | init_files_cli_auth_offer_login "$1" "$2" 2>&1
+  )
+}
+rm -f "$work/login.log"
+make_login_stub gh 0
+out="$(run_offer gh 'gh auth login' y)"
+assert_contains 'yes runs gh login' "$(cat "$work/login.log")" 'auth login --hostname github.com'
+assert_contains 'yes reports renewed' "$out" 'gh login renewed'
+
+rm -f "$work/login.log"
+out="$(run_offer gh 'gh auth login' n)"
+[[ ! -f "$work/login.log" ]] && pass_case 'no skips login' || fail_case 'no skips login'
+assert_contains 'no prints renew-later hint' "$out" 'Renew later: gh auth login'
+
+rm -f "$work/login.log"
+make_login_stub coderabbit 0
+run_offer coderabbit 'coderabbit auth login' '' > /dev/null
+assert_contains 'empty answer defaults to yes (coderabbit)' "$(cat "$work/login.log")" 'auth login'
+
+make_login_stub gh 1
+out="$(run_offer gh 'gh auth login' y)"
+assert_contains 'failed login reports retry' "$out" 'did not complete; retry: gh auth login'
+
+test_summary

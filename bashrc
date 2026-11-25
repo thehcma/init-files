@@ -120,6 +120,10 @@ if [[ -f "${_init_files_clone_dir}/lib/coderabbit_skills" ]]; then
     # shellcheck disable=SC1091
     . "${_init_files_clone_dir}/lib/coderabbit_skills"
 fi
+if [[ -f "${_init_files_clone_dir}/lib/cli_auth_check" ]]; then
+    # shellcheck disable=SC1091
+    . "${_init_files_clone_dir}/lib/cli_auth_check"
+fi
 if [[ -f "${_init_files_clone_dir}/lib/shell_completions" ]]; then
     # shellcheck disable=SC1091
     . "${_init_files_clone_dir}/lib/shell_completions"
@@ -6290,6 +6294,17 @@ function init_files_doctor()
         else
             _doc_warn "cache_ssh: key not in agent (run: cache_ssh)"
         fi
+    fi
+
+    # 4b) gh / coderabbit logins
+    if declare -F init_files_cli_auth_problems > /dev/null 2>&1; then
+        local _doc_auth_line _doc_auth_bad=0
+        while IFS= read -r _doc_auth_line; do
+            [[ -n "$_doc_auth_line" ]] || continue
+            _doc_auth_bad=1
+            _doc_warn "login: ${_doc_auth_line%%|*} ${_doc_auth_line#*|} (run: ${_doc_auth_line##*|})"
+        done < <(init_files_cli_auth_problems)
+        ((_doc_auth_bad == 0)) && _doc_ok "gh / coderabbit logins valid (or not installed)"
     fi
 
     # 5) GitHub transport
@@ -13025,6 +13040,10 @@ if [[ $- == *i* ]]; then
     if [[ -z "${_init_files_in_refresh_reload:-}" ]] \
         && declare -F _init_maybe_offer_orphan_cleanup > /dev/null 2>&1; then
         _init_maybe_offer_orphan_cleanup || true
+    fi
+    # Every ~6h: warn when gh / coderabbit logins have lapsed (warn-only).
+    if declare -F init_files_cli_auth_check > /dev/null 2>&1; then
+        init_files_cli_auth_check || true
     fi
 fi
 

@@ -1,0 +1,143 @@
+# shellcheck shell=bash
+# cli_auth_check — periodic "does this CLI need re-login?" probe for gh and the
+# CodeRabbit CLI. Tokens expire (gh's refresh token, CodeRabbit sessions) and
+# the failure otherwise surfaces mid-task (review loop, push, PR create).
+#
+# Probing is read-only. On a terminal it then OFFERS the login ([Y/n], default
+# yes) and runs the CLI's own interactive login only on a yes; elsewhere it just
+# prints the exact command. It never logs in unprompted.
+# A tool that is not installed is skipped silently. Network-bound probes are
+# bounded with timeout/gtimeout when one exists; without one the probe still
+# runs (the CLIs bound their own requests). Offline hosts can false-positive,
+# so the wording says "check failed", not "token revoked".
+#
+# Portable to bash 3.2 (older macOS): no associative arrays, no ${var,,}.
+# Sourced by bashrc (not executed).
+
+# Prints "<tool>|<reason>|<fix command>" for each installed CLI whose auth probe
+# fails. Prints nothing (exit 0) when all installed CLIs are authenticated.
+init_files_cli_auth_problems()
+{
+    local to="" cr gh_bin="${init_tool_gh:-}"
+
+    if command -v timeout > /dev/null 2>&1; then
+        to="timeout 20"
+    elif command -v gtimeout > /dev/null 2>&1; then
+        to="gtimeout 20"
+    fi
+
+    if [[ -z "$gh_bin" || ! -x "$gh_bin" ]]; then
+        gh_bin="$(command -v gh 2> /dev/null || true)"
+    fi
+    if [[ -n "$gh_bin" ]]; then
+        # shellcheck disable=SC2086  # $to is an intentional word-split prefix
+        if ! $to "$gh_bin" auth status --hostname github.com > /dev/null 2>&1; then
+            printf 'gh|auth check failed for github.com|gh auth login --hostname github.com\n'
+        fi
+    fi
+
+    if declare -F init_files_coderabbit_cli > /dev/null 2>&1 \
+        && cr="$(init_files_coderabbit_cli 2> /dev/null)" && [[ -n "$cr" ]]; then
+        # shellcheck disable=SC2086
+        if ! $to "$cr" auth status > /dev/null 2>&1; then
+            printf 'coderabbit|auth check failed|coderabbit auth login\n'
+        fi
+    fi
+    return 0
+}
+
+# Runs the interactive login for <tool> (gh | coderabbit). Returns its status.
+init_files_cli_auth_login()
+{
+    local gh_bin="${init_tool_gh:-}" cr
+
+    case "${1:-}" in
+        gh)
+            if [[ -z "$gh_bin" || ! -x "$gh_bin" ]]; then
+                gh_bin="$(command -v gh 2> /dev/null || true)"
+            fi
+            [[ -n "$gh_bin" ]] || return 1
+            "$gh_bin" auth login --hostname github.com
+            ;;
+        coderabbit)
+            cr="$(init_files_coderabbit_cli 2> /dev/null)" && [[ -n "$cr" ]] || return 1
+            "$cr" auth login
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+# Asks (on stdin) whether to renew <tool> now and runs the login on yes.
+# Default is yes; anything else skips until the next interval.
+# Usage: init_files_cli_auth_offer_login <tool> <fix-command-text>
+init_files_cli_auth_offer_login()
+{
+    local tool="${1:-}" fix="${2:-}" reply=""
+
+    printf 'Renew %s login now (%s)? [Y/n] ' "$tool" "$fix" >&2
+    read -r reply || reply=n
+    case "$reply" in
+        ''|y|Y|yes|YES)
+            if init_files_cli_auth_login "$tool"; then
+                printf 'init-files: %s login renewed.\n' "$tool" >&2
+            else
+                printf 'init-files: %s login did not complete; retry: %s\n' "$tool" "$fix" >&2
+            fi
+            ;;
+        *) printf 'Skipped. Renew later: %s\n' "$fix" >&2 ;;
+    esac
+    return 0
+}
+
+# Interactive, throttled (default 6h; INIT_FILES_CLI_AUTH_CHECK_INTERVAL
+# seconds) warning. Always re-warns on the next interval while a problem
+# persists. INIT_FILES_SKIP_CLI_AUTH_CHECK=1 silences it.
+# Usage: init_files_cli_auth_check [--force]   (--force: ignore TTY + throttle)
+init_files_cli_auth_check()
+{
+    local force=0 state_dir stamp now last interval line tool reason fix found=0
+
+    [[ "${1:-}" == "--force" ]] && force=1
+    if ((force == 0)); then
+        [[ $- == *i* ]] || return 0
+        [[ -t 2 ]] || return 0
+        [[ -z "${_init_files_in_refresh_reload:-}" ]] || return 0
+        [[ -z "${INIT_FILES_SKIP_CLI_AUTH_CHECK:-}" ]] || return 0
+    fi
+
+    state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/init-files"
+    stamp="${state_dir}/last-cli-auth-check"
+    interval="${INIT_FILES_CLI_AUTH_CHECK_INTERVAL:-21600}"
+    [[ "$interval" =~ ^[0-9]+$ ]] || interval=21600
+    now="$(date +%s 2> /dev/null || echo 0)"
+    [[ "$now" =~ ^[0-9]+$ ]] || return 0
+
+    if ((force == 0)) && [[ -f "$stamp" ]]; then
+        last="$(tr -d '[:space:]' < "$stamp" 2> /dev/null || echo 0)"
+        if [[ "$last" =~ ^[0-9]+$ ]] && ((now >= last && now - last < interval)); then
+            return 0
+        fi
+    fi
+    mkdir -p "$state_dir" 2> /dev/null || true
+    printf '%s\n' "$now" > "$stamp" 2> /dev/null || true
+
+    # Collect first: the offer reads stdin and must not share the probe's pipe.
+    local -a problems=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && problems+=("$line")
+    done < <(init_files_cli_auth_problems)
+
+    for line in "${problems[@]+"${problems[@]}"}"; do
+        IFS='|' read -r tool reason fix <<< "$line"
+        if ((found == 0)); then
+            printf 'init-files: CLI login needs attention:\n' >&2
+            found=1
+        fi
+        printf '  %s: %s — run: %s\n' "$tool" "$reason" "$fix" >&2
+        # Offer only with a real terminal; scripts and --force probes just warn.
+        if [[ -t 0 && -t 2 ]] && ((force == 0)); then
+            init_files_cli_auth_offer_login "$tool" "$fix"
+        fi
+    done
+    return 0
+}
