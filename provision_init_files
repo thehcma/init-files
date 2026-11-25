@@ -1990,6 +1990,7 @@ ssh_config_d="${ssh_dir}/config.d"
 ssh_hosts_snippet="${ssh_config_d}/init-files-hosts.conf"
 ssh_hosts_snippet_legacy="${ssh_config_d}/init-files-house.conf"
 ssh_github_snippet="${ssh_config_d}/init-files-github.conf"
+ssh_agent_snippet="${ssh_config_d}/init-files-agent.conf"
 ssh_config_file="${ssh_dir}/config"
 ssh_auth_file="${ssh_dir}/authorized_keys"
 
@@ -2076,6 +2077,63 @@ install_github_ssh_snippet()
     }
     chmod 600 "$ssh_github_snippet" || true
     log "Installed ${ssh_github_snippet/#$HOME/~}"
+}
+
+# Plain ssh (not just cssh) loads a passphrase key into ssh-agent on first use,
+# so the agent caches by key: one prompt covers every host sharing that key.
+# OpenSSH uses the FIRST value per keyword, so this default must be the LAST
+# thing in ~/.ssh/config (after the early config.d Include and the user's own
+# blocks); a config.d snippet would override host-specific AddKeysToAgent
+# (e.g. "confirm"). Managed block between markers, rewritten idempotently.
+install_agent_ssh_snippet()
+{
+    local begin='# BEGIN init-files agent default (keep last)'
+    local end='# END init-files agent default'
+    local tmp target link
+
+    ensure_ssh_config_include || return 1
+    if [[ -f "$ssh_agent_snippet" ]]; then
+        if rm -f "$ssh_agent_snippet"; then
+            log "Removed  legacy ${ssh_agent_snippet/#$HOME/~} (default now lives at end of ~/.ssh/config)"
+        else
+            init_files_warn "could not remove legacy ${ssh_agent_snippet/#$HOME/~}; its AddKeysToAgent default may still override host settings"
+        fi
+    fi
+    # Resolve a symlinked config (portable; no readlink -f on older macOS) so the
+    # staged file lands on the target's filesystem and the link is preserved.
+    target="$ssh_config_file"
+    while [[ -L "$target" ]]; do
+        link="$(readlink "$target")" || return 1
+        case "$link" in
+            /*) target="$link" ;;
+            *) target="$(dirname -- "$target")/$link" ;;
+        esac
+    done
+    tmp=$(mktemp "${target}.init-files.XXXXXX") || return 1
+    if ! awk -v b="$begin" -v e="$end" '
+        $0 == b { skip = 1; next }
+        $0 == e { skip = 0; next }
+        !skip { lines[++n] = $0 }
+        END {
+            # Unterminated block: refuse rather than drop every later Host block.
+            if (skip) exit 3
+            while (n > 0 && lines[n] == "") n--
+            for (i = 1; i <= n; i++) print lines[i]
+        }
+    ' "$target" > "$tmp" \
+        || ! printf '\n%s\nHost *\n    AddKeysToAgent yes\n%s\n' "$begin" "$end" >> "$tmp"; then
+        rm -f "$tmp"
+        init_files_warn "left ~/.ssh/config unchanged (unterminated or unwritable init-files agent block; check '$begin' / '$end' markers)"
+        return 1
+    fi
+    if cmp -s "$tmp" "$target"; then
+        rm -f "$tmp"
+        log "OK       ~/.ssh/config agent default"
+        return 0
+    fi
+    chmod 600 "$tmp" || true
+    mv -f "$tmp" "$target" || { rm -f "$tmp"; return 1; }
+    log "Updated  ~/.ssh/config (AddKeysToAgent default at end)"
 }
 
 install_shared_authorized_keys()
@@ -2364,6 +2422,7 @@ if [[ -f "$ssh_hosts_snippet" && -f "$ssh_hosts_snippet_legacy" ]]; then
     log "Removed  legacy ${ssh_hosts_snippet_legacy/#$HOME/~}"
 fi
 install_github_ssh_snippet
+install_agent_ssh_snippet
 ensure_github_known_hosts
 warn_if_github_key_missing
 
