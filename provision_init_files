@@ -2089,29 +2089,41 @@ install_agent_ssh_snippet()
 {
     local begin='# BEGIN init-files agent default (keep last)'
     local end='# END init-files agent default'
-    local tmp
+    local tmp target link
 
     ensure_ssh_config_include || return 1
     if [[ -f "$ssh_agent_snippet" ]]; then
         rm -f "$ssh_agent_snippet" || true
         log "Removed  legacy ${ssh_agent_snippet/#$HOME/~} (default now lives at end of ~/.ssh/config)"
     fi
-    tmp=$(mktemp) || return 1
-    awk -v b="$begin" -v e="$end" '
+    # Resolve a symlinked config (portable; no readlink -f on older macOS) so the
+    # staged file lands on the target's filesystem and the link is preserved.
+    target="$ssh_config_file"
+    while [[ -L "$target" ]]; do
+        link="$(readlink "$target")" || return 1
+        case "$link" in
+            /*) target="$link" ;;
+            *) target="$(dirname -- "$target")/$link" ;;
+        esac
+    done
+    tmp=$(mktemp "${target}.init-files.XXXXXX") || return 1
+    if ! awk -v b="$begin" -v e="$end" '
         $0 == b { skip = 1; next }
         $0 == e { skip = 0; next }
         !skip { lines[++n] = $0 }
         END { while (n > 0 && lines[n] == "") n--; for (i = 1; i <= n; i++) print lines[i] }
-    ' "$ssh_config_file" > "$tmp" || { rm -f "$tmp"; return 1; }
-    printf '\n%s\nHost *\n    AddKeysToAgent yes\n%s\n' "$begin" "$end" >> "$tmp"
-    if cmp -s "$tmp" "$ssh_config_file"; then
+    ' "$target" > "$tmp" \
+        || ! printf '\n%s\nHost *\n    AddKeysToAgent yes\n%s\n' "$begin" "$end" >> "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    if cmp -s "$tmp" "$target"; then
         rm -f "$tmp"
         log "OK       ~/.ssh/config agent default"
         return 0
     fi
-    cat "$tmp" > "$ssh_config_file" || { rm -f "$tmp"; return 1; }
-    rm -f "$tmp"
-    chmod 600 "$ssh_config_file" || true
+    chmod 600 "$tmp" || true
+    mv -f "$tmp" "$target" || { rm -f "$tmp"; return 1; }
     log "Updated  ~/.ssh/config (AddKeysToAgent default at end)"
 }
 
