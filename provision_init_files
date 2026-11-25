@@ -2081,29 +2081,38 @@ install_github_ssh_snippet()
 
 # Plain ssh (not just cssh) loads a passphrase key into ssh-agent on first use,
 # so the agent caches by key: one prompt covers every host sharing that key.
+# OpenSSH uses the FIRST value per keyword, so this default must be the LAST
+# thing in ~/.ssh/config (after the early config.d Include and the user's own
+# blocks); a config.d snippet would override host-specific AddKeysToAgent
+# (e.g. "confirm"). Managed block between markers, rewritten idempotently.
 install_agent_ssh_snippet()
 {
-    local dest_tmp
+    local begin='# BEGIN init-files agent default (keep last)'
+    local end='# END init-files agent default'
+    local tmp
 
     ensure_ssh_config_include || return 1
-    mkdir -p "$ssh_config_d" || return 1
-    dest_tmp=$(mktemp) || return 1
-    printf '%s\n' \
-        '# Managed by init-files: cache each key in ssh-agent after its first use.' \
-        '' \
-        'Host *' \
-        '    AddKeysToAgent yes' > "$dest_tmp"
-    if [[ -f "$ssh_agent_snippet" ]] && cmp -s "$dest_tmp" "$ssh_agent_snippet" 2>/dev/null; then
-        rm -f "$dest_tmp"
-        log "OK       ${ssh_agent_snippet/#$HOME/~}"
+    if [[ -f "$ssh_agent_snippet" ]]; then
+        rm -f "$ssh_agent_snippet" || true
+        log "Removed  legacy ${ssh_agent_snippet/#$HOME/~} (default now lives at end of ~/.ssh/config)"
+    fi
+    tmp=$(mktemp) || return 1
+    awk -v b="$begin" -v e="$end" '
+        $0 == b { skip = 1; next }
+        $0 == e { skip = 0; next }
+        !skip { lines[++n] = $0 }
+        END { while (n > 0 && lines[n] == "") n--; for (i = 1; i <= n; i++) print lines[i] }
+    ' "$ssh_config_file" > "$tmp" || { rm -f "$tmp"; return 1; }
+    printf '\n%s\nHost *\n    AddKeysToAgent yes\n%s\n' "$begin" "$end" >> "$tmp"
+    if cmp -s "$tmp" "$ssh_config_file"; then
+        rm -f "$tmp"
+        log "OK       ~/.ssh/config agent default"
         return 0
     fi
-    mv "$dest_tmp" "$ssh_agent_snippet" || {
-        rm -f "$dest_tmp"
-        return 1
-    }
-    chmod 600 "$ssh_agent_snippet" || true
-    log "Installed ${ssh_agent_snippet/#$HOME/~}"
+    cat "$tmp" > "$ssh_config_file" || { rm -f "$tmp"; return 1; }
+    rm -f "$tmp"
+    chmod 600 "$ssh_config_file" || true
+    log "Updated  ~/.ssh/config (AddKeysToAgent default at end)"
 }
 
 install_shared_authorized_keys()
