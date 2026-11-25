@@ -6297,7 +6297,8 @@ function init_files_doctor()
     fi
 
     # 4b) gh / coderabbit logins
-    if declare -F init_files_cli_auth_problems > /dev/null 2>&1; then
+    if declare -F init_files_cli_auth_problems > /dev/null 2>&1 \
+        && init_files_cli_auth_check_enabled; then
         local _doc_auth_line _doc_auth_bad=0
         while IFS= read -r _doc_auth_line; do
             [[ -n "$_doc_auth_line" ]] || continue

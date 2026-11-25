@@ -89,7 +89,20 @@ init_files_cli_auth_offer_login()
     return 0
 }
 
-# Interactive, throttled (default 6h; INIT_FILES_CLI_AUTH_CHECK_INTERVAL
+# True unless this host is a --no-dev host (per-host mode, see
+# _init_files_is_no_dev_host in bashrc). gh / CodeRabbit are dev tooling; a
+# non-dev host has no use for the login nag. Fails open when the predicate is
+# not loaded (e.g. lib sourced standalone).
+init_files_cli_auth_check_enabled()
+{
+    if declare -F _init_files_is_no_dev_host > /dev/null 2>&1 \
+        && _init_files_is_no_dev_host; then
+        return 1
+    fi
+    return 0
+}
+
+# Interactive, throttled, dev hosts only (default 6h; INIT_FILES_CLI_AUTH_CHECK_INTERVAL
 # seconds) warning. Always re-warns on the next interval while a problem
 # persists. INIT_FILES_SKIP_CLI_AUTH_CHECK=1 silences it.
 # Usage: init_files_cli_auth_check [--force]   (--force: ignore TTY + throttle)
@@ -103,6 +116,7 @@ init_files_cli_auth_check()
         [[ -t 2 ]] || return 0
         [[ -z "${_init_files_in_refresh_reload:-}" ]] || return 0
         [[ -z "${INIT_FILES_SKIP_CLI_AUTH_CHECK:-}" ]] || return 0
+        init_files_cli_auth_check_enabled || return 0
     fi
 
     state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/init-files"
