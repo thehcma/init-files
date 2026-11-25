@@ -95,7 +95,7 @@ init_files_cli_auth_offer_login()
 # Usage: init_files_cli_auth_check [--force]   (--force: ignore TTY + throttle)
 init_files_cli_auth_check()
 {
-    local force=0 state_dir stamp now last interval line tool reason fix found=0
+    local force=0 state_dir stamp host now last interval line tool reason fix found=0
 
     [[ "${1:-}" == "--force" ]] && force=1
     if ((force == 0)); then
@@ -106,7 +106,10 @@ init_files_cli_auth_check()
     fi
 
     state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/init-files"
-    stamp="${state_dir}/last-cli-auth-check"
+    # Per-host stamp: with an NFS-shared home, another host's check must not
+    # suppress this one (CLIs and logins differ per host).
+    host="${init_files_host:-$(hostname -s 2> /dev/null || echo unknown)}"
+    stamp="${state_dir}/last-cli-auth-check.${host}"
     interval="${INIT_FILES_CLI_AUTH_CHECK_INTERVAL:-21600}"
     [[ "$interval" =~ ^[0-9]+$ ]] || interval=21600
     now="$(date +%s 2> /dev/null || echo 0)"

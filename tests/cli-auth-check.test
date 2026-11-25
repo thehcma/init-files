@@ -67,7 +67,10 @@ make_stub gh 1
 out="$(run_check --force)"
 assert_contains 'force prints header' "$out" 'CLI login needs attention'
 assert_contains 'force prints command' "$out" 'gh auth login'
-if [[ -f "$work/state/init-files/last-cli-auth-check" ]]; then pass_case 'stamp written'; else fail_case 'stamp written'; fi
+if [[ -f "$work/state/init-files/last-cli-auth-check.$(hostname -s)" ]]; then pass_case 'stamp written'; else fail_case 'stamp written'; fi
+
+# A different host's stamp must not throttle this one.
+assert_contains 'stamp is host-scoped' "$(ls "$work/state/init-files")" "last-cli-auth-check.$(hostname -s)"
 
 # Non-interactive subshell without --force must stay silent.
 assert_eq 'non-interactive silent' "$(run_check)" ''
