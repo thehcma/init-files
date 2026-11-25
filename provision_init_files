@@ -1990,6 +1990,7 @@ ssh_config_d="${ssh_dir}/config.d"
 ssh_hosts_snippet="${ssh_config_d}/init-files-hosts.conf"
 ssh_hosts_snippet_legacy="${ssh_config_d}/init-files-house.conf"
 ssh_github_snippet="${ssh_config_d}/init-files-github.conf"
+ssh_agent_snippet="${ssh_config_d}/init-files-agent.conf"
 ssh_config_file="${ssh_dir}/config"
 ssh_auth_file="${ssh_dir}/authorized_keys"
 
@@ -2076,6 +2077,33 @@ install_github_ssh_snippet()
     }
     chmod 600 "$ssh_github_snippet" || true
     log "Installed ${ssh_github_snippet/#$HOME/~}"
+}
+
+# Plain ssh (not just cssh) loads a passphrase key into ssh-agent on first use,
+# so the agent caches by key: one prompt covers every host sharing that key.
+install_agent_ssh_snippet()
+{
+    local dest_tmp
+
+    ensure_ssh_config_include || return 1
+    mkdir -p "$ssh_config_d" || return 1
+    dest_tmp=$(mktemp) || return 1
+    printf '%s\n' \
+        '# Managed by init-files: cache each key in ssh-agent after its first use.' \
+        '' \
+        'Host *' \
+        '    AddKeysToAgent yes' > "$dest_tmp"
+    if [[ -f "$ssh_agent_snippet" ]] && cmp -s "$dest_tmp" "$ssh_agent_snippet" 2>/dev/null; then
+        rm -f "$dest_tmp"
+        log "OK       ${ssh_agent_snippet/#$HOME/~}"
+        return 0
+    fi
+    mv "$dest_tmp" "$ssh_agent_snippet" || {
+        rm -f "$dest_tmp"
+        return 1
+    }
+    chmod 600 "$ssh_agent_snippet" || true
+    log "Installed ${ssh_agent_snippet/#$HOME/~}"
 }
 
 install_shared_authorized_keys()
@@ -2364,6 +2392,7 @@ if [[ -f "$ssh_hosts_snippet" && -f "$ssh_hosts_snippet_legacy" ]]; then
     log "Removed  legacy ${ssh_hosts_snippet_legacy/#$HOME/~}"
 fi
 install_github_ssh_snippet
+install_agent_ssh_snippet
 ensure_github_known_hosts
 warn_if_github_key_missing
 
