@@ -52,15 +52,44 @@ make_stub coderabbit 0
 assert_eq 'both logged in: no output' "$(run_problems)" ''
 
 make_stub gh 1
-assert_contains 'gh failing is reported with fix' "$(run_problems)" 'gh|auth check failed for github.com|gh auth login --hostname github.com'
+assert_contains 'gh failing is reported with fix' "$(run_problems)" 'gh|auth check failed for github.com|env -u GH_TOKEN -u GITHUB_TOKEN '
 assert_not_contains 'coderabbit ok not reported' "$(run_problems)" 'coderabbit'
 
 make_stub gh 0
 make_stub coderabbit 1
-assert_contains 'coderabbit failing is reported with fix' "$(run_problems)" 'coderabbit|auth check failed|coderabbit auth login'
+assert_contains 'coderabbit failing is reported with fix' "$(run_problems)" 'coderabbit|auth check failed|'
 
 rm -f "$work/bin/coderabbit"
 assert_eq 'missing coderabbit skipped silently' "$(run_problems)" ''
+
+# Fix text targets the probed binary: bare name when it is that binary on PATH,
+# the resolved path otherwise (recorded path outside PATH, cr-only installs).
+make_stub gh 1
+make_stub coderabbit 1
+assert_contains 'on-PATH coderabbit fix is the bare name' "$(run_problems)" '|coderabbit auth login'
+run_problems_offpath() {
+  (
+    PATH="/usr/bin:/bin"
+    init_files_coderabbit_cli() { printf '%s\n' "$work/bin/coderabbit"; }
+    # shellcheck disable=SC1091
+    source "$root/lib/cli_auth_check"
+    init_files_cli_auth_problems
+  )
+}
+assert_contains 'off-PATH coderabbit fix is the resolved path' "$(run_problems_offpath)" "|$work/bin/coderabbit auth login"
+assert_contains 'off-PATH gh fix is the resolved path' "$(run_problems_offpath)" "$work/bin/gh auth login --hostname github.com"
+make_stub coderabbit 0
+
+# Exported token rejected while the stored login is fine -> gh-env (unset it).
+# shellcheck disable=SC2016  # $GH_TOKEN must stay literal in the stub script
+printf '#!/bin/sh\n[ -n "$GH_TOKEN$GITHUB_TOKEN" ] && exit 1\nexit 0\n' > "$work/bin/gh"
+chmod +x "$work/bin/gh"
+out="$(GH_TOKEN=expired run_problems)"
+assert_contains 'bad env token -> gh-env' "$out" 'gh-env|exported GH_TOKEN/GITHUB_TOKEN is rejected'
+assert_contains 'gh-env fix is unset' "$out" '|unset GH_TOKEN GITHUB_TOKEN'
+assert_eq 'no env token and stored ok: silent' "$(run_problems)" ''
+make_stub gh 1
+assert_not_contains 'stored login bad stays gh' "$(GH_TOKEN=x run_problems)" 'gh-env'
 
 printf '\n=== check (throttle) ===\n'
 make_stub gh 1
@@ -121,5 +150,9 @@ if init_files_cli_auth_check_enabled; then fail_case 'disabled on no-dev host'; 
 _init_files_is_no_dev_host() { return 1; }
 if init_files_cli_auth_check_enabled; then pass_case 'enabled on dev host'; else fail_case 'enabled on dev host'; fi
 unset -f _init_files_is_no_dev_host
+
+printf '\n=== gh-env renewal ===\n'
+GH_TOKEN=expired GITHUB_TOKEN=expired init_files_cli_auth_login gh-env
+assert_eq 'gh-env unsets exported tokens' "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ''
 
 test_summary
