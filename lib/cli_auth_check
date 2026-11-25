@@ -105,6 +105,32 @@ init_files_cli_auth_login()
     esac
 }
 
+# After a successful renewal, confirm it took effect in THIS shell. The login
+# ran with GH_TOKEN/GITHUB_TOKEN removed, but this shell still exports them, and
+# gh prefers an exported token over the stored login: a rejected one keeps every
+# later gh command failing. Never claim success in that case; offer the unset.
+init_files_cli_auth_after_login()
+{
+    local tool="${1:-}" gh_bin reply=""
+
+    if [[ "$tool" == "gh" && -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]] \
+        && gh_bin="$(init_files_cli_auth_gh_bin)" \
+        && ! "$gh_bin" auth status --hostname github.com > /dev/null 2>&1; then
+        printf 'init-files: gh login stored, but the exported GH_TOKEN/GITHUB_TOKEN still overrides it and is rejected.\n' >&2
+        printf 'Unset it in this shell? [Y/n] ' >&2
+        read -r reply || reply=n
+        case "$reply" in
+            ''|y|Y|yes|YES)
+                unset GH_TOKEN GITHUB_TOKEN
+                printf 'init-files: gh login renewed (exported token unset).\n' >&2
+                ;;
+            *) printf 'init-files: gh still failing here until you run: unset GH_TOKEN GITHUB_TOKEN\n' >&2 ;;
+        esac
+        return 0
+    fi
+    printf 'init-files: %s login renewed.\n' "$tool" >&2
+}
+
 # Asks (on stdin) whether to renew <tool> now and runs the login on yes.
 # Default is yes; anything else skips until the next interval.
 # Usage: init_files_cli_auth_offer_login <tool> <fix-command-text>
@@ -117,7 +143,7 @@ init_files_cli_auth_offer_login()
     case "$reply" in
         ''|y|Y|yes|YES)
             if init_files_cli_auth_login "$tool"; then
-                printf 'init-files: %s login renewed.\n' "$tool" >&2
+                init_files_cli_auth_after_login "$tool"
             else
                 printf 'init-files: %s login did not complete; retry: %s\n' "$tool" "$fix" >&2
             fi

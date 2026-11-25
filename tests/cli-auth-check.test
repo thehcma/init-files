@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Tests for lib/cli_auth_check: periodic gh / coderabbit re-login warning.
+# Token cases deliberately set GH_TOKEN inside subshells so nothing leaks between cases.
+# shellcheck disable=SC2030,SC2031
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,6 +18,8 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/bin" "$work/state"
 export XDG_STATE_HOME="$work/state"
+# Inherited tokens would change the stubs' behavior; token cases set their own.
+unset GH_TOKEN GITHUB_TOKEN
 export init_tool_gh="$work/bin/gh"
 export init_files_host="testhost"
 
@@ -152,7 +156,27 @@ if init_files_cli_auth_check_enabled; then pass_case 'enabled on dev host'; else
 unset -f _init_files_is_no_dev_host
 
 printf '\n=== gh-env renewal ===\n'
-GH_TOKEN=expired GITHUB_TOKEN=expired init_files_cli_auth_login gh-env
-assert_eq 'gh-env unsets exported tokens' "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ''
+res="$(export GH_TOKEN=expired GITHUB_TOKEN=expired; init_files_cli_auth_login gh-env; printf '%s' "${GH_TOKEN:-}${GITHUB_TOKEN:-}")"
+assert_eq 'gh-env unsets exported tokens' "$res" ''
+
+printf '\n=== gh renewal with a still-rejected exported token ===\n'
+# login succeeds, but status keeps failing while a token is exported.
+cat > "$work/bin/gh" <<'STUB'
+#!/bin/sh
+case "$*" in
+  *"auth login"*) exit 0 ;;
+esac
+[ -n "$GH_TOKEN$GITHUB_TOKEN" ] && exit 1
+exit 0
+STUB
+chmod +x "$work/bin/gh"
+out="$(export GH_TOKEN=expired; printf 'y\ny\n' | init_files_cli_auth_offer_login gh 'gh auth login' 2>&1)"
+assert_contains 'still-rejected token is not called renewed' "$out" 'still overrides it and is rejected'
+assert_contains 'unset offered then reported' "$out" 'renewed (exported token unset)'
+out="$(export GH_TOKEN=expired; printf 'y\nn\n' | init_files_cli_auth_offer_login gh 'gh auth login' 2>&1)"
+assert_contains 'declined unset keeps failing hint' "$out" 'unset GH_TOKEN GITHUB_TOKEN'
+assert_not_contains 'declined unset is not success' "$out" 'login renewed.'
+out="$(printf 'y\n' | init_files_cli_auth_offer_login gh 'gh auth login' 2>&1)"
+assert_contains 'no token: plain renewed' "$out" 'gh login renewed.'
 
 test_summary
