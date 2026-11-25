@@ -15,6 +15,7 @@ readonly root
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/bin" "$work/state"
+export XDG_STATE_HOME="$work/state"
 
 # make_stub <name> <exit-code>: stub CLI whose `auth status` exits with the code.
 make_stub() {
@@ -38,7 +39,6 @@ run_check() {
   (
     PATH="$work/bin:/usr/bin:/bin"
     init_tool_gh="$work/bin/gh"
-    XDG_STATE_HOME="$work/state"
     init_files_coderabbit_cli() { [[ -x "$work/bin/coderabbit" ]] && printf '%s\n' "$work/bin/coderabbit"; }
     # shellcheck disable=SC1091
     source "$root/lib/cli_auth_check"
@@ -67,7 +67,7 @@ make_stub gh 1
 out="$(run_check --force)"
 assert_contains 'force prints header' "$out" 'CLI login needs attention'
 assert_contains 'force prints command' "$out" 'gh auth login'
-[[ -f "$work/state/init-files/last-cli-auth-check" ]] && pass_case 'stamp written' || fail_case 'stamp written'
+if [[ -f "$work/state/init-files/last-cli-auth-check" ]]; then pass_case 'stamp written'; else fail_case 'stamp written'; fi
 
 # Non-interactive subshell without --force must stay silent.
 assert_eq 'non-interactive silent' "$(run_check)" ''
@@ -98,7 +98,7 @@ assert_contains 'yes reports renewed' "$out" 'gh login renewed'
 
 rm -f "$work/login.log"
 out="$(run_offer gh 'gh auth login' n)"
-[[ ! -f "$work/login.log" ]] && pass_case 'no skips login' || fail_case 'no skips login'
+if [[ ! -f "$work/login.log" ]]; then pass_case 'no skips login'; else fail_case 'no skips login'; fi
 assert_contains 'no prints renew-later hint' "$out" 'Renew later: gh auth login'
 
 rm -f "$work/login.log"
