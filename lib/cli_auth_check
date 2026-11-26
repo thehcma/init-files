@@ -1,0 +1,224 @@
+# shellcheck shell=bash
+# cli_auth_check — periodic "does this CLI need re-login?" probe for gh and the
+# CodeRabbit CLI. Tokens expire (gh's refresh token, CodeRabbit sessions) and
+# the failure otherwise surfaces mid-task (review loop, push, PR create).
+#
+# Probing is read-only. On a terminal it then OFFERS the login ([Y/n], default
+# yes) and runs the CLI's own interactive login only on a yes; elsewhere it just
+# prints the exact command. It never logs in unprompted.
+# A tool that is not installed is skipped silently. Network-bound probes are
+# bounded with timeout/gtimeout when one exists; without one the probe still
+# runs (the CLIs bound their own requests). Offline hosts can false-positive,
+# so the wording says "check failed", not "token revoked".
+#
+# Portable to bash 3.2 (older macOS): no associative arrays, no ${var,,}.
+# Sourced by bashrc (not executed).
+
+# Resolved gh binary: the recorded init_tool_gh, else gh on PATH.
+init_files_cli_auth_gh_bin()
+{
+    local gh_bin="${init_tool_gh:-}"
+
+    if [[ -z "$gh_bin" || ! -x "$gh_bin" ]]; then
+        gh_bin="$(command -v gh 2> /dev/null || true)"
+    fi
+    [[ -n "$gh_bin" ]] || return 1
+    printf '%s\n' "$gh_bin"
+}
+
+# Command text for the operator: the bare name when it resolves to the same
+# binary on PATH, else the resolved path, so the printed fix targets the same
+# CLI as the probe (recorded paths outside PATH, the `cr` alias).
+# Usage: init_files_cli_auth_cmd_text <resolved-binary>
+init_files_cli_auth_cmd_text()
+{
+    local bin="${1:-}" name on_path
+
+    name="${bin##*/}"
+    on_path="$(command -v "$name" 2> /dev/null || true)"
+    if [[ "$on_path" == "$bin" ]]; then
+        printf '%s\n' "$name"
+    else
+        printf '%q\n' "$bin"
+    fi
+}
+
+# Prints "<tool>|<reason>|<fix command>" for each installed CLI whose auth probe
+# fails. Prints nothing (exit 0) when all installed CLIs are authenticated.
+# Tool "gh-env" means the stored gh login is fine but an exported GH_TOKEN /
+# GITHUB_TOKEN is rejected: the fix is to unset it, not to log in again.
+init_files_cli_auth_problems()
+{
+    local to="" cr gh_bin gh_text cr_text
+
+    if command -v timeout > /dev/null 2>&1; then
+        to="timeout 20"
+    elif command -v gtimeout > /dev/null 2>&1; then
+        to="gtimeout 20"
+    fi
+
+    if gh_bin="$(init_files_cli_auth_gh_bin)"; then
+        gh_text="$(init_files_cli_auth_cmd_text "$gh_bin")"
+        # shellcheck disable=SC2086  # $to is an intentional word-split prefix
+        if ! $to "$gh_bin" auth status --hostname github.com > /dev/null 2>&1; then
+            # shellcheck disable=SC2086
+            if [[ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]] \
+                && env -u GH_TOKEN -u GITHUB_TOKEN $to "$gh_bin" auth status --hostname github.com > /dev/null 2>&1; then
+                printf 'gh-env|exported GH_TOKEN/GITHUB_TOKEN is rejected (stored login is fine)|unset GH_TOKEN GITHUB_TOKEN\n'
+            else
+                printf 'gh|auth check failed for github.com|env -u GH_TOKEN -u GITHUB_TOKEN %s auth login --hostname github.com\n' "$gh_text"
+            fi
+        fi
+    fi
+
+    if declare -F init_files_coderabbit_cli > /dev/null 2>&1 \
+        && cr="$(init_files_coderabbit_cli 2> /dev/null)" && [[ -n "$cr" ]]; then
+        # shellcheck disable=SC2086
+        if ! $to "$cr" auth status > /dev/null 2>&1; then
+            cr_text="$(init_files_cli_auth_cmd_text "$cr")"
+            printf 'coderabbit|auth check failed|%s auth login\n' "$cr_text"
+        fi
+    fi
+    return 0
+}
+
+# Runs the renewal for <tool> (gh | gh-env | coderabbit). Returns its status.
+# gh refuses to manage stored credentials while GH_TOKEN/GITHUB_TOKEN is
+# exported, so its login runs with them removed; gh-env unsets them here.
+init_files_cli_auth_login()
+{
+    local gh_bin cr
+
+    case "${1:-}" in
+        gh)
+            gh_bin="$(init_files_cli_auth_gh_bin)" || return 1
+            env -u GH_TOKEN -u GITHUB_TOKEN "$gh_bin" auth login --hostname github.com
+            ;;
+        gh-env)
+            unset GH_TOKEN GITHUB_TOKEN
+            ;;
+        coderabbit)
+            cr="$(init_files_coderabbit_cli 2> /dev/null)" && [[ -n "$cr" ]] || return 1
+            "$cr" auth login
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+# After a successful renewal, confirm it took effect in THIS shell. The login
+# ran with GH_TOKEN/GITHUB_TOKEN removed, but this shell still exports them, and
+# gh prefers an exported token over the stored login: a rejected one keeps every
+# later gh command failing. Never claim success in that case; offer the unset.
+init_files_cli_auth_after_login()
+{
+    local tool="${1:-}" gh_bin reply=""
+
+    if [[ "$tool" == "gh" && -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]] \
+        && gh_bin="$(init_files_cli_auth_gh_bin)" \
+        && ! "$gh_bin" auth status --hostname github.com > /dev/null 2>&1; then
+        printf 'init-files: gh login stored, but the exported GH_TOKEN/GITHUB_TOKEN still overrides it and is rejected.\n' >&2
+        printf 'Unset it in this shell? [Y/n] ' >&2
+        read -r reply || reply=n
+        case "$reply" in
+            ''|y|Y|yes|YES)
+                unset GH_TOKEN GITHUB_TOKEN
+                printf 'init-files: gh login renewed (exported token unset).\n' >&2
+                ;;
+            *) printf 'init-files: gh still failing here until you run: unset GH_TOKEN GITHUB_TOKEN\n' >&2 ;;
+        esac
+        return 0
+    fi
+    printf 'init-files: %s login renewed.\n' "$tool" >&2
+}
+
+# Asks (on stdin) whether to renew <tool> now and runs the login on yes.
+# Default is yes; anything else skips until the next interval.
+# Usage: init_files_cli_auth_offer_login <tool> <fix-command-text>
+init_files_cli_auth_offer_login()
+{
+    local tool="${1:-}" fix="${2:-}" reply=""
+
+    printf 'Fix %s now (%s)? [Y/n] ' "$tool" "$fix" >&2
+    read -r reply || reply=n
+    case "$reply" in
+        ''|y|Y|yes|YES)
+            if init_files_cli_auth_login "$tool"; then
+                init_files_cli_auth_after_login "$tool"
+            else
+                printf 'init-files: %s login did not complete; retry: %s\n' "$tool" "$fix" >&2
+            fi
+            ;;
+        *) printf 'Skipped. Renew later: %s\n' "$fix" >&2 ;;
+    esac
+    return 0
+}
+
+# True unless this host is a --no-dev host (per-host mode, see
+# _init_files_is_no_dev_host in bashrc). gh / CodeRabbit are dev tooling; a
+# non-dev host has no use for the login nag. Fails open when the predicate is
+# not loaded (e.g. lib sourced standalone).
+init_files_cli_auth_check_enabled()
+{
+    if declare -F _init_files_is_no_dev_host > /dev/null 2>&1 \
+        && _init_files_is_no_dev_host; then
+        return 1
+    fi
+    return 0
+}
+
+# Interactive, throttled, dev hosts only (default 6h; INIT_FILES_CLI_AUTH_CHECK_INTERVAL
+# seconds) warning. Always re-warns on the next interval while a problem
+# persists. INIT_FILES_SKIP_CLI_AUTH_CHECK=1 silences it.
+# Usage: init_files_cli_auth_check [--force]   (--force: ignore TTY + throttle)
+init_files_cli_auth_check()
+{
+    local force=0 state_dir stamp host now last interval line tool reason fix found=0
+
+    [[ "${1:-}" == "--force" ]] && force=1
+    if ((force == 0)); then
+        [[ $- == *i* ]] || return 0
+        [[ -t 2 ]] || return 0
+        [[ -z "${_init_files_in_refresh_reload:-}" ]] || return 0
+        [[ -z "${INIT_FILES_SKIP_CLI_AUTH_CHECK:-}" ]] || return 0
+        init_files_cli_auth_check_enabled || return 0
+    fi
+
+    state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/init-files"
+    # Per-host stamp: with an NFS-shared home, another host's check must not
+    # suppress this one (CLIs and logins differ per host).
+    host="${init_files_host:-$(hostname -s 2> /dev/null || echo unknown)}"
+    stamp="${state_dir}/last-cli-auth-check.${host}"
+    interval="${INIT_FILES_CLI_AUTH_CHECK_INTERVAL:-21600}"
+    [[ "$interval" =~ ^[0-9]+$ ]] || interval=21600
+    now="$(date +%s 2> /dev/null || echo 0)"
+    [[ "$now" =~ ^[0-9]+$ ]] || return 0
+
+    if ((force == 0)) && [[ -f "$stamp" ]]; then
+        last="$(tr -d '[:space:]' < "$stamp" 2> /dev/null || echo 0)"
+        if [[ "$last" =~ ^[0-9]+$ ]] && ((now >= last && now - last < interval)); then
+            return 0
+        fi
+    fi
+    mkdir -p "$state_dir" 2> /dev/null || true
+    printf '%s\n' "$now" > "$stamp" 2> /dev/null || true
+
+    # Collect first: the offer reads stdin and must not share the probe's pipe.
+    local -a problems=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && problems+=("$line")
+    done < <(init_files_cli_auth_problems)
+
+    for line in "${problems[@]+"${problems[@]}"}"; do
+        IFS='|' read -r tool reason fix <<< "$line"
+        if ((found == 0)); then
+            printf 'init-files: CLI login needs attention:\n' >&2
+            found=1
+        fi
+        printf '  %s: %s — run: %s\n' "$tool" "$reason" "$fix" >&2
+        # Offer only with a real terminal; scripts and --force probes just warn.
+        if [[ -t 0 && -t 2 ]] && ((force == 0)); then
+            init_files_cli_auth_offer_login "$tool" "$fix"
+        fi
+    done
+    return 0
+}
